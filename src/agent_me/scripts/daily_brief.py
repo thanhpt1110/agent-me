@@ -62,8 +62,22 @@ log = structlog.get_logger("daily-brief")
 
 # ── Config ───────────────────────────────────────────────────────────────
 
+# MCP-fetch backend selection. Two CLIs can drive the data fetch:
+#   - claude (default): Claude Code CLI. Reliable JSON output, but MCP
+#     auth via Claude Code expires ~daily (NVIDIA org policy disables
+#     proactive refresh — see design/mcp-authentication.md).
+#   - pa: NVIDIA's Personal Assistant CLI. Hypothesis (pending live
+#     verification): better MCP auth retention + possibly faster fetch
+#     because it's optimized for NVIDIA's MAAS endpoints. Override:
+#     MCP_CLI=pa in configs/.env. Requires `pa login` once on the host.
+#
+# Bridge stays on Claude Code regardless — it handles Slack I/O,
+# orchestration, scripting; PA only fetches MCP data when asked to.
+MCP_CLI = os.environ.get("MCP_CLI", "claude").strip().lower() or "claude"
+
 # Per-tool allow-list for the read-only fetch. We avoid `mcp__*` because
-# top-level wildcard doesn't match in claude --allowedTools.
+# top-level wildcard doesn't match in claude --allowedTools. PA has its
+# own permission model and ignores this.
 ALLOWED_TOOLS = " ".join((
     "mcp__maas-jira__jira_search",
     "mcp__maas-jira__jira_get_issue",
@@ -77,6 +91,8 @@ ALLOWED_TOOLS = " ".join((
 ))
 
 CLAUDE_TIMEOUT_S = 240.0
+PA_TIMEOUT_S = 240.0
+MCP_CLI_TIMEOUT_S = float(os.environ.get("MCP_CLI_TIMEOUT_S", CLAUDE_TIMEOUT_S))
 PRIORITY_WINDOW_DAYS = 7
 MAX_PER_SECTION = 10
 
@@ -87,7 +103,7 @@ PERIOD_PRESETS = {
 }
 
 
-def claude_prompt_for(period_days: int) -> str:
+def mcp_prompt_for(period_days: int) -> str:
     return f"""Return ONLY a JSON object — no markdown fences, no commentary, no preamble.
 
 The user is `thaphan` (NVIDIA). Goal: surface EVERY ticket / MR / issue /
@@ -190,35 +206,54 @@ class BriefItem:
 
 # ── Source: claude → MCP fetch ──────────────────────────────────────────
 
-async def fetch_via_claude(period_days: int) -> dict[str, list[dict]]:
-    args = [
-        "claude", "-p", claude_prompt_for(period_days),
+def _build_mcp_cli_args(prompt: str) -> list[str]:
+    """Build the subprocess argv for the configured MCP_CLI backend."""
+    if MCP_CLI == "pa":
+        # PA CLI invocation. `pa -p "<prompt>"` is the documented headless
+        # mode. PA has its own permission model — no --allowedTools or
+        # --dangerously-skip-permissions equivalent. If PA prompts for
+        # auth, the user has to `pa login` once on the host.
+        return ["pa", "-p", prompt]
+    # Default: Claude Code with explicit flags.
+    return [
+        "claude", "-p", prompt,
         "--model", os.environ.get("CLAUDE_MODEL", "claude-opus-4-7"),
         "--dangerously-skip-permissions",
         "--allowedTools", ALLOWED_TOOLS,
     ]
-    log.info("claude_spawn", cwd=str(REPO_DIR))
+
+
+async def fetch_mcp_data(period_days: int) -> dict[str, list[dict]]:
+    """Fetch the structured-JSON brief data from the configured CLI
+    backend (Claude Code or PA). Both are expected to honour the strict
+    JSON-only prompt; minor preamble / code-fence noise is tolerated."""
+    prompt = mcp_prompt_for(period_days)
+    args = _build_mcp_cli_args(prompt)
+    log.info("mcp_cli_spawn", cli=MCP_CLI, cwd=str(REPO_DIR),
+             timeout_s=MCP_CLI_TIMEOUT_S)
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=str(REPO_DIR),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT_S)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(),
+                                                timeout=MCP_CLI_TIMEOUT_S)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
+        raise RuntimeError(f"{MCP_CLI} timed out after {MCP_CLI_TIMEOUT_S}s")
     if proc.returncode != 0:
         raise RuntimeError(
-            f"claude exited {proc.returncode}: {stderr.decode(errors='replace')[:400]}"
+            f"{MCP_CLI} exited {proc.returncode}: "
+            f"{stderr.decode(errors='replace')[:400]}"
         )
 
     text = stdout.decode(errors="replace").strip()
-    # Strip optional ```json fences claude sometimes adds anyway.
+    # Strip optional ```json fences either CLI sometimes adds anyway.
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```\s*$", "", text)
-    # Sometimes there's preamble before the JSON. Find the first '{'.
+    # Find first '{' in case the CLI emitted preamble before the JSON.
     if not text.startswith("{"):
         i = text.find("{")
         if i >= 0:
@@ -227,8 +262,13 @@ async def fetch_via_claude(period_days: int) -> dict[str, list[dict]]:
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        log.error("json_parse_failed", err=str(exc), preview=text[:300])
-        raise RuntimeError(f"claude returned non-JSON: {text[:200]}")
+        log.error("json_parse_failed", cli=MCP_CLI, err=str(exc),
+                  preview=text[:300])
+        raise RuntimeError(f"{MCP_CLI} returned non-JSON: {text[:200]}")
+
+
+# Backwards-compat alias — old name still imported elsewhere.
+fetch_via_claude = fetch_mcp_data
 
 
 # ── Source: GitHub via gh CLI ───────────────────────────────────────────
@@ -642,7 +682,8 @@ async def main_async(period: str = "day", dry_run: bool = False,
         log.error("unknown period", period=period, valid=list(PERIOD_PRESETS))
         return 2
     started_at = time.time()
-    log.info("brief_starting", repo_dir=str(REPO_DIR), period=period, days=preset["days"])
+    log.info("brief_starting", repo_dir=str(REPO_DIR), period=period, days=preset["days"],
+             mcp_cli=MCP_CLI)
 
     # ── Resolve Slack target FIRST so we can post a progress placeholder
     #    before the (slow) MCP fetch starts. Skip in --dry-run.
@@ -669,12 +710,13 @@ async def main_async(period: str = "day", dry_run: bool = False,
         else:
             placeholder_channel = target
 
+        cli_label = "PA" if MCP_CLI == "pa" else "Claude"
         try:
             res = client.chat_postMessage(
                 channel=placeholder_channel,
                 text=(
                     f"🔄 *{preset['title']} — generating…*\n"
-                    "_Step 1/3: Asking Claude to query MCPs "
+                    f"_Step 1/3: Asking {cli_label} to query MCPs "
                     "(Jira / GitLab / NVBugs / Confluence) + GitHub via `gh`…_"
                 ),
             )
@@ -693,14 +735,14 @@ async def main_async(period: str = "day", dry_run: bool = False,
 
     # ── Fetch in parallel
     errors: list[str] = []
-    claude_task = asyncio.create_task(fetch_via_claude(preset["days"]))
+    mcp_task = asyncio.create_task(fetch_mcp_data(preset["days"]))
     gh_task = asyncio.create_task(fetch_github())
 
     try:
-        claude_data = await claude_task
+        claude_data = await mcp_task
     except Exception as exc:
-        log.error("claude_fetch_failed", err=str(exc))
-        errors.append(f"claude: {exc}")
+        log.error("mcp_fetch_failed", cli=MCP_CLI, err=str(exc))
+        errors.append(f"{MCP_CLI}: {exc}")
         claude_data = {}
 
     try:
