@@ -1,0 +1,13 @@
+# Defense-in-depth — repo-root .gitignore should already cover most of these.
+node_modules/
+*.log
+
+# Local SQLite state, in case AGENT_ME_STATE_DIR ever points inside this dir.
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+
+# Local env overrides (canonical .env lives in ~/agent-me/configs/.env).
+.env
+.env.local

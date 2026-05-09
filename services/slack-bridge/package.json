@@ -1,0 +1,24 @@
+{
+  "name": "@agent-me/slack-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Slack <-> Claude bridge for agent-me. Receives DMs/mentions via Socket Mode, spawns headless `claude -p` with agent-me as cwd, streams replies back.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "lint": "echo \"lint: not configured yet (TODO P2)\" && exit 0"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.21.0",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "^11.2.2"
+  }
+}
