@@ -430,7 +430,36 @@ async def cmd_reauth() -> str:
     )
 
 
-async def handle_slash(cmd: str, user_id: str | None, args_text: str = "") -> str:
+SlashResult = tuple[str, list[dict] | None]
+
+
+def _help_blocks() -> list[dict]:
+    """Render `/help` as a section + actions block so the user can click
+    instead of typing the command name. Action_ids reuse the menu_*
+    handlers wired for the morning routine."""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": HELP_TEXT}},
+        {"type": "actions", "elements": [
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📅 Daily brief"},
+             "action_id": "menu_brief_day", "style": "primary"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📊 Weekly recap"},
+             "action_id": "menu_brief_week"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📆 Monthly"},
+             "action_id": "menu_brief_month"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔄 Check MCP status"},
+             "action_id": "menu_mcp_status"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔧 Reauth MCPs"},
+             "action_id": "brief_reauth"},
+        ]},
+    ]
+
+
+async def handle_slash(cmd: str, user_id: str | None, args_text: str = "") -> str | SlashResult:
     if cmd == "/mcp":
         return await cmd_mcp()
     if cmd == "/version":
@@ -442,8 +471,14 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "") -> st
     if cmd == "/brief":
         return await cmd_brief(args_text)
     if cmd == "/help":
-        return HELP_TEXT
+        return HELP_TEXT, _help_blocks()
     return f"Unknown command `{cmd}`. Try `/help`."
+
+
+def _split_result(result: str | SlashResult) -> tuple[str, list[dict] | None]:
+    if isinstance(result, tuple):
+        return result[0], result[1]
+    return result, None
 
 
 # ── Event handlers ──────────────────────────────────────────────────────
@@ -507,19 +542,31 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     log.info("message_received", thread_ts=thread_ts, channel=channel, user=user_id,
              prompt=clip(cleaned))
 
+    async def _dispatch(cmd: str, args_text: str, label: str) -> None:
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        try:
+            result = await handle_slash(cmd, user_id, args_text)
+            text, blocks = _split_result(result)
+            if blocks:
+                # chat.update accepts blocks; include text as fallback for
+                # notifications and a11y.
+                await client.chat_update(
+                    channel=channel, ts=placeholder_ts,
+                    text=text or "(see blocks)", blocks=blocks,
+                )
+            else:
+                await update_progress(client, channel, placeholder_ts, text)
+            log.info(f"{label}_handled", cmd=cmd, thread_ts=thread_ts, args=args_text)
+        except Exception as exc:
+            log.error(f"{label}_failed", cmd=cmd, err=str(exc))
+            await update_progress(client, channel, placeholder_ts,
+                                  f"⚠️ `{cmd}` failed: `{exc}`")
+
     # Plain-text command intercept (exact match): "brief", "brief week", "mcp", etc.
     plain_key = cleaned.strip().lower()
     if plain_key in PLAIN_COMMANDS:
         cmd, args_text = PLAIN_COMMANDS[plain_key]
-        placeholder_ts = await post_thinking(client, channel, thread_ts)
-        try:
-            body = await handle_slash(cmd, user_id, args_text)
-            await update_progress(client, channel, placeholder_ts, body)
-            log.info("plain_handled", trigger=plain_key, cmd=cmd, thread_ts=thread_ts)
-        except Exception as exc:
-            log.error("plain_failed", cmd=cmd, err=str(exc))
-            await update_progress(client, channel, placeholder_ts,
-                                  f"⚠️ `{cmd}` failed: `{exc}`")
+        await _dispatch(cmd, args_text, "plain")
         return
 
     # Slash-prefix intercept: route /mcp etc. without spawning claude.
@@ -527,15 +574,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     if m:
         cmd = m.group(1)
         args_text = m.group(2)
-        placeholder_ts = await post_thinking(client, channel, thread_ts)
-        try:
-            body = await handle_slash(cmd, user_id, args_text)
-            await update_progress(client, channel, placeholder_ts, body)
-            log.info("slash_handled", cmd=cmd, thread_ts=thread_ts, args=args_text)
-        except Exception as exc:
-            log.error("slash_failed", cmd=cmd, err=str(exc))
-            await update_progress(client, channel, placeholder_ts,
-                                  f"⚠️ `{cmd}` failed: `{exc}`")
+        await _dispatch(cmd, args_text, "slash")
         return
 
     await upsert_thread(thread_ts, channel, user_id)
@@ -608,8 +647,12 @@ async def _native_slash(ack, respond, command, cmd_name: str):
     log.info("native_slash", cmd=cmd_name, user=command.get("user_id"),
              channel=command.get("channel_id"), args=args_text)
     try:
-        body = await handle_slash(cmd_name, command.get("user_id"), args_text)
-        await respond(response_type="in_channel", text=body)
+        result = await handle_slash(cmd_name, command.get("user_id"), args_text)
+        text, blocks = _split_result(result)
+        payload: dict = {"response_type": "in_channel", "text": text or "(see blocks)"}
+        if blocks:
+            payload["blocks"] = blocks
+        await respond(**payload)
     except Exception as exc:
         log.error("native_slash_failed", cmd=cmd_name, err=str(exc))
         await respond(response_type="ephemeral", text=f"⚠️ `{cmd_name}` failed: `{exc}`")
