@@ -89,25 +89,84 @@ PERIOD_PRESETS = {
 def claude_prompt_for(period_days: int) -> str:
     return f"""Return ONLY a JSON object — no markdown fences, no commentary, no preamble.
 
-Schema (use empty arrays where a tool fails or returns nothing):
+The user is `thaphan` (NVIDIA). Goal: surface EVERY ticket / MR / issue /
+page where this user is mentioned (assignee, reporter, watcher, author,
+review-requested, or named in text) AND that is NOT yet Done. Group items
+by domain (project / repo / space) so the user can see scope per app.
+
+Schema (use empty arrays where a tool fails or returns nothing). Every
+item MUST include a `group` string used for grouping:
+
 {{
-  "jira": [{{"key": "NGC-123", "summary": "...", "status": "...", "priority": "...", "duedate": null, "url": "...", "updated": "..."}}],
-  "gitlab_mrs": [{{"iid": 456, "title": "...", "state": "...", "web_url": "...", "milestone_due_date": null, "updated_at": "...", "project_path": "..."}}],
-  "gitlab_issues": [{{"iid": 789, "title": "...", "state": "...", "web_url": "...", "due_date": null, "updated_at": "...", "project_path": "..."}}],
-  "nvbugs": [{{"id": "1234567", "title": "...", "priority": "P0", "status": "Open", "due": null, "url": "https://nvbugs.nvidia.com/<id>"}}],
-  "confluence": [{{"title": "...", "url": "...", "updated": "...", "reason": "mentioned|updated|watched"}}]
+  "jira": [
+    {{"key": "NGC-123", "summary": "...", "status": "...", "priority": "...",
+      "duedate": null, "url": "...", "updated": "...",
+      "group": "NGC", "reason": "assignee|reporter|watcher|mentioned"}}
+  ],
+  "gitlab_mrs": [
+    {{"iid": 456, "title": "...", "state": "...", "web_url": "...",
+      "milestone_due_date": null, "updated_at": "...",
+      "group": "team/repo-name", "reason": "assignee|author|reviewer"}}
+  ],
+  "gitlab_issues": [
+    {{"iid": 789, "title": "...", "state": "...", "web_url": "...",
+      "due_date": null, "updated_at": "...",
+      "group": "team/repo-name", "reason": "assignee|author"}}
+  ],
+  "nvbugs": [
+    {{"id": "1234567", "title": "...", "priority": "P0", "status": "Open",
+      "due": null, "url": "https://nvbugs.nvidia.com/<id>",
+      "group": "<module|component|product>", "reason": "assignee|mentioned"}}
+  ],
+  "confluence": [
+    {{"title": "...", "url": "...", "updated": "...",
+      "group": "<space-name>", "reason": "mentioned|updated|watched"}}
+  ]
 }}
 
-Time window for "recently active": last {period_days} day(s).
+Time window for activity: last {period_days} day(s).
 
 Tools you may call (and only these):
-- mcp__maas-jira__jira_search with JQL `assignee = currentUser() AND (statusCategory != Done OR resolved >= -{period_days}d)` ORDER BY duedate ASC, max 25.
-- mcp__maas-gitlab__gitlab_list_merge_requests scope=assigned_to_me state=opened, max 15. Also include any merged within the last {period_days} day(s) if the API supports a state filter for that.
-- mcp__maas-gitlab__gitlab_list_issues scope=assigned_to_me state=opened, max 15.
-- mcp__maas-nvbugs__nvbugs_search_v2 for bugs assigned to current user, status=Open or recently changed in last {period_days} days, top 15.
-- mcp__maas-confluence__confluence_search for pages updated in last {period_days} day(s) that mention "thaphan", top 5.
 
-Don't hallucinate items. If a tool errors, that source's array is []. JSON only."""
+1. mcp__maas-jira__jira_search — fetch with JQL covering all involvements:
+   `(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser() OR text ~ "thaphan") AND statusCategory != Done`
+   ORDER BY duedate ASC NULLS LAST, max 50.
+   For each issue, set `group` = the project key (the part of the issue
+   key before the dash, e.g. "NGC" from "NGC-789"). Set `reason` based
+   on which clause matched (best-effort; use "assignee" if assignee == me,
+   else "reporter" / "watcher" / "mentioned").
+
+2. mcp__maas-gitlab__gitlab_list_merge_requests — call THREE TIMES and
+   merge results, deduping by (project_id, iid):
+   - scope=assigned_to_me state=opened, max 25
+   - scope=created_by_me state=opened, max 25
+   - scope=review_requested state=opened, max 25 (if supported)
+   For each MR set `group` = the project's full path (e.g.
+   "omniverse-ngc/quality-assurance"); `reason` = "assignee"/"author"/"reviewer".
+
+3. mcp__maas-gitlab__gitlab_list_issues — call TWICE and merge:
+   - scope=assigned_to_me state=opened, max 25
+   - scope=created_by_me state=opened, max 25
+   `group` = project path; `reason` = "assignee"/"author".
+
+4. mcp__maas-nvbugs__nvbugs_search_v2 — bugs assigned to current user,
+   status not in (Closed, Resolved, WontFix, Duplicate), top 30.
+   `group` = module / component / product field if available; otherwise
+   "uncategorized". `reason` = "assignee".
+
+5. mcp__maas-confluence__confluence_search — pages updated in last
+   {period_days} day(s) where the user is mentioned. Try query
+   `"thaphan" updated >= -{period_days}d` (or the closest equivalent
+   the tool accepts), top 15. `group` = the space key/name (e.g. "PASNT",
+   "AI"). `reason` = "mentioned"/"updated"/"watched".
+
+Important rules:
+- Don't hallucinate items. If a tool errors, that source's array is [].
+- If the API doesn't expose enough info for `group`, use "uncategorized".
+- Don't filter to a top-N "most important" — return what the API gives
+  (capped per the limits above). The Slack formatter will collapse long
+  groups itself.
+- Output JSON ONLY. No prose, no markdown fences."""
 
 
 # ── Data model ──────────────────────────────────────────────────────────
@@ -119,6 +178,8 @@ class BriefItem:
     item_id: str
     title: str
     url: str
+    group: str = "uncategorized"      # project/repo/space — sub-grouping within source
+    reason: str | None = None          # "assignee" | "reporter" | "mentioned" | ...
     status: str | None = None
     priority: str | None = None
     deadline: str | None = None        # ISO date
@@ -226,15 +287,25 @@ def parse_date(s: str | None) -> date | None:
         return None
 
 
+def _g(d: dict, key: str, default: str = "uncategorized") -> str:
+    v = d.get(key)
+    return str(v) if v else default
+
+
 def to_items(claude_data: dict, gh_data: dict) -> list[BriefItem]:
     items: list[BriefItem] = []
 
     for j in claude_data.get("jira", []) or []:
+        # Fallback: derive project from key prefix if `group` missing.
+        key = str(j.get("key", "?"))
+        derived_group = key.split("-")[0] if "-" in key else "uncategorized"
         items.append(BriefItem(
             source="jira", icon="📋",
-            item_id=str(j.get("key", "?")),
+            item_id=key,
             title=str(j.get("summary", ""))[:200],
             url=str(j.get("url", "")),
+            group=_g(j, "group", derived_group),
+            reason=j.get("reason"),
             status=j.get("status"),
             priority=j.get("priority"),
             deadline=j.get("duedate"),
@@ -247,10 +318,12 @@ def to_items(claude_data: dict, gh_data: dict) -> list[BriefItem]:
             item_id=f"!{m.get('iid', '?')}",
             title=str(m.get("title", ""))[:200],
             url=str(m.get("web_url", "")),
+            group=_g(m, "group", str(m.get("project_path") or "uncategorized")),
+            reason=m.get("reason"),
             status=m.get("state"),
             deadline=m.get("milestone_due_date"),
             last_activity=m.get("updated_at"),
-            extras={"kind": "MR", "project": m.get("project_path") or ""},
+            extras={"kind": "MR"},
         ))
 
     for i in claude_data.get("gitlab_issues", []) or []:
@@ -259,10 +332,12 @@ def to_items(claude_data: dict, gh_data: dict) -> list[BriefItem]:
             item_id=f"#{i.get('iid', '?')}",
             title=str(i.get("title", ""))[:200],
             url=str(i.get("web_url", "")),
+            group=_g(i, "group", str(i.get("project_path") or "uncategorized")),
+            reason=i.get("reason"),
             status=i.get("state"),
             deadline=i.get("due_date"),
             last_activity=i.get("updated_at"),
-            extras={"kind": "issue", "project": i.get("project_path") or ""},
+            extras={"kind": "issue"},
         ))
 
     for nb in claude_data.get("nvbugs", []) or []:
@@ -271,6 +346,8 @@ def to_items(claude_data: dict, gh_data: dict) -> list[BriefItem]:
             item_id=str(nb.get("id", "?")),
             title=str(nb.get("title", ""))[:200],
             url=str(nb.get("url", "")),
+            group=_g(nb, "group", "uncategorized"),
+            reason=nb.get("reason"),
             status=nb.get("status"),
             priority=nb.get("priority"),
             deadline=nb.get("due"),
@@ -282,8 +359,9 @@ def to_items(claude_data: dict, gh_data: dict) -> list[BriefItem]:
             item_id="",
             title=str(c.get("title", ""))[:200],
             url=str(c.get("url", "")),
+            group=_g(c, "group", "uncategorized"),
+            reason=c.get("reason"),
             last_activity=c.get("updated"),
-            extras={"reason": c.get("reason") or ""},
         ))
 
     def repo_name(d: dict) -> str:
@@ -293,25 +371,34 @@ def to_items(claude_data: dict, gh_data: dict) -> list[BriefItem]:
         return str(repo)
 
     for ghi in gh_data.get("issues", []) or []:
+        repo = repo_name(ghi)
         items.append(BriefItem(
             source="github", icon="🐱",
             item_id=f"#{ghi.get('number', '?')}",
             title=str(ghi.get("title", ""))[:200],
             url=str(ghi.get("url", "")),
+            group=repo or "uncategorized",
+            reason="assignee",
             status=ghi.get("state"),
             last_activity=ghi.get("updatedAt"),
-            extras={"kind": "issue", "repo": repo_name(ghi)},
+            extras={"kind": "issue"},
         ))
-    for prs_key, kind in (("prs_authored", "PR (yours)"), ("prs_reviewing", "PR (review)")):
+    for prs_key, reason, kind in (
+        ("prs_authored", "author", "PR"),
+        ("prs_reviewing", "reviewer", "PR"),
+    ):
         for pr in gh_data.get(prs_key, []) or []:
+            repo = repo_name(pr)
             items.append(BriefItem(
                 source="github", icon="🐱",
                 item_id=f"#{pr.get('number', '?')}",
                 title=str(pr.get("title", ""))[:200],
                 url=str(pr.get("url", "")),
+                group=repo or "uncategorized",
+                reason=reason,
                 status=pr.get("state"),
                 last_activity=pr.get("updatedAt"),
-                extras={"kind": kind, "repo": repo_name(pr)},
+                extras={"kind": kind},
             ))
 
     return items
@@ -364,6 +451,98 @@ def md_link(text: str, url: str) -> str:
 
 # ── Block Kit builder ──────────────────────────────────────────────────
 
+SLACK_SECTION_MAX_CHARS = 2900   # Slack hard limit is 3000; keep a buffer.
+ITEMS_PER_GROUP = 5
+
+
+def _format_item_line(i: BriefItem) -> str:
+    label = md_link(f"{i.item_id} {i.title}".strip(), i.url) if i.item_id else md_link(i.title, i.url)
+    bits: list[str] = []
+    if i.priority:
+        bits.append(f"*[{i.priority}]*")
+    if i.status:
+        bits.append(f"_{i.status}_")
+    if i.deadline:
+        d = fmt_due(i.deadline)
+        if d:
+            bits.append(f"due {d}")
+    if i.last_activity:
+        a = fmt_age(i.last_activity)
+        if a:
+            bits.append(f"upd {a}")
+    if i.reason:
+        bits.append(i.reason)
+    for k in ("kind",):
+        if v := i.extras.get(k):
+            bits.append(str(v))
+    line = f"  • {label}"
+    if bits:
+        line += " · " + " · ".join(bits)
+    return line
+
+
+def _group_items_for_source(items: list[BriefItem], today: date) -> list[dict]:
+    """Group source's items by .group, sort groups by item count desc.
+
+    Returns list of dicts: {name, count, due_soon, items}.
+    """
+    by_group: dict[str, list[BriefItem]] = {}
+    for i in items:
+        by_group.setdefault(i.group or "uncategorized", []).append(i)
+    out: list[dict] = []
+    soon = today + timedelta(days=PRIORITY_WINDOW_DAYS)
+    for name, gitems in by_group.items():
+        # Sort items in group: by deadline (soonest first, no-deadline last), then updated desc.
+        def sort_key(x: BriefItem):
+            d = parse_date(x.deadline)
+            return (d or date.max, -(parse_date(x.last_activity) or date.min).toordinal())
+        gitems_sorted = sorted(gitems, key=sort_key)
+        due_soon = sum(1 for x in gitems if (d := parse_date(x.deadline)) and d <= soon)
+        out.append({"name": name, "count": len(gitems), "due_soon": due_soon, "items": gitems_sorted})
+    out.sort(key=lambda g: (-g["due_soon"], -g["count"], g["name"].lower()))
+    return out
+
+
+def _section_blocks_for_source(header: str, src_items: list[BriefItem],
+                                today: date) -> list[dict]:
+    """Build one or more section blocks for a source, splitting if a single
+    section would exceed Slack's 3000-char limit."""
+    groups = _group_items_for_source(src_items, today)
+    n_groups = len(groups)
+
+    summary = f"*{header} — {len(src_items)} item(s) across {n_groups} group(s)*"
+    blocks: list[dict] = []
+    rows: list[str] = [summary, ""]
+
+    def flush() -> None:
+        text = "\n".join(rows).rstrip()
+        if text.strip():
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+
+    for g in groups:
+        # Header line for the group.
+        counts = f"{g['count']}"
+        if g["due_soon"]:
+            counts += f" · *{g['due_soon']} due ≤{PRIORITY_WINDOW_DAYS}d*"
+        group_block = [f"📁 *{g['name']}*  ({counts})"]
+        for i in g["items"][:ITEMS_PER_GROUP]:
+            group_block.append(_format_item_line(i))
+        if g["count"] > ITEMS_PER_GROUP:
+            group_block.append(f"  _+ {g['count'] - ITEMS_PER_GROUP} more_")
+        group_block.append("")  # spacer after group
+
+        proposed = "\n".join(rows + group_block)
+        if len(proposed) > SLACK_SECTION_MAX_CHARS and len(rows) > 2:
+            # Flush current section, start a new continuation section.
+            flush()
+            rows = [f"*{header} (cont.)*", ""] + group_block
+        else:
+            rows.extend(group_block)
+
+    flush()
+    return blocks
+
+
 def build_blocks(items: list[BriefItem], errors: list[str], period: str = "day") -> list[dict]:
     today = date.today()
     soon = today + timedelta(days=PRIORITY_WINDOW_DAYS)
@@ -379,13 +558,15 @@ def build_blocks(items: list[BriefItem], errors: list[str], period: str = "day")
         "type": "header",
         "text": {"type": "plain_text", "text": f"📅 {preset['title']} — {today.strftime('%a %Y-%m-%d')}"},
     })
+    by_source = {s: sum(1 for i in items if i.source == s) for s in {i.source for i in items}}
+    summary_pieces = [f"*{n}* {s}" for s, n in sorted(by_source.items(), key=lambda kv: -kv[1])]
     blocks.append({
         "type": "context",
         "elements": [{
             "type": "mrkdwn",
             "text": (
                 f"_{datetime.now().strftime('%-I:%M %p')} · "
-                f"{len(items)} item(s) across all sources_"
+                f"{len(items)} total · {' · '.join(summary_pieces) if summary_pieces else 'no items'}_"
             ),
         }],
     })
@@ -395,10 +576,11 @@ def build_blocks(items: list[BriefItem], errors: list[str], period: str = "day")
         rows = [f"*⏰ Priorities by deadline (next {PRIORITY_WINDOW_DAYS} days)*", ""]
         for i in priority_items[:10]:
             due = fmt_due(i.deadline) or "-"
-            label = md_link(f"{i.item_id} {i.title}", i.url) if i.item_id else md_link(i.title, i.url)
+            label = md_link(f"{i.item_id} {i.title}".strip(), i.url) if i.item_id else md_link(i.title, i.url)
             prio = f" *[{i.priority}]*" if i.priority else ""
             status = f" · _{i.status}_" if i.status else ""
-            rows.append(f"• `{due}` — {i.icon} {label}{prio}{status}")
+            grp = f" · `{i.group}`" if i.group and i.group != "uncategorized" else ""
+            rows.append(f"• `{due}` — {i.icon} {label}{prio}{grp}{status}")
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(rows)}})
         blocks.append({"type": "divider"})
 
@@ -413,32 +595,7 @@ def build_blocks(items: list[BriefItem], errors: list[str], period: str = "day")
         src_items = [i for i in items if i.source == src_key]
         if not src_items:
             continue
-        rows = [f"*{header} ({len(src_items)})*", ""]
-        for i in src_items[:MAX_PER_SECTION]:
-            label = md_link(f"{i.item_id} {i.title}", i.url) if i.item_id else md_link(i.title, i.url)
-            bits: list[str] = []
-            if i.priority:
-                bits.append(f"*[{i.priority}]*")
-            if i.status:
-                bits.append(f"_{i.status}_")
-            if i.deadline:
-                d = fmt_due(i.deadline)
-                if d:
-                    bits.append(f"due {d}")
-            if i.last_activity:
-                a = fmt_age(i.last_activity)
-                if a:
-                    bits.append(f"upd {a}")
-            for k in ("kind", "repo", "project", "reason"):
-                if v := i.extras.get(k):
-                    bits.append(str(v))
-            row = f"• {label}"
-            if bits:
-                row += " · " + " · ".join(bits)
-            rows.append(row)
-        if len(src_items) > MAX_PER_SECTION:
-            rows.append(f"_… and {len(src_items) - MAX_PER_SECTION} more_")
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(rows)}})
+        blocks.extend(_section_blocks_for_source(header, src_items, today))
 
     blocks.append({"type": "divider"})
 
