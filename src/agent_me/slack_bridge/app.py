@@ -1,0 +1,613 @@
+"""agent-me Slack bridge — Python port (replaces services/slack-bridge/).
+
+Run with:
+    uv run agent-me-bridge
+
+What this owns:
+- Loading .env from ${AGENT_ME_REPO_DIR}/configs/.env
+- AsyncApp + Socket Mode connection to Slack
+- SQLite state DB (threads, messages, pending_approvals — schema in db/)
+- Event handlers: DM messages and channel @mentions
+- Native slash commands: /mcp /version /whoami /help /reauth
+- Text-prefix slash commands (same set, intercepted from message body)
+- Spawning headless `claude` per query with read-only tool restrictions
+- Hybrid streaming UX (placeholder → final via chat.update)
+- 6h periodic MCP-auth health probe + DM notification
+- Graceful shutdown on SIGINT/SIGTERM
+
+Phase 2b (deferred):
+- Real PreToolUse approval hook with Slack button gating
+- Token-by-token chat.update progress (currently single-shot at end)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+import signal
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+import structlog
+from dotenv import load_dotenv
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_bolt.async_app import AsyncApp
+
+# ── Repo dir resolution ──────────────────────────────────────────────────
+
+def resolve_repo_dir() -> Path:
+    env = os.environ.get("AGENT_ME_REPO_DIR")
+    if env:
+        p = Path(env).expanduser()
+        return p if p.is_absolute() else Path.cwd() / p
+    # Walk up from this file: src/agent_me/slack_bridge/app.py → repo root
+    here = Path(__file__).resolve()
+    candidate = here.parents[3]
+    if (candidate / "CLAUDE.md").exists():
+        return candidate
+    return Path("/home/agent/agent-me")
+
+
+REPO_DIR = resolve_repo_dir()
+ENV_PATH = REPO_DIR / "configs" / ".env"
+if ENV_PATH.exists():
+    load_dotenv(ENV_PATH)
+else:
+    load_dotenv()  # fallback to shell exports
+os.environ["AGENT_ME_REPO_DIR"] = str(REPO_DIR)
+
+# ── Logger ───────────────────────────────────────────────────────────────
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").upper()
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=False),
+        structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(
+        getattr(__import__("logging"), LOG_LEVEL, 20),
+    ),
+    cache_logger_on_first_use=True,
+)
+log = structlog.get_logger("slack-bridge")
+
+# ── Required env validation ──────────────────────────────────────────────
+
+REQUIRED_ENV = ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_SIGNING_SECRET")
+missing = [k for k in REQUIRED_ENV if not os.environ.get(k) or "REPLACE-ME" in os.environ[k]]
+if missing:
+    log.error("missing required env", missing=missing, env_path=str(ENV_PATH))
+    sys.exit(1)
+
+log.info("env loaded", repo_dir=str(REPO_DIR), env_path=str(ENV_PATH) if ENV_PATH.exists() else None)
+
+# ── State DB ─────────────────────────────────────────────────────────────
+
+def resolve_state_dir() -> Path:
+    if d := os.environ.get("AGENT_ME_STATE_DIR"):
+        return Path(d).expanduser()
+    if x := os.environ.get("XDG_STATE_HOME"):
+        return Path(x).expanduser() / "agent-me"
+    return Path.home() / ".local" / "state" / "agent-me"
+
+
+STATE_DIR = resolve_state_dir()
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = STATE_DIR / "state.db"
+
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS threads (
+    thread_ts      TEXT PRIMARY KEY,
+    channel        TEXT NOT NULL,
+    user_id        TEXT,
+    auto_approve   INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL,
+    last_active_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_ts   TEXT NOT NULL,
+    role        TEXT NOT NULL CHECK(role IN ('user','assistant','tool')),
+    content     TEXT,
+    slack_ts    TEXT,
+    created_at  INTEGER NOT NULL,
+    FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
+);
+CREATE INDEX IF NOT EXISTS messages_thread_idx ON messages(thread_ts);
+CREATE TABLE IF NOT EXISTS pending_approvals (
+    id                 TEXT PRIMARY KEY,
+    thread_ts          TEXT NOT NULL,
+    action_type        TEXT,
+    payload_json       TEXT,
+    status             TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','expired')),
+    slack_message_ts   TEXT,
+    created_at         INTEGER NOT NULL,
+    resolved_at        INTEGER
+);
+CREATE INDEX IF NOT EXISTS pending_status_idx ON pending_approvals(status);
+"""
+
+db = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
+db.execute("PRAGMA journal_mode=WAL")
+db.execute("PRAGMA foreign_keys=ON")
+db.executescript(DB_SCHEMA)
+log.info("state db ready", db_path=str(DB_PATH))
+
+DB_LOCK = asyncio.Lock()
+
+
+async def upsert_thread(thread_ts: str, channel: str, user_id: str | None) -> None:
+    now = int(time.time() * 1000)
+    async with DB_LOCK:
+        db.execute(
+            """INSERT INTO threads (thread_ts, channel, user_id, auto_approve, created_at, last_active_at)
+               VALUES (?, ?, ?, 0, ?, ?)
+               ON CONFLICT(thread_ts) DO UPDATE SET last_active_at=excluded.last_active_at""",
+            (thread_ts, channel, user_id, now, now),
+        )
+
+
+async def insert_message(thread_ts: str, role: str, content: str, slack_ts: str | None) -> None:
+    now = int(time.time() * 1000)
+    async with DB_LOCK:
+        db.execute(
+            "INSERT INTO messages (thread_ts, role, content, slack_ts, created_at) VALUES (?,?,?,?,?)",
+            (thread_ts, role, content, slack_ts, now),
+        )
+
+
+# ── Phase-2a tool restrictions ──────────────────────────────────────────
+
+PHASE_2A_ALLOWED_TOOLS = " ".join((
+    "Read", "Grep", "Glob", "WebFetch", "WebSearch",
+    "mcp__maas-confluence__*",
+    "mcp__maas-gdrive__*",
+    "mcp__maas-gitlab__*",
+    "mcp__maas-glean__*",
+    "mcp__maas-ippsec__*",
+    "mcp__maas-jama__*",
+    "mcp__maas-jira__*",
+    "mcp__maas-mysql__*",
+    "mcp__maas-nsight-cuda__*",
+    "mcp__maas-nvbugs__*",
+    "mcp__maas-onedrive__*",
+    "mcp__maas-sharepoint__*",
+))
+
+PHASE_2A_DISALLOWED_TOOLS = " ".join((
+    "Bash", "Write", "Edit", "NotebookEdit",
+    "mcp__maas-jira__jira_create_issue",
+    "mcp__maas-jira__jira_clone_issue",
+    "mcp__maas-jira__jira_update_issue",
+    "mcp__maas-jira__jira_transition_issue",
+    "mcp__maas-nvbugs__nvbugs_update_bug_v2",
+    "mcp__maas-nvbugs__nvbugs_update_bug",
+    "mcp__maas-ippsec__register_repo",
+    "mcp__maas-mysql__execute_sql",
+    "mcp__maas-gitlab__gitlab_coderabbit_ai_prompt",
+    "mcp__maas-gitlab__gitlab_greptile_ai_suggestions",
+))
+
+CLAUDE_TIMEOUT_S = float(os.environ.get("CLAUDE_TIMEOUT_S", 5 * 60))
+MAX_SLACK_TEXT = 39000
+MAX_LOG_TEXT = 4000
+
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-7")
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def clip(s: str | None, n: int = MAX_LOG_TEXT) -> str | None:
+    if not s:
+        return s
+    return s if len(s) <= n else f"{s[:n]}…[+{len(s) - n} chars]"
+
+
+def truncate_for_slack(text: str | None) -> str:
+    if not text:
+        return "_(no output)_"
+    if len(text) <= MAX_SLACK_TEXT:
+        return text
+    return f"{text[:MAX_SLACK_TEXT - 120]}\n\n_…[truncated; {len(text) - MAX_SLACK_TEXT} chars cut]_"
+
+
+def strip_bot_mention(text: str | None) -> str:
+    return re.sub(r"^\s*<@[A-Z0-9]+>\s*", "", text or "").strip()
+
+
+async def run_command(cmd: list[str], cwd: str, timeout: float = 30.0) -> str:
+    """Run an arbitrary command, capture stdout, raise on non-zero exit."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"{cmd[0]} timed out after {timeout}s")
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"{cmd[0]} exited {proc.returncode}: {stderr.decode(errors='replace')[:500]}"
+        )
+    return stdout.decode(errors="replace")
+
+
+async def spawn_claude(prompt: str) -> str:
+    """Spawn `claude -p` with read-only tool restrictions; return stdout."""
+    args = [
+        "claude", "-p", prompt,
+        "--model", MODEL,
+        "--allowedTools", PHASE_2A_ALLOWED_TOOLS,
+        "--disallowedTools", PHASE_2A_DISALLOWED_TOOLS,
+    ]
+    log.info("claude_spawn", cwd=str(REPO_DIR), model=MODEL, prompt_len=len(prompt))
+    proc = await asyncio.create_subprocess_exec(
+        *args, cwd=str(REPO_DIR),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"claude exited {proc.returncode}: {stderr.decode(errors='replace').strip()[:500]}"
+        )
+    return stdout.decode(errors="replace").strip()
+
+
+# ── Bolt app ────────────────────────────────────────────────────────────
+
+app = AsyncApp(
+    token=os.environ["SLACK_BOT_TOKEN"],
+    signing_secret=os.environ["SLACK_SIGNING_SECRET"],
+)
+
+
+# ── Slash command bodies (shared by native slash + text intercept) ──────
+
+HELP_TEXT = "\n".join((
+    "*agent-me bot — built-in commands*",
+    "",
+    "• `/mcp` — list MCP server health & auth status",
+    "• `/reauth` — trigger MCP re-auth helper on the bridge host (auto-opens auth URLs)",
+    "• `/whoami` — show your Slack user id",
+    "• `/version` — bridge + claude versions and pinned model",
+    "• `/help` — this message",
+    "",
+    "_Anything else is sent to Claude headlessly with read-only tools enabled (Phase 2a)._",
+    "_The bridge auto-checks MCP auth health every 6h and DMs you when re-auth is needed._",
+))
+
+
+async def cmd_mcp() -> str:
+    out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+    return (
+        "`claude mcp list`:\n```\n" + out.strip() + "\n```\n"
+        "_Run `/reauth` (or `uv run agent-me-reauth` on the host) for any servers that need authentication._"
+    )
+
+
+async def cmd_version() -> str:
+    ver = (await run_command(["claude", "--version"], cwd=str(REPO_DIR))).strip()
+    return (
+        f"*Bridge:* python · *Phase:* 2a · *Model:* `{MODEL}`\n"
+        f"*Claude CLI:* `{ver}`\n"
+        f"*Repo:* `{REPO_DIR}`"
+    )
+
+
+async def cmd_whoami(user_id: str | None) -> str:
+    return f"Your Slack user id: `{user_id or '(unknown — DM the bot once first)'}`"
+
+
+async def cmd_reauth() -> str:
+    """Trigger the reauth helper as a detached background process.
+
+    The helper will open auth URLs in the bridge host's default browser.
+    User signs in to NVIDIA SSO in each tab on the host.
+    """
+    # Spawn detached so we don't block. stdout/stderr go to /dev/null;
+    # the user sees results by checking `claude mcp list` after signing in.
+    await asyncio.create_subprocess_exec(
+        "uv", "run", "agent-me-reauth",
+        cwd=str(REPO_DIR),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return (
+        "🚀 *Re-auth helper started* on the bridge host.\n\n"
+        "Browser tabs will open shortly — sign in to NVIDIA SSO in each.\n"
+        "When done, run `/mcp` here to verify everything is `✓ Connected`."
+    )
+
+
+async def handle_slash(cmd: str, user_id: str | None) -> str:
+    if cmd == "/mcp":
+        return await cmd_mcp()
+    if cmd == "/version":
+        return await cmd_version()
+    if cmd == "/whoami":
+        return await cmd_whoami(user_id)
+    if cmd == "/reauth":
+        return await cmd_reauth()
+    if cmd == "/help":
+        return HELP_TEXT
+    return f"Unknown command `{cmd}`. Try `/help`."
+
+
+# ── Event handlers ──────────────────────────────────────────────────────
+
+async def post_thinking(client, channel: str, thread_ts: str) -> str:
+    res = await client.chat_postMessage(channel=channel, thread_ts=thread_ts, text="🔄 thinking…")
+    return res["ts"]
+
+
+async def update_progress(client, channel: str, ts: str, text: str) -> None:
+    await client.chat_update(channel=channel, ts=ts, text=truncate_for_slack(text))
+
+
+# Track auto-discovered operator user_id when SLACK_ALLOWED_USER_ID is unset.
+_operator_user_id: str | None = os.environ.get("SLACK_ALLOWED_USER_ID") or None
+
+
+async def handle_user_query(*, client, channel: str, thread_ts: str,
+                            user_id: str | None, text: str | None,
+                            event_ts: str | None) -> None:
+    cleaned = strip_bot_mention(text)
+    if not cleaned:
+        log.debug("empty text after mention-strip", thread_ts=thread_ts)
+        return
+
+    log.info("message_received", thread_ts=thread_ts, channel=channel, user=user_id,
+             prompt=clip(cleaned))
+
+    # Slash-prefix intercept: route /mcp etc. without spawning claude.
+    m = re.match(r"^(/[a-z][a-z0-9_-]*)\b\s*(.*)$", cleaned, re.IGNORECASE)
+    if m:
+        cmd = m.group(1)
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        try:
+            body = await handle_slash(cmd, user_id)
+            await update_progress(client, channel, placeholder_ts, body)
+            log.info("slash_handled", cmd=cmd, thread_ts=thread_ts)
+        except Exception as exc:
+            log.error("slash_failed", cmd=cmd, err=str(exc))
+            await update_progress(client, channel, placeholder_ts,
+                                  f"⚠️ `{cmd}` failed: `{exc}`")
+        return
+
+    await upsert_thread(thread_ts, channel, user_id)
+    await insert_message(thread_ts, "user", cleaned, event_ts)
+
+    try:
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+    except Exception as exc:
+        log.error("post_thinking_failed", err=str(exc), thread_ts=thread_ts)
+        return
+
+    start = time.time()
+    try:
+        answer = await spawn_claude(cleaned)
+        final = answer if answer.strip() else "_(no output)_"
+        await update_progress(client, channel, placeholder_ts, final)
+        await insert_message(thread_ts, "assistant", final, placeholder_ts)
+        log.info("query_handled", thread_ts=thread_ts, ms=int((time.time() - start) * 1000),
+                 model=MODEL, prompt=clip(cleaned), response=clip(final))
+    except Exception as exc:
+        log.error("query_failed", thread_ts=thread_ts, err=str(exc),
+                  ms=int((time.time() - start) * 1000), prompt=clip(cleaned))
+        try:
+            await update_progress(client, channel, placeholder_ts,
+                                  f"⚠️ Error: `{str(exc)[:600]}`")
+        except Exception as exc2:
+            log.error("error_update_failed", err=str(exc2))
+
+
+@app.event("message")
+async def on_message(event, client):
+    global _operator_user_id
+    if event.get("subtype"):
+        return
+    if event.get("channel_type") != "im":
+        return
+    if event.get("bot_id"):
+        return
+
+    user = event.get("user")
+    allowed = os.environ.get("SLACK_ALLOWED_USER_ID")
+    if allowed and user != allowed:
+        log.warning("message_rejected_user", from_=user)
+        return
+    if not allowed and user and not _operator_user_id:
+        _operator_user_id = user
+        log.info("auto_discovered_operator", user=user)
+
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    await handle_user_query(
+        client=client, channel=event["channel"], thread_ts=thread_ts,
+        user_id=user, text=event.get("text"), event_ts=event.get("ts"),
+    )
+
+
+@app.event("app_mention")
+async def on_app_mention(event, client):
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    await handle_user_query(
+        client=client, channel=event["channel"], thread_ts=thread_ts,
+        user_id=event.get("user"), text=event.get("text"), event_ts=event.get("ts"),
+    )
+
+
+# ── Native slash commands ───────────────────────────────────────────────
+
+async def _native_slash(ack, respond, command, cmd_name: str):
+    await ack()
+    log.info("native_slash", cmd=cmd_name, user=command.get("user_id"),
+             channel=command.get("channel_id"))
+    try:
+        body = await handle_slash(cmd_name, command.get("user_id"))
+        await respond(response_type="in_channel", text=body)
+    except Exception as exc:
+        log.error("native_slash_failed", cmd=cmd_name, err=str(exc))
+        await respond(response_type="ephemeral", text=f"⚠️ `{cmd_name}` failed: `{exc}`")
+
+
+@app.command("/mcp")
+async def slash_mcp(ack, respond, command):
+    await _native_slash(ack, respond, command, "/mcp")
+
+
+@app.command("/version")
+async def slash_version(ack, respond, command):
+    await _native_slash(ack, respond, command, "/version")
+
+
+@app.command("/whoami")
+async def slash_whoami(ack, respond, command):
+    await _native_slash(ack, respond, command, "/whoami")
+
+
+@app.command("/help")
+async def slash_help(ack, respond, command):
+    await _native_slash(ack, respond, command, "/help")
+
+
+@app.command("/reauth")
+async def slash_reauth(ack, respond, command):
+    await _native_slash(ack, respond, command, "/reauth")
+
+
+# ── Periodic MCP-auth health check ──────────────────────────────────────
+
+MCP_CHECK_INTERVAL_S = float(os.environ.get("MCP_CHECK_INTERVAL_S", 6 * 60 * 60))
+MIN_NOTIFY_GAP_S = float(os.environ.get("MIN_NOTIFY_GAP_S", 4 * 60 * 60))
+
+_dm_channel_id: str | None = None
+_last_notify_ts: float = 0.0
+_last_need_auth_set: str = ""
+
+
+async def ensure_dm_channel(client) -> str | None:
+    global _dm_channel_id
+    if _dm_channel_id:
+        return _dm_channel_id
+    uid = os.environ.get("SLACK_ALLOWED_USER_ID") or _operator_user_id
+    if not uid:
+        return None
+    try:
+        res = await client.conversations_open(users=uid)
+        _dm_channel_id = res["channel"]["id"]
+        log.info("dm_channel_opened", dm_channel_id=_dm_channel_id, uid=uid)
+    except Exception as exc:
+        log.warning("dm_channel_failed", err=str(exc))
+    return _dm_channel_id
+
+
+async def check_mcp_auth(client) -> None:
+    global _last_notify_ts, _last_need_auth_set
+    try:
+        out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+    except Exception as exc:
+        log.warning("mcp_list_failed", err=str(exc))
+        return
+    need_auth = sorted(
+        line.split(":")[0].strip()
+        for line in out.splitlines()
+        if "Needs authentication" in line
+    )
+    log.info("mcp_health_check", need_auth_count=len(need_auth), servers=need_auth)
+    if not need_auth:
+        _last_need_auth_set = ""
+        return
+    set_key = ",".join(need_auth)
+    now = time.time()
+    if set_key == _last_need_auth_set and now - _last_notify_ts < MIN_NOTIFY_GAP_S:
+        log.debug("notify_skipped_recent")
+        return
+    dm = await ensure_dm_channel(client)
+    if not dm:
+        log.warning("no_dm_channel — set SLACK_ALLOWED_USER_ID or DM the bot once")
+        return
+    text = "\n".join((
+        f"🔔 *{len(need_auth)} MCP server(s) need re-auth:* "
+        + ", ".join(f"`{s}`" for s in need_auth),
+        "",
+        "Run `/reauth` here, or on the bridge host:",
+        "```",
+        "uv run agent-me-reauth",
+        "```",
+        "Bridge picks up new tokens on the next call — no restart needed.",
+    ))
+    try:
+        await client.chat_postMessage(channel=dm, text=text)
+        _last_notify_ts = now
+        _last_need_auth_set = set_key
+        log.info("mcp_auth_notified", count=len(need_auth))
+    except Exception as exc:
+        log.error("mcp_auth_notify_failed", err=str(exc))
+
+
+# ── Boot ────────────────────────────────────────────────────────────────
+
+async def main_async() -> int:
+    handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
+    log.info("bridge_starting", phase="2a", model=MODEL,
+             mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
+
+    # Periodic MCP health probe.
+    async def health_loop():
+        while True:
+            try:
+                await check_mcp_auth(app.client)
+            except Exception as exc:
+                log.warning("health_loop_iter_failed", err=str(exc))
+            await asyncio.sleep(MCP_CHECK_INTERVAL_S)
+
+    health_task = asyncio.create_task(health_loop())
+
+    # Graceful shutdown.
+    stop = asyncio.Event()
+
+    def _sig(*_):
+        log.info("shutdown_signal_received")
+        stop.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _sig)
+        except NotImplementedError:
+            pass
+
+    await handler.start_async()
+    log.info("bridge_running")
+    await stop.wait()
+
+    log.info("bridge_stopping")
+    health_task.cancel()
+    await handler.close_async()
+    db.close()
+    return 0
+
+
+def main() -> int:
+    try:
+        return asyncio.run(main_async())
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

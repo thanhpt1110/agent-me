@@ -4,7 +4,7 @@ _Last updated: 2026-05-10 by Claude (Opus 4.7)_
 
 ## Phase
 
-**Phase 2 — Slack interface decisions locked. Ready to create app.** All four design questions resolved. Next concrete actions: create personal Slack workspace + Slack app, then build the bridge service.
+**Phase 2a complete — bridge live, fully Python+uv.** Slack bridge ported from Node to Python (`uv run agent-me-bridge`); Node code deleted. MCP re-auth helper (`uv run agent-me-reauth`) auto-opens browser tabs. Slash commands `/mcp /version /whoami /help /reauth` work both as native Slack commands and as in-message text. Periodic 6h MCP-auth health probe DMs the operator when re-auth is needed. Next: Phase 3 (Brev deploy) or Phase 2b (PreToolUse approval gate).
 
 ## Decisions locked
 
@@ -29,28 +29,22 @@ _Last updated: 2026-05-10 by Claude (Opus 4.7)_
 - [x] `gh` CLI installed + authed as `thanhpt1110`
 - [x] **GitHub repo published:** public template at https://github.com/thanhpt1110/agent-me
 - [x] `design/slack-app-setup.md` — end-to-end Slack app + Socket Mode bridge guide
-- [x] Slack design questions resolved + recorded (`discussions/2026-05-10-slack-decisions.md`)
+- [x] Slack design questions resolved (`discussions/2026-05-10-slack-decisions.md`)
+- [x] Personal Slack workspace + custom app + bot/app/signing tokens in `configs/.env`
+- [x] **Phase 2a bridge live** — DM + mention; slash commands `/mcp /version /whoami /help /reauth` (native + text-intercept); 6h MCP health probe + DM notify
+- [x] **Python+uv migration** — Node bridge deleted; bridge runs via `uv run agent-me-bridge`; pyproject.toml + uv.lock
+- [x] `src/agent_me/scripts/reauth_mcps.py` — auto-open MCP re-auth helper (pty + URL extraction + client_id dedupe + tail-trim heuristic)
+- [x] `design/mcp-authentication.md` — full re-auth playbook
+- [x] `discussions/2026-05-10-pa-vs-custom-comparison.md` — defense of build-vs-PA choice
+- [x] STATE.md Phase 4 dashboard decisions locked (Brev port-expose, build after bridge stable)
 - [x] Terminal.app default profile switched to Basic (light)
-- [x] **Phase 2a bridge live** — DM + mention work; slash commands `/mcp` `/version` `/help` work via text-intercept and (after registration) as native Slack slash commands
-- [x] `design/mcp-authentication.md` — re-auth playbook (MAAS tokens expire daily; auth happens on bridge host, not via Slack)
 
-## Next up (in order)
+## Next up (pick one)
 
-1. **User: create personal Slack workspace** — https://slack.com/get-started, free.
-2. **User: create Slack app at api.slack.com/apps** — follow `design/slack-app-setup.md` §2-§6:
-   - From scratch, name `agent-me`, install into personal workspace
-   - OAuth scopes per §3, Socket Mode enabled per §4, events subscribed per §5
-   - Capture: Bot token (`xoxb-...`), App token (`xapp-...`), Signing secret
-3. **User: drop tokens into `~/agent-me/configs/.env`** (gitignored). Template at `configs/.env.example` (TODO: create this).
-4. **Build bridge service** at `~/agent-me/services/slack-bridge/` per §8:
-   - Node + `@slack/bolt` Socket Mode
-   - PreToolUse hook integration for review-by-default approval flow
-   - SQLite state store at `${AGENT_ME_STATE_DIR:-...}/state.db`
-   - Hybrid streaming UX
-5. **Provision Brev instance** — region, size, install claude CLI/node/git/tmux
-6. **Deploy bridge to Brev** + start always-on session
-7. **Port `~/daily-brief/` into agent-me** as first sub-agent (cron-driven)
-8. **Build Orchestrator** — slash command `/route` that dispatches to sub-agents
+1. **Phase 2b — PreToolUse approval gate.** Build the review-before-execute flow with Slack buttons. See `design/approval-hook-design.md` for the file-system semaphore approach.
+2. **Phase 3 — Brev deployment.** Provision instance, port-expose, install uv + claude CLI, systemd unit for `agent-me-bridge`, MCP auth via SSH port-forward (see `design/mcp-authentication.md` Pattern A).
+3. **Port `~/daily-brief/`** into agent-me as the first cron-driven sub-agent.
+4. **Phase 4 — Web dashboard** at `src/agent_me/dashboard/` (Express+SSE equivalent in Python, e.g. starlette+SSE).
 
 ## Open research / unresolved
 

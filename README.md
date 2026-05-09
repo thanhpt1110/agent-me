@@ -6,33 +6,28 @@ Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous 
 
 ## Quickstart for forkers
 
-Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20+ (for the legacy bridge until the Python port lands), `claude` CLI, `gh` CLI.
+Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), `claude` CLI, `gh` CLI.
 
 1. **Use this template** on GitHub → create your own copy.
-2. Clone the repo:
+2. Clone & install:
    ```bash
    git clone git@github.com:<you>/agent-me.git
    cd agent-me
-   ```
-3. Install Python deps with uv (creates `.venv` automatically):
-   ```bash
    uv sync
    ```
-4. **Slack app**: follow `design/slack-app-setup.md` to create your own app (personal workspace, ~10 min). Drop tokens into `configs/.env` (template at `configs/.env.example`).
-5. **Authenticate MCPs**: when `claude mcp list` shows servers as `! Needs authentication`, run:
+3. **Slack app**: follow `design/slack-app-setup.md` to create your own app (personal workspace, ~10 min). Drop tokens into `configs/.env` (template at `configs/.env.example`).
+4. **Authenticate MCPs**:
    ```bash
    uv run agent-me-reauth
    ```
-   The helper auto-opens every stale MCP's auth URL in your browser; sign in to NVIDIA SSO in each tab. Tokens persist for ~24h. See `design/mcp-authentication.md` for the full playbook.
-6. **Run the bridge** (currently the Node version under `services/slack-bridge/` — Python port is in progress):
+   Auto-opens every stale MCP's auth URL in your browser; sign in to NVIDIA SSO in each tab. Tokens persist for ~24h. See `design/mcp-authentication.md`.
+5. **Run the bridge**:
    ```bash
-   cd services/slack-bridge
-   pnpm install
-   pnpm dev
+   uv run agent-me-bridge
    ```
-   From Slack, DM the bot or use `/help`, `/mcp`, `/version`.
-7. **(Optional) Native slash commands**: register `/mcp`, `/version`, `/help` in the Slack app config — see `design/slack-app-setup.md` §12b.
-8. **(Optional) Deploy**: Phase 3 moves the bridge to a 24/7 host (Brev). See `STATE.md` for current phase.
+   From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`.
+6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
+7. **(Optional) Deploy**: Phase 3 moves the bridge to a 24/7 host (Brev). See `STATE.md` for current phase.
 
 ## Architecture overview
 

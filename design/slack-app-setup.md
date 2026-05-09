@@ -10,6 +10,15 @@ notes are called out explicitly so external forkers can ignore them.
 > inherits the repo's `CLAUDE.md` context, and streams the answer back into the
 > Slack thread.
 
+> **Implementation note (2026-05-10):** this guide was originally drafted when
+> the bridge was Node + `@slack/bolt`. The current bridge is Python +
+> `slack-bolt-python` at `src/agent_me/slack_bridge/app.py`, run with
+> `uv run agent-me-bridge`. The Slack-side setup in §1–§7 is implementation-
+> agnostic and still applies verbatim. The architecture sketch in §8 and the
+> code snippets in §10/§11 reference Node and are kept here as historical
+> context; if you are forking, read the actual Python source for the
+> authoritative shape.
+
 ---
 
 ## Table of Contents
