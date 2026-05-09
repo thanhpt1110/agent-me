@@ -102,14 +102,29 @@ def detect_stale() -> list[str]:
 
 def main() -> int:
     # Optional --limit N to dry-run with just the first N stale servers.
+    # --debug-bytes <path> to also dump raw pty bytes for offline analysis.
     limit: int | None = None
-    for i, arg in enumerate(sys.argv[1:], start=1):
-        if arg == "--limit" and i < len(sys.argv) - 1:
+    debug_bytes_path: str | None = None
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--limit" and i + 1 < len(args):
             try:
-                limit = int(sys.argv[i + 1])
+                limit = int(args[i + 1])
             except ValueError:
-                print(f"[helper] invalid --limit value: {sys.argv[i + 1]}")
+                print(f"[helper] invalid --limit value: {args[i + 1]}")
                 return 2
+            i += 2
+        elif arg == "--debug-bytes" and i + 1 < len(args):
+            debug_bytes_path = args[i + 1]
+            i += 2
+        elif arg == "--debug-bytes":
+            debug_bytes_path = "/tmp/agent-me-reauth-pty.bin"
+            i += 1
+        else:
+            print(f"[helper] unknown arg: {arg}")
+            return 2
 
     stale = detect_stale()
     if limit is not None:
@@ -195,6 +210,9 @@ def main() -> int:
     opened: set[bytes] = set()
     buffer = b""
     shutting_down = False
+    debug_fp = open(debug_bytes_path, "wb") if debug_bytes_path else None
+    if debug_fp:
+        print(f"[helper] dumping raw pty bytes to {debug_bytes_path}")
 
     def shutdown(signum: int, _frame) -> None:  # type: ignore[no-untyped-def]
         nonlocal shutting_down
@@ -229,6 +247,9 @@ def main() -> int:
                 break
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
+            if debug_fp:
+                debug_fp.write(data)
+                debug_fp.flush()
             buffer += data
             cleaned = clean_pty(buffer)
             for m in URL_RE.finditer(cleaned):
@@ -244,10 +265,9 @@ def main() -> int:
                     continue
                 # Sanity-check: every NVIDIA OAuth authorize URL must carry
                 # at minimum response_type, client_id, code_challenge, and
-                # redirect_uri. If the captured URL is missing any of those,
-                # something corrupted the extraction — skip rather than open
-                # a broken URL that produces "redirect_uri: Input should be
-                # a valid URL" errors at the IDP.
+                # redirect_uri, AND have "/authorize" in its path (not just
+                # "/azure/?..."), AND end at a legit boundary (not run past
+                # into "Once they complete..." text).
                 required = ("response_type=", "client_id=", "code_challenge=", "redirect_uri=")
                 missing = [p for p in required if p not in url_s]
                 if missing:
@@ -256,6 +276,40 @@ def main() -> int:
                         f" missing {', '.join(missing)}):\n{url_s}\n"
                     )
                     continue
+                if "/authorize" not in url_s.split("?", 1)[0]:
+                    print(
+                        f"\n[helper] !! skipping URL with no /authorize in path"
+                        f" ({len(url_s)} chars):\n{url_s}\n"
+                    )
+                    continue
+                # Trim suspicious tail: claude often emits the auth URL
+                # immediately followed by sentences like "Once they complete
+                # the flow..." with cursor-positioning escapes between that
+                # CSI strip + line-stitch glues directly onto the URL. We
+                # detect this by looking for a lowercase->uppercase camel
+                # boundary near the end where the chars after have no URL
+                # syntax (no '&', '=', '?'). Legitimate base64 state values
+                # have URL syntax around them; sentence prefixes don't.
+                for m_camel in re.finditer(rb"[a-z]([A-Z])", url_b):
+                    cut = m_camel.start() + 1
+                    if cut < 200:
+                        continue  # too early — probably inside a real value
+                    tail = url_b[cut : cut + 40]
+                    if not re.search(rb"[&?=]", tail):
+                        # No URL syntax follows — looks like English-word glue.
+                        trimmed_tail = url_b[cut:]
+                        url_b = url_b[:cut]
+                        url_s = url_s[:cut]
+                        try:
+                            display = trimmed_tail.decode("utf-8", errors="replace")
+                        except Exception:
+                            display = repr(trimmed_tail)
+                        print(
+                            f"\n[helper] trimmed suspect tail "
+                            f"'{display[:40]}{'...' if len(display) > 40 else ''}' "
+                            f"(URL now {len(url_s)} chars)"
+                        )
+                        break
                 opened.add(url_b)
                 print(
                     f"\n[helper] >>> auto-opening URL #{len(opened)}"
@@ -279,6 +333,8 @@ def main() -> int:
         except ChildProcessError:
             break
 
+    if debug_fp:
+        debug_fp.close()
     return 0
 
 
