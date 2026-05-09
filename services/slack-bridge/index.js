@@ -182,49 +182,9 @@ const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000)
 const MAX_SLACK_TEXT = 39000;     // Slack hard limit is 40k; leave headroom for footers.
 const MAX_LOG_TEXT = 4000;        // Cap how much message text we drop into structured logs.
 
-// ---------------------------------------------------------------------------
-// 5b. Daily auto-update of "best Claude model"
-// ---------------------------------------------------------------------------
-//
-// On startup + every 24h, fetch /v1/models from Anthropic if ANTHROPIC_API_KEY
-// is set, pick the newest Opus by created_at, cache it. spawnClaude() reads
-// `currentModel` and passes it via --model. If the API call fails or no key
-// is set, we fall back to FALLBACK_MODEL.
-
-const FALLBACK_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-7';
-let currentModel = FALLBACK_MODEL;
-
-async function fetchBestModel() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    });
-    if (!res.ok) {
-      log.warn({ status: res.status }, 'Anthropic /v1/models returned non-OK');
-      return null;
-    }
-    const body = await res.json();
-    const opus = (body.data ?? [])
-      .filter((m) => m.id?.includes('opus') && m.type === 'model')
-      .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
-    return opus[0]?.id ?? null;
-  } catch (err) {
-    log.warn({ err: err.message }, 'failed to fetch latest model');
-    return null;
-  }
-}
-
-async function refreshModel() {
-  const latest = await fetchBestModel();
-  if (latest && latest !== currentModel) {
-    log.info({ event: 'model_updated', from: currentModel, to: latest }, 'switched to newer Opus');
-    currentModel = latest;
-  } else if (!latest) {
-    log.debug({ currentModel }, 'model refresh skipped (no API key or fetch failed)');
-  }
-}
+// Pinned model. User updates manually when a new Opus ships; bridge does not
+// hit the Anthropic API on its own. Override via CLAUDE_MODEL env var.
+const MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-7';
 
 // ---------------------------------------------------------------------------
 // 6. Bolt App
@@ -259,12 +219,12 @@ function spawnClaude({ prompt, cwd }) {
   return new Promise((resolvePromise, rejectPromise) => {
     const args = [
       '-p', prompt,
-      '--model', currentModel,
+      '--model', MODEL,
       '--allowedTools', PHASE_2A_ALLOWED_TOOLS.join(' '),
       '--disallowedTools', PHASE_2A_DISALLOWED_TOOLS.join(' '),
     ];
     log.info(
-      { event: 'claude_spawn', cwd, model: currentModel, promptLen: prompt.length },
+      { event: 'claude_spawn', cwd, model: MODEL, promptLen: prompt.length },
       'spawning claude',
     );
 
@@ -337,6 +297,66 @@ function clip(s, n = MAX_LOG_TEXT) {
   return s.length <= n ? s : `${s.slice(0, n)}…[+${s.length - n} chars]`;
 }
 
+// Run an arbitrary command, capture stdout, reject on non-zero exit.
+function runCommand(cmd, args, { cwd, timeoutMs = 30_000 } = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      rejectPromise(new Error(`${cmd} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise(stdout);
+      else rejectPromise(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 500)}`));
+    });
+    child.on('error', (err) => { clearTimeout(timer); rejectPromise(err); });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 7b. Slash-style commands (intercepted before Claude is spawned)
+// ---------------------------------------------------------------------------
+
+const HELP_TEXT = [
+  '*agent-me bot — built-in commands*',
+  '',
+  '• `/mcp` — list MCP server health & auth status (runs `claude mcp list`)',
+  '• `/version` — show bridge + claude versions and pinned model',
+  '• `/help` — this message',
+  '',
+  '_Anything else is sent to Claude headlessly with read-only tools enabled (Phase 2a)._',
+].join('\n');
+
+async function handleSlashCommand({ client, channel, threadTs, cmd /* , args */ }) {
+  const placeholderTs = await postThinking(client, channel, threadTs);
+  try {
+    let body;
+    if (cmd === '/mcp') {
+      const out = await runCommand('claude', ['mcp', 'list'], { cwd: repoDir });
+      body = '`claude mcp list` output:\n```\n' + out.trim() + '\n```\n' +
+             '_Servers showing `! Needs authentication` won\'t be callable until you re-auth from a regular `claude` session._';
+    } else if (cmd === '/version') {
+      const claudeVer = (await runCommand('claude', ['--version'], { cwd: repoDir })).trim();
+      body = `*Bridge:* phase 2a · *Model:* \`${MODEL}\`\n*Claude CLI:* \`${claudeVer}\`\n*Repo:* \`${repoDir}\``;
+    } else if (cmd === '/help') {
+      body = HELP_TEXT;
+    } else {
+      body = `Unknown command \`${cmd}\`. Try \`/help\`.`;
+    }
+    await updateProgress(client, channel, placeholderTs, body);
+    log.info({ event: 'slash_handled', cmd, threadTs }, 'slash ok');
+  } catch (err) {
+    log.error({ event: 'slash_failed', cmd, err: err.message }, 'slash failed');
+    await updateProgress(client, channel, placeholderTs, `⚠️ \`${cmd}\` failed: \`${err.message}\``)
+      .catch((e) => log.error({ err: e.message }, 'failed to post error'));
+  }
+}
+
 async function handleUserQuery({ client, channel, threadTs, userId, text, eventTs }) {
   if (!text || text.trim().length === 0) {
     log.debug({ threadTs }, 'empty text; skipping');
@@ -347,6 +367,15 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
     { event: 'message_received', threadTs, channel, user: userId, prompt: clip(text) },
     'received',
   );
+
+  // Slash-command intercept. Match a leading "/<word>" so things like
+  // "/mcp", "/help foo" route to handleSlashCommand and never reach Claude.
+  const slashMatch = text.trim().match(/^(\/[a-z][a-z0-9_-]*)\b\s*(.*)$/i);
+  if (slashMatch) {
+    const [, cmd, args] = slashMatch;
+    await handleSlashCommand({ client, channel, threadTs, cmd, args });
+    return;
+  }
 
   const now = Date.now();
   upsertThread.run(threadTs, channel, userId ?? null, now, now);
@@ -371,7 +400,7 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
         event: 'query_handled',
         threadTs,
         ms: Date.now() - start,
-        model: currentModel,
+        model: MODEL,
         prompt: clip(text),
         response: clip(final),
       },
@@ -458,17 +487,9 @@ app.action('disable_auto_approve', async ({ ack, body }) => {
 // 10. Boot + graceful shutdown
 // ---------------------------------------------------------------------------
 
-// Initial model refresh (non-blocking) + daily refresh.
-refreshModel().catch((err) => log.warn({ err: err.message }, 'initial model refresh failed'));
-const MODEL_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const modelRefreshTimer = setInterval(() => {
-  refreshModel().catch((err) => log.warn({ err: err.message }, 'periodic model refresh failed'));
-}, MODEL_REFRESH_INTERVAL_MS);
-modelRefreshTimer.unref(); // do not keep process alive on its own
-
 await app.start();
 log.info(
-  { phase: '2a', initialModel: currentModel, hasApiKey: Boolean(process.env.ANTHROPIC_API_KEY) },
+  { phase: '2a', model: MODEL },
   'agent-me slack bridge: running on Socket Mode (read-only mode)',
 );
 
