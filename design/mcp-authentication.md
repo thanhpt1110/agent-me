@@ -49,29 +49,47 @@ In practice: **once a day** is the rough cadence.
 
 ## How to re-auth (Mac dev — today)
 
-1. Open a fresh terminal (any directory is fine).
-2. Run:
-   ```
-   claude
-   ```
-   The interactive REPL opens.
-3. Ask it something that touches a maas-* server, e.g.:
+### Fast path: helper script
+
+```
+~/agent-me/scripts/reauth-mcps.sh
+```
+
+What it does:
+
+1. Runs `claude mcp list` and parses out every server flagged
+   `! Needs authentication`.
+2. Builds a Claude prompt that calls a read-only tool from each stale
+   server (forces each one's OAuth flow).
+3. Copies the prompt to your macOS clipboard (`pbcopy`).
+4. After a 3-second countdown, `exec`s an interactive `claude` REPL.
+
+In the REPL: **Cmd-V → Enter**. Claude prints one auth URL per stale
+server. **Cmd-click each URL** to complete NVIDIA SSO in the browser.
+The OAuth callback handler running inside the REPL captures each redirect
+and stores the new tokens in `~/.claude.json`. Type `/exit` when all
+servers show ✓ in the next `/mcp` check.
+
+### Manual path
+
+If the script can't run for any reason:
+
+1. `claude` (interactive) in any directory.
+2. Type or paste:
    ```
    > use mcp__maas-jira__jira_search to find 1 issue assigned to me
    ```
-4. If tokens are stale, Claude will print an auth URL like
-   `https://nvaihub.nvidia.com/oauth/...` and pause.
-5. **Cmd-click the URL** (or copy → paste in browser). Sign in with your
-   NVIDIA SSO. The callback page will show "Authentication successful".
-6. Return to the terminal. Claude will retry automatically and answer the
-   question.
-7. `/exit` to leave the REPL — tokens are persisted in `~/.claude.json`.
+3. Cmd-click the printed `https://nvaihub.nvidia.com/oauth/...` URL.
+4. Complete NVIDIA SSO. Return to terminal.
+5. The first MAAS-MCP you re-auth refreshes the **shared NVIDIA SSO
+   browser session**, so subsequent OAuth flows for other maas-* servers
+   are typically a single redirect each (no password re-prompt). To force
+   each server to actually run its flow, ask Claude to try one tool from
+   each — that's exactly what the helper script does for you.
+6. `/exit`.
 
-> The first MAAS-MCP you authenticate refreshes the **shared NVIDIA SSO
-> session**, which auto-extends the token for every other `maas-*` server.
-> You don't have to re-auth each one individually.
-
-After step 7, run `/mcp` from Slack to confirm everything is `✓ Connected`.
+After either path, run `/mcp` from Slack — every server should be
+`✓ Connected`.
 
 ## How to re-auth (Brev — Phase 3+)
 

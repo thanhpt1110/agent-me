@@ -602,15 +602,14 @@ async function checkMcpAuth(client) {
     const text = [
       `🔔 *${needAuth.length} MCP server(s) need re-auth:* ${needAuth.map((s) => '`' + s + '`').join(', ')}`,
       '',
-      'On the bridge host (your Mac), run:',
+      'Fastest fix — run on the bridge host (your Mac):',
       '```',
-      'claude',
-      '> use mcp__maas-jira__jira_search to find any issue assigned to me',
+      '~/agent-me/scripts/reauth-mcps.sh',
       '```',
-      'Click the SSO link Claude prints; one auth refreshes all maas-* servers.',
+      'Auto-copies the right prompt, opens `claude` REPL. Cmd-V → Enter → Cmd-click each printed auth URL to complete NVIDIA SSO.',
       'Bridge will pick up new tokens automatically — no restart needed.',
       '',
-      '_See `design/mcp-authentication.md` for full playbook._',
+      '_See `design/mcp-authentication.md` for the full playbook._',
     ].join('\n');
     await client.chat.postMessage({ channel: dm, text });
     lastNotifyTs = now;
