@@ -278,8 +278,11 @@ app = AsyncApp(
 HELP_TEXT = "\n".join((
     "*agent-me bot — built-in commands*",
     "",
+    "• `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Confluence)",
+    "• `/brief week` — weekly recap (last 7 days)",
+    "• `/brief month` — monthly recap (last 30 days)",
     "• `/mcp` — list MCP server health & auth status",
-    "• `/reauth` — trigger MCP re-auth helper on the bridge host (auto-opens auth URLs)",
+    "• `/reauth` — trigger MCP re-auth helper (auto-opens auth URLs on bridge host)",
     "• `/whoami` — show your Slack user id",
     "• `/version` — bridge + claude versions and pinned model",
     "• `/help` — this message",
@@ -310,6 +313,39 @@ async def cmd_whoami(user_id: str | None) -> str:
     return f"Your Slack user id: `{user_id or '(unknown — DM the bot once first)'}`"
 
 
+async def cmd_brief(args_text: str = "") -> str:
+    """Spawn `uv run agent-me-brief --period <X>` detached.
+
+    `args_text` is the trailing text after the slash command (e.g.
+    "weekly" / "week" / "monthly" / "month"). Default = day.
+    """
+    arg = (args_text or "").strip().lower()
+    period_map = {
+        "": "day", "day": "day", "daily": "day", "today": "day",
+        "w": "week", "week": "week", "weekly": "week", "7d": "week",
+        "m": "month", "month": "month", "monthly": "month", "30d": "month",
+    }
+    period = period_map.get(arg)
+    if period is None:
+        return f"Unknown period `{arg}`. Try `/brief`, `/brief week`, or `/brief month`."
+
+    await asyncio.create_subprocess_exec(
+        "uv", "run", "agent-me-brief", "--period", period,
+        cwd=str(REPO_DIR),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    label = {"day": "Daily", "week": "Weekly", "month": "Monthly"}[period]
+    return (
+        f"📅 *{label} brief generation started.* "
+        "I'll post the result in your DM in ~30-60s once Claude finishes "
+        "fetching from Jira / GitLab / GitHub / NVBugs / Confluence.\n"
+        "_If MCPs are stale this will fail silently — run `/mcp` to check, `/reauth` to refresh._"
+    )
+
+
 async def cmd_reauth() -> str:
     """Trigger the reauth helper as a detached background process.
 
@@ -333,7 +369,7 @@ async def cmd_reauth() -> str:
     )
 
 
-async def handle_slash(cmd: str, user_id: str | None) -> str:
+async def handle_slash(cmd: str, user_id: str | None, args_text: str = "") -> str:
     if cmd == "/mcp":
         return await cmd_mcp()
     if cmd == "/version":
@@ -342,6 +378,8 @@ async def handle_slash(cmd: str, user_id: str | None) -> str:
         return await cmd_whoami(user_id)
     if cmd == "/reauth":
         return await cmd_reauth()
+    if cmd == "/brief":
+        return await cmd_brief(args_text)
     if cmd == "/help":
         return HELP_TEXT
     return f"Unknown command `{cmd}`. Try `/help`."
@@ -377,11 +415,12 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     m = re.match(r"^(/[a-z][a-z0-9_-]*)\b\s*(.*)$", cleaned, re.IGNORECASE)
     if m:
         cmd = m.group(1)
+        args_text = m.group(2)
         placeholder_ts = await post_thinking(client, channel, thread_ts)
         try:
-            body = await handle_slash(cmd, user_id)
+            body = await handle_slash(cmd, user_id, args_text)
             await update_progress(client, channel, placeholder_ts, body)
-            log.info("slash_handled", cmd=cmd, thread_ts=thread_ts)
+            log.info("slash_handled", cmd=cmd, thread_ts=thread_ts, args=args_text)
         except Exception as exc:
             log.error("slash_failed", cmd=cmd, err=str(exc))
             await update_progress(client, channel, placeholder_ts,
@@ -454,10 +493,11 @@ async def on_app_mention(event, client):
 
 async def _native_slash(ack, respond, command, cmd_name: str):
     await ack()
+    args_text = (command.get("text") or "").strip()
     log.info("native_slash", cmd=cmd_name, user=command.get("user_id"),
-             channel=command.get("channel_id"))
+             channel=command.get("channel_id"), args=args_text)
     try:
-        body = await handle_slash(cmd_name, command.get("user_id"))
+        body = await handle_slash(cmd_name, command.get("user_id"), args_text)
         await respond(response_type="in_channel", text=body)
     except Exception as exc:
         log.error("native_slash_failed", cmd=cmd_name, err=str(exc))
@@ -487,6 +527,11 @@ async def slash_help(ack, respond, command):
 @app.command("/reauth")
 async def slash_reauth(ack, respond, command):
     await _native_slash(ack, respond, command, "/reauth")
+
+
+@app.command("/brief")
+async def slash_brief(ack, respond, command):
+    await _native_slash(ack, respond, command, "/brief")
 
 
 # ── Periodic MCP-auth health check ──────────────────────────────────────

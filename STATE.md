@@ -39,12 +39,12 @@ _Last updated: 2026-05-10 by Claude (Opus 4.7)_
 - [x] STATE.md Phase 4 dashboard decisions locked (Brev port-expose, build after bridge stable)
 - [x] Terminal.app default profile switched to Basic (light)
 
-## Next up (pick one)
+## Roadmap (locked order)
 
-1. **Phase 2b — PreToolUse approval gate.** Build the review-before-execute flow with Slack buttons. See `design/approval-hook-design.md` for the file-system semaphore approach.
-2. **Phase 3 — Brev deployment.** Provision instance, port-expose, install uv + claude CLI, systemd unit for `agent-me-bridge`, MCP auth via SSH port-forward (see `design/mcp-authentication.md` Pattern A).
-3. **Port `~/daily-brief/`** into agent-me as the first cron-driven sub-agent.
-4. **Phase 4 — Web dashboard** at `src/agent_me/dashboard/` (Express+SSE equivalent in Python, e.g. starlette+SSE).
+1. **Daily-brief sub-agent** ← _in flight_. Sources: Jira, GitLab, GitHub, NVBugs, Confluence, email-via-Glean (best-effort). Priority table at top + grouped sections per infra. Posted to operator DM via launchd at 8am local. Spec + bug history in `discussions/2026-05-10-phase-2a-complete-daily-brief-kickoff.md`.
+2. **Phase 3 — Brev deploy.** Cron only matters with a 24/7 host. Provision instance, install uv + claude CLI, systemd unit for `agent-me-bridge` and timer for `agent-me-brief`, MCP auth via SSH port-forward (`design/mcp-authentication.md` Pattern A).
+3. **Phase 2b — review-before-execute approval gate.** Slack buttons + PreToolUse hook + file-system semaphore. Design ready in `design/approval-hook-design.md`.
+4. **Phase 4 — web dashboard** at `src/agent_me/dashboard/` (starlette + SSE) on Brev port-expose.
 
 ## Open research / unresolved
 
