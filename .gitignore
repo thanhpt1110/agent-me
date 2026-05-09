@@ -1,0 +1,76 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.yarn/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets / credentials — DO NOT COMMIT
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials.json
+service-account*.json
+*-credentials.json
+.secrets/
+
+# Logs
+*.log
+logs/
+
+# Temp / cache
+tmp/
+temp/
+*.tmp
+.cache/
+
+# Claude local state (track settings.json, ignore the rest)
+.claude/projects/
+.claude/local/
+.claude/cache/
+
+# OS / misc
+Thumbs.db
+ehthumbs.db
+Desktop.ini
