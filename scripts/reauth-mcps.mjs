@@ -2,9 +2,8 @@
 //
 // agent-me — MCP re-auth helper (full auto-open)
 //
-// Detects every MCP server flagged "! Needs authentication" by `claude mcp
-// list`, spawns a persistent `claude` REPL via piped stdin (so the local
-// OAuth callback listeners stay alive), instructs it to call the
+// Spawns a persistent `claude` REPL via piped stdin (so the local OAuth
+// callback listeners stay alive), instructs it to call the
 // `mcp__<server>__authenticate` tool for each stale server, parses each
 // printed auth URL out of stdout, and `open`s them all in your default
 // browser. You sign in to NVIDIA SSO in each tab; redirects come back to
@@ -17,6 +16,9 @@
 
 import { spawn, execSync } from 'node:child_process';
 import process from 'node:process';
+
+const log = (...args) => console.log('[helper]', ...args);
+const repoDir = process.env.AGENT_ME_REPO_DIR || `${process.env.HOME}/agent-me`;
 
 // ── 1. Detect stale servers ───────────────────────────────────────────────
 
@@ -35,109 +37,94 @@ const stale = listOut
   .filter(Boolean);
 
 if (stale.length === 0) {
-  console.log('✓ All MCP servers authenticated. Nothing to do.');
+  log('All MCP servers authenticated. Nothing to do.');
   process.exit(0);
 }
 
-console.log('================================================================');
-console.log('  agent-me — MCP re-auth helper (auto-open)');
-console.log('================================================================\n');
-console.log(`Detected ${stale.length} stale server(s):`);
-stale.forEach((s) => console.log(`  - ${s}`));
+log(`detected ${stale.length} stale server(s):`);
+stale.forEach((s) => console.log(`   - ${s}`));
 console.log('');
-console.log('Spawning persistent `claude` REPL so the OAuth callback');
-console.log('listeners can capture each browser redirect. Keep this');
-console.log('terminal open until all browser tabs finish authorizing.');
-console.log('');
-console.log('Press Ctrl-C when done — helper sends /exit to claude cleanly.\n');
 
-// ── 2. Spawn persistent claude REPL ───────────────────────────────────────
+// ── 2. Spawn persistent claude REPL with bypassPermissions ───────────────
 
-const claude = spawn('claude', [], {
+log('spawning `claude --permission-mode bypassPermissions` (REPL)...');
+const claude = spawn('claude', ['--permission-mode', 'bypassPermissions'], {
   stdio: ['pipe', 'pipe', 'inherit'],
-  cwd: process.env.AGENT_ME_REPO_DIR || `${process.env.HOME}/agent-me`,
+  cwd: repoDir,
 });
 
-// stdin stays open until we explicitly write /exit on Ctrl-C.
 claude.stdin.setDefaultEncoding('utf8');
 
-// ── 3. After a short boot delay, send the multi-authenticate prompt ──────
-
-const BOOT_DELAY_MS = 3000;
-const prompt = [
-  'Call the authenticate tool for EACH of these MCP servers, one at a time.',
-  'For each, print exactly what the tool returns (it will include an',
-  '`https://...nvidia.com/...` URL on its own line). Do NOT summarize, do',
-  'NOT skip any, do NOT add commentary between calls. Just call each tool',
-  'and let its output through verbatim.',
-  '',
-  'Servers (in order):',
-  ...stale.map((s) => `- mcp__${s}__authenticate`),
-].join('\n');
-
-setTimeout(() => {
-  claude.stdin.write(prompt + '\n');
-}, BOOT_DELAY_MS);
-
-// ── 4. Watch stdout, extract NVIDIA auth URLs, auto-open ──────────────────
-
-let buffer = '';
+// Track URLs we've already opened so we don't double-fire.
 const opened = new Set();
+let buffer = '';
 
-// Strip ANSI escape sequences before matching URLs.
-function stripAnsi(s) {
-  return s.replace(/\[[0-9;]*[a-zA-Z]/g, '');
-}
+// Strip ANSI escapes (real escape char + bracket) before URL matching.
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const URL_RE = /https:\/\/[^\s)\]"'`<>]+nvidia\.com[^\s)\]"'`<>]*/g;
 
 claude.stdout.on('data', (chunk) => {
   const text = chunk.toString();
   process.stdout.write(text); // mirror to user
-  buffer += stripAnsi(text);
+  buffer += text.replace(ANSI_RE, '');
 
-  const re = /https:\/\/[^\s)\]"']+nvidia\.com[^\s)\]"']*/g;
   let m;
-  while ((m = re.exec(buffer)) !== null) {
+  while ((m = URL_RE.exec(buffer)) !== null) {
     const url = m[0];
     if (opened.has(url)) continue;
-    // Be conservative: only auto-open URLs that look like an OAuth authorize
-    // endpoint, not docs / status pages.
     if (
       url.includes('authorize') ||
       url.includes('/oauth/') ||
       url.includes('response_type=code')
     ) {
       opened.add(url);
-      console.log(`\n[helper] auto-opening auth URL #${opened.size}\n`);
+      log(`>>> auto-opening URL #${opened.size} (${url.slice(0, 60)}...)`);
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
     }
   }
 });
 
-// ── 5. Cleanup on Ctrl-C ──────────────────────────────────────────────────
+// ── 3. Send each authenticate call sequentially after boot delay ────────
+
+const BOOT_DELAY_MS = 5000;
+const PER_CALL_GAP_MS = 4000;
+
+setTimeout(async () => {
+  log(`sending ${stale.length} authenticate call(s) sequentially, ${PER_CALL_GAP_MS}ms apart...`);
+  for (const server of stale) {
+    const tool = `mcp__${server}__authenticate`;
+    const line = `Call the tool ${tool} (no parameters). Print exactly what it returns; do not summarize.`;
+    log(`  → asking claude to call ${tool}`);
+    claude.stdin.write(line + '\n');
+    await new Promise((r) => setTimeout(r, PER_CALL_GAP_MS));
+  }
+  log('all authenticate calls dispatched. Waiting for URLs to appear and browser tabs to open.');
+  log('Sign in to NVIDIA SSO in each tab. When done, press Ctrl-C here.');
+}, BOOT_DELAY_MS);
+
+// ── 4. Cleanup on Ctrl-C ────────────────────────────────────────────────
 
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`\n[helper] ${signal} received — sending /exit to claude...`);
+  log(`${signal} received — sending /exit to claude...`);
   try {
     claude.stdin.write('/exit\n');
-    claude.stdin.end();
+    setTimeout(() => claude.stdin.end(), 1000);
   } catch {
-    // ignore — child may already be gone
+    /* ignore */
   }
-  setTimeout(() => claude.kill('SIGTERM'), 4000);
-  setTimeout(() => process.exit(0), 6000);
+  setTimeout(() => claude.kill('SIGTERM'), 5000);
+  setTimeout(() => process.exit(0), 7000);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 claude.on('close', (code) => {
-  console.log(
-    `\n[helper] claude exited (code ${code}). Opened ${opened.size} auth URL(s).`,
-  );
-  console.log('[helper] Verify with:  claude mcp list');
+  log(`claude exited (code ${code}). opened ${opened.size}/${stale.length} auth URL(s).`);
+  log('verify with:  claude mcp list');
   process.exit(code ?? 0);
 });
 
