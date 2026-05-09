@@ -442,10 +442,29 @@ def build_blocks(items: list[BriefItem], errors: list[str], period: str = "day")
 
     blocks.append({"type": "divider"})
 
+    # Interactive buttons — works in DMs even when slash commands feel awkward.
+    blocks.append({
+        "type": "actions",
+        "elements": [
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔄 Refresh"},
+             "action_id": "brief_refresh", "value": "day"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📅 Weekly"},
+             "action_id": "brief_refresh", "value": "week"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📆 Monthly"},
+             "action_id": "brief_refresh", "value": "month"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔧 Reauth"},
+             "action_id": "brief_reauth"},
+        ],
+    })
+
     footer_bits = ["_📧 Email: skipped (no Outlook MCP yet)_"]
     if errors:
-        footer_bits.append(f"⚠️ fetch errors: {len(errors)} (run `/reauth` if MCPs need re-auth)")
-    footer_bits.append("`/brief` to refresh · `/mcp` for source health")
+        footer_bits.append(f"⚠️ fetch errors: {len(errors)} — try Reauth ↑")
+    footer_bits.append("`/brief week|month` for other periods · `/mcp` for source health")
     blocks.append({
         "type": "context",
         "elements": [{"type": "mrkdwn", "text": " · ".join(footer_bits)}],

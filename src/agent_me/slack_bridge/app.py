@@ -23,13 +23,17 @@ Phase 2b (deferred):
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import signal
 import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import structlog
 from dotenv import load_dotenv
@@ -59,20 +63,73 @@ else:
     load_dotenv()  # fallback to shell exports
 os.environ["AGENT_ME_REPO_DIR"] = str(REPO_DIR)
 
-# ── Logger ───────────────────────────────────────────────────────────────
+# ── Logger: structlog → stdlib logging → console + rotating file ────────
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "info").upper()
+
+
+def _state_dir_early() -> Path:
+    """State dir resolution duplicated here so log file path is available
+    before the main resolve_state_dir() call below."""
+    if d := os.environ.get("AGENT_ME_STATE_DIR"):
+        return Path(d).expanduser()
+    if x := os.environ.get("XDG_STATE_HOME"):
+        return Path(x).expanduser() / "agent-me"
+    return Path.home() / ".local" / "state" / "agent-me"
+
+
+_LOG_DIR = _state_dir_early()
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_LOG_FILE = _LOG_DIR / "bridge.log"
+
+_shared_processors: list = [
+    structlog.contextvars.merge_contextvars,
+    structlog.processors.add_log_level,
+    structlog.processors.TimeStamper(fmt="iso", utc=False),
+    structlog.processors.StackInfoRenderer(),
+    structlog.processors.format_exc_info,
+]
+
 structlog.configure(
-    processors=[
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso", utc=False),
-        structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
+    processors=_shared_processors + [
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ],
-    wrapper_class=structlog.make_filtering_bound_logger(
-        getattr(__import__("logging"), LOG_LEVEL, 20),
-    ),
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
     cache_logger_on_first_use=True,
 )
+
+_console_fmt = structlog.stdlib.ProcessorFormatter(
+    foreign_pre_chain=_shared_processors,
+    processors=[
+        structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+        structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty()),
+    ],
+)
+_file_fmt = structlog.stdlib.ProcessorFormatter(
+    foreign_pre_chain=_shared_processors,
+    processors=[
+        structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+        structlog.processors.JSONRenderer(),
+    ],
+)
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_console_fmt)
+# 10 MB × 5 files = ~50 MB cap; ~weeks of data at typical chat volume.
+_file_handler = RotatingFileHandler(_LOG_FILE, maxBytes=10_000_000, backupCount=5)
+_file_handler.setFormatter(_file_fmt)
+
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+# Idempotent: only add handlers if not already present (avoids dup on reload).
+if not any(isinstance(h, RotatingFileHandler) for h in _root.handlers):
+    _root.addHandler(_console_handler)
+    _root.addHandler(_file_handler)
+# Quiet down noisy third-party loggers.
+logging.getLogger("slack_bolt").setLevel(logging.INFO)
+logging.getLogger("slack_sdk").setLevel(logging.INFO)
+
 log = structlog.get_logger("slack-bridge")
 
 # ── Required env validation ──────────────────────────────────────────────
@@ -83,7 +140,8 @@ if missing:
     log.error("missing required env", missing=missing, env_path=str(ENV_PATH))
     sys.exit(1)
 
-log.info("env loaded", repo_dir=str(REPO_DIR), env_path=str(ENV_PATH) if ENV_PATH.exists() else None)
+log.info("env loaded", repo_dir=str(REPO_DIR), env_path=str(ENV_PATH) if ENV_PATH.exists() else None,
+         log_file=str(_LOG_FILE))
 
 # ── State DB ─────────────────────────────────────────────────────────────
 
@@ -534,6 +592,58 @@ async def slash_brief(ack, respond, command):
     await _native_slash(ack, respond, command, "/brief")
 
 
+# ── Block Kit button handlers ──────────────────────────────────────────
+#
+# Slash commands don't always feel native in Slack DMs — interactive
+# buttons inside posted messages are a guaranteed-to-work alternative.
+# Daily-brief Block Kit ends with [Refresh] [Weekly] [Reauth] buttons;
+# the morning warmup message has a [Reauth now] primary button.
+
+async def _post_in_channel(client, body: dict, text: str):
+    channel = body.get("channel", {}).get("id") if isinstance(body.get("channel"), dict) else None
+    if not channel:
+        # Fall back to operator DM if button context lacks channel id.
+        channel = await ensure_dm_channel(client)
+    if channel:
+        await client.chat_postMessage(channel=channel, text=text)
+
+
+@app.action("brief_refresh")
+async def on_brief_refresh(ack, body, client):
+    await ack()
+    period = (body.get("actions") or [{}])[0].get("value") or "day"
+    log.info("button_brief_refresh", period=period, user=body.get("user", {}).get("id"))
+    await cmd_brief(period if period != "day" else "")
+    await _post_in_channel(client, body, f"📅 Refreshing brief (`{period}`) — back in ~60s.")
+
+
+@app.action("brief_reauth")
+async def on_brief_reauth(ack, body, client):
+    await ack()
+    log.info("button_brief_reauth", user=body.get("user", {}).get("id"))
+    await cmd_reauth()
+    await _post_in_channel(client, body,
+                           "🔧 Reauth helper started — browser tabs opening on bridge host.")
+
+
+@app.action("morning_reauth")
+async def on_morning_reauth(ack, body, client):
+    await ack()
+    log.info("button_morning_reauth", user=body.get("user", {}).get("id"))
+    await cmd_reauth()
+    await _post_in_channel(client, body,
+                           "🔧 Reauth helper started — sign in to each browser tab.")
+
+
+@app.action("morning_brief_now")
+async def on_morning_brief_now(ack, body, client):
+    await ack()
+    log.info("button_morning_brief_now", user=body.get("user", {}).get("id"))
+    await cmd_brief("")
+    await _post_in_channel(client, body,
+                           "📅 Generating today's brief — back in ~60s.")
+
+
 # ── Periodic MCP-auth health check ──────────────────────────────────────
 
 MCP_CHECK_INTERVAL_S = float(os.environ.get("MCP_CHECK_INTERVAL_S", 6 * 60 * 60))
@@ -604,6 +714,107 @@ async def check_mcp_auth(client) -> None:
         log.error("mcp_auth_notify_failed", err=str(exc))
 
 
+# ── Scheduled morning routine (6am Vietnam time by default) ─────────────
+
+MORNING_TZ = ZoneInfo(os.environ.get("BRIEF_TIMEZONE", "Asia/Ho_Chi_Minh"))
+MORNING_HOUR = int(os.environ.get("BRIEF_HOUR", 6))
+MORNING_MINUTE = int(os.environ.get("BRIEF_MINUTE", 0))
+
+
+def _seconds_until_next_morning() -> float:
+    now = datetime.now(MORNING_TZ)
+    target = now.replace(hour=MORNING_HOUR, minute=MORNING_MINUTE, second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def run_morning_routine(client) -> None:
+    """Daily morning DM: check MCPs first, then brief or warn.
+
+    First message of the day is always the MCP-auth status. If anything
+    needs re-auth, send a notification with a [Reauth now] button and
+    skip the brief — the brief would partially fail anyway with stale
+    tokens. If everything is healthy, kick off the brief immediately.
+    """
+    log.info("morning_routine_running")
+    dm = await ensure_dm_channel(client)
+    if not dm:
+        log.warning("morning_no_dm_channel — set SLACK_ALLOWED_USER_ID")
+        return
+
+    # Step 1: MCP health probe.
+    try:
+        out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+        need_auth = sorted(
+            line.split(":")[0].strip()
+            for line in out.splitlines()
+            if "Needs authentication" in line
+        )
+    except Exception as exc:
+        log.error("morning_mcp_check_failed", err=str(exc))
+        need_auth = ["(probe failed — see bridge.log)"]
+
+    today = datetime.now(MORNING_TZ).strftime("%a %Y-%m-%d")
+    if need_auth:
+        header_text = (
+            f"☀️ *Good morning — {today}*\n\n"
+            f"*{len(need_auth)} MCP server(s) need re-auth* before today's brief can fetch fresh data:\n"
+            + ", ".join(f"`{s}`" for s in need_auth)
+            + "\n\n_Click below to refresh; the brief will still be one tap away after._"
+        )
+        blocks = [
+            {"type": "section", "text": {"type": "mrkdwn", "text": header_text}},
+            {"type": "actions", "elements": [
+                {"type": "button",
+                 "text": {"type": "plain_text", "text": "🔧 Reauth now"},
+                 "action_id": "morning_reauth", "style": "primary"},
+                {"type": "button",
+                 "text": {"type": "plain_text", "text": "📅 Brief anyway"},
+                 "action_id": "morning_brief_now"},
+            ]},
+        ]
+        await client.chat_postMessage(
+            channel=dm,
+            text=f"☀️ Good morning — {len(need_auth)} MCP(s) need re-auth",
+            blocks=blocks,
+        )
+        log.info("morning_warned", need_auth_count=len(need_auth), servers=need_auth)
+        return
+
+    # Step 2: All MCPs healthy → kick off brief.
+    text = (
+        f"☀️ *Good morning — {today}*\n"
+        "All MCPs are connected. Generating today's brief now — back in ~60s."
+    )
+    await client.chat_postMessage(channel=dm, text=text)
+    await asyncio.create_subprocess_exec(
+        "uv", "run", "agent-me-brief", "--period", "day",
+        cwd=str(REPO_DIR),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    log.info("morning_brief_dispatched")
+
+
+async def morning_loop(client) -> None:
+    while True:
+        sleep_s = _seconds_until_next_morning()
+        next_run = (datetime.now(MORNING_TZ) + timedelta(seconds=sleep_s)).isoformat()
+        log.info("morning_sleep", sleep_seconds=int(sleep_s), next_run_local=next_run,
+                 tz=str(MORNING_TZ), hour=MORNING_HOUR, minute=MORNING_MINUTE)
+        try:
+            await asyncio.sleep(sleep_s)
+        except asyncio.CancelledError:
+            return
+        try:
+            await run_morning_routine(client)
+        except Exception as exc:
+            log.error("morning_routine_failed", err=str(exc))
+
+
 # ── Boot ────────────────────────────────────────────────────────────────
 
 async def main_async() -> int:
@@ -621,6 +832,7 @@ async def main_async() -> int:
             await asyncio.sleep(MCP_CHECK_INTERVAL_S)
 
     health_task = asyncio.create_task(health_loop())
+    morning_task = asyncio.create_task(morning_loop(app.client))
 
     # Graceful shutdown.
     stop = asyncio.Event()
@@ -642,6 +854,7 @@ async def main_async() -> int:
 
     log.info("bridge_stopping")
     health_task.cancel()
+    morning_task.cancel()
     await handler.close_async()
     db.close()
     return 0
