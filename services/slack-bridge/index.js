@@ -357,20 +357,27 @@ async function handleSlashCommand({ client, channel, threadTs, cmd /* , args */ 
   }
 }
 
+// Strip a leading `<@USERID>` mention so DM messages with mentions and
+// channel `app_mention` events both reach handleUserQuery already-cleaned.
+function stripBotMention(text) {
+  return (text ?? '').replace(/^\s*<@[A-Z0-9]+>\s*/, '').trim();
+}
+
 async function handleUserQuery({ client, channel, threadTs, userId, text, eventTs }) {
-  if (!text || text.trim().length === 0) {
-    log.debug({ threadTs }, 'empty text; skipping');
+  const cleanText = stripBotMention(text);
+  if (!cleanText) {
+    log.debug({ threadTs }, 'empty text after mention-strip; skipping');
     return;
   }
 
   log.info(
-    { event: 'message_received', threadTs, channel, user: userId, prompt: clip(text) },
+    { event: 'message_received', threadTs, channel, user: userId, prompt: clip(cleanText) },
     'received',
   );
 
-  // Slash-command intercept. Match a leading "/<word>" so things like
-  // "/mcp", "/help foo" route to handleSlashCommand and never reach Claude.
-  const slashMatch = text.trim().match(/^(\/[a-z][a-z0-9_-]*)\b\s*(.*)$/i);
+  // Slash-command intercept. Match a leading "/<word>" so messages like
+  // "/mcp", "/help foo", or "<@bot> /mcp" all route to handleSlashCommand.
+  const slashMatch = cleanText.match(/^(\/[a-z][a-z0-9_-]*)\b\s*(.*)$/i);
   if (slashMatch) {
     const [, cmd, args] = slashMatch;
     await handleSlashCommand({ client, channel, threadTs, cmd, args });
@@ -379,7 +386,7 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
 
   const now = Date.now();
   upsertThread.run(threadTs, channel, userId ?? null, now, now);
-  insertMessage.run(threadTs, 'user', text, eventTs ?? null, now);
+  insertMessage.run(threadTs, 'user', cleanText, eventTs ?? null, now);
 
   let placeholderTs;
   try {
@@ -391,7 +398,7 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
 
   const start = Date.now();
   try {
-    const answer = await spawnClaude({ prompt: text, cwd: repoDir });
+    const answer = await spawnClaude({ prompt: cleanText, cwd: repoDir });
     const final = answer && answer.trim().length > 0 ? answer : '_(no output)_';
     await updateProgress(client, channel, placeholderTs, final);
     insertMessage.run(threadTs, 'assistant', final, placeholderTs, Date.now());
@@ -401,7 +408,7 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
         threadTs,
         ms: Date.now() - start,
         model: MODEL,
-        prompt: clip(text),
+        prompt: clip(cleanText),
         response: clip(final),
       },
       'ok',
@@ -412,7 +419,7 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
         event: 'query_failed',
         threadTs,
         ms: Date.now() - start,
-        prompt: clip(text),
+        prompt: clip(cleanText),
         err: err.message,
       },
       'claude failed',
@@ -452,17 +459,65 @@ app.event('message', async ({ event, client }) => {
 });
 
 app.event('app_mention', async ({ event, client }) => {
-  const cleaned = (event.text || '').replace(/^<@[A-Z0-9]+>\s*/, '').trim();
+  // handleUserQuery strips the mention itself; pass raw text.
   const threadTs = event.thread_ts ?? event.ts;
   await handleUserQuery({
     client,
     channel: event.channel,
     threadTs,
     userId: event.user,
-    text: cleaned,
+    text: event.text,
     eventTs: event.ts,
   });
 });
+
+// ---------------------------------------------------------------------------
+// 8b. Native Slack slash commands (must be registered in app config)
+// ---------------------------------------------------------------------------
+//
+// Registering /mcp, /version, /help in api.slack.com → "Slash Commands" makes
+// them work without `@agent-me ` prefix and gives autocomplete in Slack's UI.
+// If the user hasn't registered them, the same logic still works as a text
+// intercept above (e.g. "@agent-me /mcp").
+
+async function handleNativeSlash({ ack, respond, command }) {
+  await ack();
+  const cmd = command.command; // e.g. '/mcp'
+  log.info(
+    { event: 'native_slash_received', cmd, user: command.user_id, channel: command.channel_id },
+    'native slash',
+  );
+  try {
+    let body;
+    if (cmd === '/mcp') {
+      const out = await runCommand('claude', ['mcp', 'list'], { cwd: repoDir });
+      body = '`claude mcp list`:\n```\n' + out.trim() + '\n```\n' +
+             '_Re-auth needed servers from a terminal: `claude` (interactive) → call any tool from that server, follow the SSO link. Bridge picks up new tokens automatically._';
+    } else if (cmd === '/version') {
+      const claudeVer = (await runCommand('claude', ['--version'], { cwd: repoDir })).trim();
+      body = `*Bridge:* phase 2a · *Model:* \`${MODEL}\`\n*Claude CLI:* \`${claudeVer}\`\n*Repo:* \`${repoDir}\``;
+    } else if (cmd === '/help') {
+      body = HELP_TEXT;
+    } else {
+      body = `Unknown: \`${cmd}\``;
+    }
+    await respond({
+      response_type: 'in_channel',
+      text: body,
+      ...(command.thread_ts ? { thread_ts: command.thread_ts } : {}),
+    });
+  } catch (err) {
+    log.error({ event: 'native_slash_failed', cmd, err: err.message }, 'native slash failed');
+    await respond({
+      response_type: 'ephemeral',
+      text: `⚠️ \`${cmd}\` failed: \`${err.message}\``,
+    });
+  }
+}
+
+app.command('/mcp', handleNativeSlash);
+app.command('/version', handleNativeSlash);
+app.command('/help', handleNativeSlash);
 
 // ---------------------------------------------------------------------------
 // 9. Action handlers (Phase 2b — currently no-op acks)

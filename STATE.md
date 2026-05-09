@@ -31,6 +31,8 @@ _Last updated: 2026-05-10 by Claude (Opus 4.7)_
 - [x] `design/slack-app-setup.md` — end-to-end Slack app + Socket Mode bridge guide
 - [x] Slack design questions resolved + recorded (`discussions/2026-05-10-slack-decisions.md`)
 - [x] Terminal.app default profile switched to Basic (light)
+- [x] **Phase 2a bridge live** — DM + mention work; slash commands `/mcp` `/version` `/help` work via text-intercept and (after registration) as native Slack slash commands
+- [x] `design/mcp-authentication.md` — re-auth playbook (MAAS tokens expire daily; auth happens on bridge host, not via Slack)
 
 ## Next up (in order)
 

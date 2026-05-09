@@ -527,6 +527,33 @@ cd ~/agent-me/services/slack-bridge && npm start
 
 ---
 
+## 12b. Register native slash commands (recommended after first run)
+
+By default, slash-style commands (`/mcp`, `/version`, `/help`) only work
+when sent inside a normal message, e.g. `@agent-me /mcp` or as the body of
+a DM message that gets routed through our text-intercept. They will **not**
+be auto-completed by Slack and a bare `/mcp` typed at the top of a channel
+will hit Slack's "command not found" error.
+
+To get autocompletion + a clean bare-`/mcp` UX, register the commands in the
+app config:
+
+1. Open <https://api.slack.com/apps> → **agent-me** → sidebar **Slash Commands**.
+2. Click **Create New Command** for each:
+   | Command | Short Description | Usage Hint |
+   |---|---|---|
+   | `/mcp` | List MCP server health & auth status | _(blank)_ |
+   | `/version` | Show bridge + claude versions | _(blank)_ |
+   | `/help` | List bot commands | _(blank)_ |
+3. **Request URL** field can stay blank in Socket Mode (Slack uses the WebSocket).
+4. **Save** each one.
+5. Sidebar → **Install App** → **Reinstall to Workspace** → **Allow**.
+   Adding slash commands is a capability change so reinstall is required.
+
+After this, you can type `/mcp` directly anywhere the bot is present
+(DMs and channels it's been added to) and Slack will route the command to
+the bridge.
+
 ## 12. Resolved decisions (for the upstream `agent-me` deployment)
 
 These were the open questions; the upstream maintainer (`@thanhpt1110`) has

@@ -6,9 +6,13 @@ Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous 
 
 ## Quickstart for forkers
 
-1. Click **"Use this template"** on GitHub to create your own copy of this repo.
-2. Clone your new repo to your machine: `git clone git@github.com:<you>/agent-me.git && cd agent-me`.
-3. Edit `configs/` with your own credentials, MCP server endpoints, and runtime settings, then run `scripts/bootstrap.sh` on the host you want the agent to live on.
+1. **Use this template** on GitHub → create your own copy.
+2. Clone & install: `git clone git@github.com:<you>/agent-me.git && cd agent-me/services/slack-bridge && pnpm install`
+3. **Slack app**: follow `design/slack-app-setup.md` to create your own app (personal workspace, ~10 min). Drop tokens into `configs/.env` (template at `configs/.env.example`).
+4. **Authenticate MCPs first**: `claude` interactively → call any MAAS-MCP tool → click the SSO link. See `design/mcp-authentication.md`. Tokens expire ~daily; re-auth as needed (no bridge restart required).
+5. **Run the bridge**: `cd services/slack-bridge && pnpm dev`. From Slack, DM the bot or use `/help`, `/mcp`, `/version`.
+6. **(Optional) Native slash commands**: register `/mcp`, `/version`, `/help` in the Slack app config — see `design/slack-app-setup.md` §12b.
+7. **(Optional) Deploy**: Phase 3 moves the bridge to a 24/7 host (Brev). See `STATE.md` for current phase.
 
 ## Architecture overview
 
