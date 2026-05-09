@@ -600,19 +600,21 @@ def build_blocks(items: list[BriefItem], errors: list[str], period: str = "day")
 
     blocks.append({"type": "divider"})
 
-    # Interactive buttons — works in DMs even when slash commands feel awkward.
+    # Interactive buttons. action_ids MUST be unique within a block —
+    # reuse the menu_brief_* handlers that already exist in the bridge
+    # so we don't duplicate logic.
     blocks.append({
         "type": "actions",
         "elements": [
             {"type": "button",
              "text": {"type": "plain_text", "text": "🔄 Refresh"},
-             "action_id": "brief_refresh", "value": "day"},
+             "action_id": "menu_brief_day", "value": "day"},
             {"type": "button",
              "text": {"type": "plain_text", "text": "📅 Weekly"},
-             "action_id": "brief_refresh", "value": "week"},
+             "action_id": "menu_brief_week", "value": "week"},
             {"type": "button",
              "text": {"type": "plain_text", "text": "📆 Monthly"},
-             "action_id": "brief_refresh", "value": "month"},
+             "action_id": "menu_brief_month", "value": "month"},
             {"type": "button",
              "text": {"type": "plain_text", "text": "🔧 Reauth"},
              "action_id": "brief_reauth"},
@@ -725,6 +727,18 @@ async def main_async(period: str = "day", dry_run: bool = False,
         log.warning("fetch_errors", count=len(errors), details=errors)
 
     blocks = build_blocks(items, errors, period=period)
+
+    # Validation: every action_id within an actions block must be unique
+    # per Slack API. Catch duplicates locally so we fail loudly instead
+    # of via a chat.update / chat.postMessage error mid-flow.
+    for i, b in enumerate(blocks):
+        if b.get("type") != "actions":
+            continue
+        ids = [e.get("action_id") for e in b.get("elements", []) if e.get("action_id")]
+        dups = {x for x in ids if ids.count(x) > 1}
+        if dups:
+            log.error("duplicate_action_ids_in_block", block_index=i, duplicates=sorted(dups))
+            raise RuntimeError(f"duplicate action_id(s) in block {i}: {sorted(dups)}")
 
     if dry_run:
         print(json.dumps(blocks, indent=2, ensure_ascii=False))
