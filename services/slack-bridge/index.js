@@ -4,17 +4,21 @@
 //   - .env loading from ${AGENT_ME_REPO_DIR}/configs/.env
 //   - Bolt App in Socket Mode
 //   - SQLite state DB initialization (threads, messages, pending_approvals)
-//   - Slack event/action handler registration (stubs for P1)
+//   - Slack event/action handler registration
+//   - Spawning `claude -p` headless with a read-only tool allowlist (Phase 2a)
+//   - Posting/updating Slack messages with hybrid streaming (placeholder → final)
 //   - Graceful shutdown
 //
-// What this file does NOT yet do (P2 milestones):
-//   - Spawning `claude -p` and streaming its output -> see spawnClaude()
-//   - Posting / updating Slack messages with progress -> see postThinking() / updateProgress()
-//   - Block Kit approval prompts and resolution -> see requestApproval()
+// Phase 2b (deferred):
+//   - PreToolUse hook + file-system semaphore for review-by-default approval
+//   - requestApproval() Block Kit prompt + button-click resolution
+//   - Token-by-token chat.update progress (currently we only update once at end)
 //
 // Architecture spec: ../../design/slack-app-setup.md §8
 // Decisions:         ../../discussions/2026-05-10-slack-decisions.md
+// Approval design:   ../../design/approval-hook-design.md
 
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -33,11 +37,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // 1. Resolve AGENT_ME_REPO_DIR and load .env
 // ---------------------------------------------------------------------------
 
-// Resolution order for the repo dir (used as cwd for `claude -p` and as the
-// anchor for finding configs/.env):
-//   1. process.env.AGENT_ME_REPO_DIR if already set in the shell
-//   2. Walk up from this file (services/slack-bridge -> agent-me)
-//   3. Fall back to the documented default /home/agent/agent-me
 function resolveRepoDir() {
   const fromEnv = process.env.AGENT_ME_REPO_DIR;
   if (fromEnv) {
@@ -54,37 +53,31 @@ const envPath = resolve(repoDir, 'configs', '.env');
 if (existsSync(envPath)) {
   dotenv.config({ path: envPath });
 } else {
-  // Fall back to default search so dotenv can still pick up shell-exported
-  // variables or a sibling .env if someone really wants one.
   dotenv.config();
 }
 
-// Re-export the resolved repo dir so child processes inherit it.
 process.env.AGENT_ME_REPO_DIR = repoDir;
 
 // ---------------------------------------------------------------------------
 // 2. Logger
 // ---------------------------------------------------------------------------
 
-const log = pino({
-  level: process.env.LOG_LEVEL ?? 'info',
-  base: { service: 'slack-bridge' },
-  // pino-pretty is a devDependency; only attach the transport when we can
-  // actually resolve it, otherwise emit JSON (right thing in production).
-  transport:
-    process.env.NODE_ENV !== 'production' && canRequire('pino-pretty')
-      ? { target: 'pino-pretty', options: { colorize: true, translateTime: 'SYS:HH:MM:ss' } }
-      : undefined,
-});
-
 function canRequire(mod) {
   try {
-    // import.meta.resolve is sync since node 20.
     return Boolean(import.meta.resolve(mod));
   } catch {
     return false;
   }
 }
+
+const log = pino({
+  level: process.env.LOG_LEVEL ?? 'info',
+  base: { service: 'slack-bridge' },
+  transport:
+    process.env.NODE_ENV !== 'production' && canRequire('pino-pretty')
+      ? { target: 'pino-pretty', options: { colorize: true, translateTime: 'SYS:HH:MM:ss' } }
+      : undefined,
+});
 
 // ---------------------------------------------------------------------------
 // 3. Validate required env
@@ -123,8 +116,47 @@ db.exec(readFileSync(schemaPath, 'utf8'));
 
 log.info({ dbPath }, 'state db ready');
 
+// Prepared statements (hot path).
+const upsertThread = db.prepare(`
+  INSERT INTO threads (thread_ts, channel, user_id, auto_approve, created_at, last_active_at)
+  VALUES (?, ?, ?, 0, ?, ?)
+  ON CONFLICT(thread_ts) DO UPDATE SET last_active_at = excluded.last_active_at
+`);
+const insertMessage = db.prepare(`
+  INSERT INTO messages (thread_ts, role, content, slack_ts, created_at)
+  VALUES (?, ?, ?, ?, ?)
+`);
+
 // ---------------------------------------------------------------------------
-// 5. Bolt App
+// 5. Phase 2a: Claude tool restrictions
+// ---------------------------------------------------------------------------
+//
+// Read-only research mode: block built-in writers and known MCP write tools.
+// Phase 2b will replace this hard block with a PreToolUse hook that posts a
+// Slack approval prompt instead of denying outright.
+
+const PHASE_2A_DISALLOWED_TOOLS = [
+  // Built-in writers / shell
+  'Bash',
+  'Write',
+  'Edit',
+  'NotebookEdit',
+  // MCP tools that mutate remote state (curated; expand as new MCPs are added)
+  'mcp__maas-jira__jira_create_issue',
+  'mcp__maas-jira__jira_clone_issue',
+  'mcp__maas-jira__jira_update_issue',
+  'mcp__maas-jira__jira_transition_issue',
+  'mcp__maas-nvbugs__nvbugs_update_bug_v2',
+  'mcp__maas-nvbugs__nvbugs_update_bug',
+  'mcp__maas-ippsec__register_repo',
+  'mcp__maas-mysql__execute_sql', // read-shaped name but accepts arbitrary SQL incl. writes
+];
+
+const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000);
+const MAX_SLACK_TEXT = 39000; // Slack hard limit is 40k; leave headroom for footers.
+
+// ---------------------------------------------------------------------------
+// 6. Bolt App
 // ---------------------------------------------------------------------------
 
 const app = new App({
@@ -136,87 +168,139 @@ const app = new App({
 });
 
 // ---------------------------------------------------------------------------
-// 6. Helper stubs (P2 work)
+// 7. Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Spawn `claude -p` with cwd = AGENT_ME_REPO_DIR so the agent inherits CLAUDE.md.
- *
- * @param {{ prompt: string, threadTs: string, channel: string }} args
- * @returns {AsyncIterable<{ type: string, [k: string]: unknown }>} stream of events
- *          (message_delta, tool_use_request, tool_result, final, error, ...).
- */
-// TODO(P2): implement child_process.spawn with --output-format stream-json,
-// parse NDJSON line-by-line, yield typed events. On tool_use_request, await
-// requestApproval() before letting the child continue. Buffer stdout/stderr
-// and surface errors with non-zero exit code.
-// eslint-disable-next-line require-yield
-async function* spawnClaude({ prompt, threadTs, channel }) {
-  log.info({ event: 'spawn_claude_called', threadTs, channel, promptLen: prompt?.length }, 'stub');
-  throw new Error('spawnClaude: not implemented (P2)');
+function truncateForSlack(text) {
+  if (!text) return '_(no output)_';
+  if (text.length <= MAX_SLACK_TEXT) return text;
+  return `${text.slice(0, MAX_SLACK_TEXT - 120)}\n\n_…[truncated; ${text.length - MAX_SLACK_TEXT} chars cut]_`;
 }
 
 /**
- * Post the initial 🔄 thinking placeholder into the thread and return its ts.
- *
- * @param {string} channel
- * @param {string} threadTs
- * @returns {Promise<string>} message ts of the placeholder, used by updateProgress.
+ * Spawn `claude -p` with cwd = AGENT_ME_REPO_DIR so it inherits CLAUDE.md +
+ * the project's MCP config + auto-memory. Phase 2a runs once-and-done: we
+ * wait for the process to exit and resolve with the full stdout. Phase 2b
+ * will replace this with `--output-format stream-json` parsing for live
+ * progress + per-tool approval.
  */
-// TODO(P2): chat.postMessage with thread_ts; return result.ts.
-async function postThinking(channel, threadTs) {
-  log.info({ event: 'post_thinking_called', channel, threadTs }, 'stub');
-  throw new Error('postThinking: not implemented (P2)');
+function spawnClaude({ prompt, cwd }) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const args = [
+      '-p', prompt,
+      '--disallowedTools', PHASE_2A_DISALLOWED_TOOLS.join(','),
+    ];
+    log.info({ event: 'claude_spawn', cwd, promptLen: prompt.length }, 'spawning claude');
+
+    const child = spawn('claude', args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      log.warn({ event: 'claude_timeout', ms: CLAUDE_TIMEOUT_MS }, 'killing claude');
+      child.kill('SIGTERM');
+      // Give it 5s to die gracefully before SIGKILL.
+      setTimeout(() => child.kill('SIGKILL'), 5_000);
+    }, CLAUDE_TIMEOUT_MS);
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolvePromise(stdout.trim());
+      } else {
+        rejectPromise(new Error(`claude exited code ${code}: ${stderr.trim().slice(0, 500)}`));
+      }
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      rejectPromise(err);
+    });
+  });
+}
+
+async function postThinking(client, channel, threadTs) {
+  const result = await client.chat.postMessage({
+    channel,
+    thread_ts: threadTs,
+    text: '🔄 thinking…',
+  });
+  return result.ts;
+}
+
+async function updateProgress(client, channel, ts, text) {
+  await client.chat.update({
+    channel,
+    ts,
+    text: truncateForSlack(text),
+  });
 }
 
 /**
- * Update an in-flight message via chat.update. Used both for ~30s progress
- * pulses and for the final answer swap-in.
- *
- * @param {string} channel
- * @param {string} ts
- * @param {string} text
- * @returns {Promise<void>}
+ * Phase 2b stub. Will post a Block Kit approval prompt and resolve when the
+ * user clicks Approve / Approve all in thread / Reject. For Phase 2a, the
+ * hard `--disallowedTools` list short-circuits write attempts before Claude
+ * ever asks; this function is unreachable today.
  */
-// TODO(P2): chat.update with text + Block Kit blocks; throttle to <1 update/sec.
-async function updateProgress(channel, ts, text) {
-  log.debug({ event: 'update_progress_called', channel, ts, textLen: text?.length }, 'stub');
-  throw new Error('updateProgress: not implemented (P2)');
-}
-
-/**
- * Post a Block Kit approval prompt with three buttons:
- *   - Approve (action_id=approve_action)
- *   - Approve all in thread (action_id=approve_all_in_thread)
- *   - Reject (action_id=disable_auto_approve doubles as reject for now)
- *
- * Inserts a pending_approvals row, returns a Promise that resolves once one
- * of the action handlers below resolves it.
- *
- * @param {{ channel: string, threadTs: string, action: string, payload: unknown }} args
- * @returns {Promise<{ approved: boolean, autoApprove: boolean }>}
- */
-// TODO(P2): generate approval id (uuid), insert pending_approvals row, post
-// Block Kit message capturing slack_message_ts, register a Promise resolver
-// keyed on approval id in an in-memory Map, action handlers below look up the
-// resolver and call it. On process restart, reload pending rows and mark
-// 'expired'.
 async function requestApproval({ channel, threadTs, action, payload }) {
-  log.info({ event: 'request_approval_called', channel, threadTs, action }, 'stub');
-  throw new Error('requestApproval: not implemented (P2)');
+  log.info({ event: 'request_approval_called', channel, threadTs, action }, 'P2b stub');
+  throw new Error('requestApproval: not implemented (Phase 2b)');
+}
+
+/**
+ * Shared pipeline used by both DM and app_mention handlers.
+ */
+async function handleUserQuery({ client, channel, threadTs, userId, text, eventTs }) {
+  if (!text || text.trim().length === 0) {
+    log.debug({ threadTs }, 'empty text; skipping');
+    return;
+  }
+
+  const now = Date.now();
+  upsertThread.run(threadTs, channel, userId ?? null, now, now);
+  insertMessage.run(threadTs, 'user', text, eventTs ?? null, now);
+
+  let placeholderTs;
+  try {
+    placeholderTs = await postThinking(client, channel, threadTs);
+  } catch (err) {
+    log.error({ err: err.message, threadTs }, 'failed to post thinking placeholder');
+    return;
+  }
+
+  const start = Date.now();
+  try {
+    const answer = await spawnClaude({ prompt: text, cwd: repoDir });
+    const final = answer && answer.trim().length > 0 ? answer : '_(no output)_';
+    await updateProgress(client, channel, placeholderTs, final);
+    insertMessage.run(threadTs, 'assistant', final, placeholderTs, Date.now());
+    log.info({ event: 'query_handled', threadTs, ms: Date.now() - start, len: final.length }, 'ok');
+  } catch (err) {
+    log.error({ err: err.message, threadTs, ms: Date.now() - start }, 'claude failed');
+    await updateProgress(
+      client,
+      channel,
+      placeholderTs,
+      `⚠️ Error: \`${err.message.slice(0, 600)}\``,
+    ).catch((e) => log.error({ err: e.message }, 'failed to post error message'));
+  }
 }
 
 // ---------------------------------------------------------------------------
-// 7. Event handlers
+// 8. Event handlers
 // ---------------------------------------------------------------------------
 
-// DMs only — channel_type === 'im'. Bot ignores its own messages by default.
-app.event('message', async ({ event, client, logger }) => {
-  // Bolt's typing has `subtype` only on system messages; skip those.
-  if (event.subtype) return;
-  if (event.channel_type !== 'im') return;
+app.event('message', async ({ event, client }) => {
+  if (event.subtype) return;                        // bot/system messages
+  if (event.channel_type !== 'im') return;          // DMs only
+  if (event.bot_id) return;                         // ignore other bots / self
 
-  // Optional single-user lockdown.
   if (process.env.SLACK_ALLOWED_USER_ID && event.user !== process.env.SLACK_ALLOWED_USER_ID) {
     log.warn({ event: 'message_rejected_user', from: event.user }, 'unauthorized user');
     return;
@@ -228,88 +312,79 @@ app.event('message', async ({ event, client, logger }) => {
     'DM received',
   );
 
-  // TODO(P2): the actual flow:
-  //   1. upsert thread row, append user message row
-  //   2. const placeholderTs = await postThinking(event.channel, threadTs);
-  //   3. for await (const evt of spawnClaude({ prompt: event.text, threadTs, channel: event.channel })) {
-  //        if (evt.type === 'tool_use_request') {
-  //          const { approved } = await requestApproval({ channel, threadTs, action: evt.tool, payload: evt.input });
-  //          if (!approved) { ...abort... }
-  //        }
-  //        if (evt.type === 'progress') await updateProgress(event.channel, placeholderTs, evt.text);
-  //        if (evt.type === 'final') await updateProgress(event.channel, placeholderTs, evt.text);
-  //      }
-  //   4. append assistant message row.
+  await handleUserQuery({
+    client,
+    channel: event.channel,
+    threadTs,
+    userId: event.user,
+    text: event.text,
+    eventTs: event.ts,
+  });
 });
 
-app.event('app_mention', async ({ event, client, logger }) => {
+app.event('app_mention', async ({ event, client }) => {
+  // Strip the leading `<@BOTID>` mention from the text Claude sees.
+  const cleaned = (event.text || '').replace(/^<@[A-Z0-9]+>\s*/, '').trim();
   const threadTs = event.thread_ts ?? event.ts;
+
   log.info(
     { event: 'app_mention_received', channel: event.channel, threadTs, user: event.user },
     'mention received',
   );
-  // TODO(P2): same pipeline as DM handler above. Strip the leading <@BOT_ID>
-  // mention from event.text before passing to spawnClaude().
+
+  await handleUserQuery({
+    client,
+    channel: event.channel,
+    threadTs,
+    userId: event.user,
+    text: cleaned,
+    eventTs: event.ts,
+  });
 });
 
 // ---------------------------------------------------------------------------
-// 8. Action handlers (Block Kit buttons on approval prompts)
+// 9. Action handlers (Phase 2b — currently no-op acks)
 // ---------------------------------------------------------------------------
 
-app.action('approve_action', async ({ ack, body, client }) => {
+app.action('approve_action', async ({ ack, body }) => {
   await ack();
-  log.info({ event: 'approve_action', user: body.user?.id }, 'approve clicked');
-  // TODO(P2): look up approval id in body.actions[0].value, mark approved in
-  // pending_approvals, resolve the in-memory Promise, chat.update the prompt
-  // with a "✅ Approved by <user>" footer.
+  log.info({ event: 'approve_action', user: body.user?.id }, 'approve clicked (P2b)');
 });
 
-app.action('approve_all_in_thread', async ({ ack, body, client }) => {
+app.action('approve_all_in_thread', async ({ ack, body }) => {
   await ack();
-  log.info({ event: 'approve_all_in_thread', user: body.user?.id }, 'auto-approve enabled');
-  // TODO(P2): UPDATE threads SET auto_approve = 1 WHERE thread_ts = ?, then
-  // resolve current approval the same way as approve_action.
+  log.info({ event: 'approve_all_in_thread', user: body.user?.id }, 'auto-approve enabled (P2b)');
 });
 
-app.action('disable_auto_approve', async ({ ack, body, client }) => {
+app.action('disable_auto_approve', async ({ ack, body }) => {
   await ack();
-  log.info({ event: 'disable_auto_approve', user: body.user?.id }, 'auto-approve disabled');
-  // TODO(P2): UPDATE threads SET auto_approve = 0 WHERE thread_ts = ?. Also
-  // serves as Reject for an in-flight prompt for now.
+  log.info({ event: 'disable_auto_approve', user: body.user?.id }, 'auto-approve disabled (P2b)');
 });
 
 // ---------------------------------------------------------------------------
-// 9. Boot + graceful shutdown
+// 10. Boot + graceful shutdown
 // ---------------------------------------------------------------------------
 
 await app.start();
-log.info('agent-me slack bridge: running on Socket Mode');
+log.info({ phase: '2a' }, 'agent-me slack bridge: running on Socket Mode (read-only mode)');
 
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   log.info({ signal }, 'shutdown initiated');
-  try {
-    await app.stop();
-  } catch (err) {
-    log.error({ err }, 'error stopping bolt app');
-  }
-  try {
-    db.close();
-  } catch (err) {
-    log.error({ err }, 'error closing sqlite');
-  }
+  try { await app.stop(); } catch (err) { log.error({ err: err.message }, 'error stopping bolt'); }
+  try { db.close(); } catch (err) { log.error({ err: err.message }, 'error closing sqlite'); }
   process.exit(0);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('uncaughtException', (err) => {
-  log.fatal({ err }, 'uncaughtException');
+  log.fatal({ err: err.message, stack: err.stack }, 'uncaughtException');
   shutdown('uncaughtException');
 });
 process.on('unhandledRejection', (reason) => {
-  log.fatal({ reason }, 'unhandledRejection');
+  log.fatal({ reason: String(reason) }, 'unhandledRejection');
   shutdown('unhandledRejection');
 });
