@@ -679,13 +679,35 @@ async def on_brief_reauth(ack, body, client):
                            "🔧 Reauth helper started — browser tabs opening on bridge host.")
 
 
+async def _reply_in_thread(client, body, text: str, blocks: list[dict] | None = None):
+    """Reply inside the thread of the message whose button was clicked."""
+    channel = (body.get("channel") or {}).get("id")
+    msg = body.get("message") or {}
+    thread_ts = msg.get("thread_ts") or msg.get("ts")
+    if not channel:
+        channel = await ensure_dm_channel(client)
+    if not channel:
+        log.warning("reply_in_thread_no_channel")
+        return
+    kwargs = {"channel": channel, "text": text}
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    if blocks:
+        kwargs["blocks"] = blocks
+    await client.chat_postMessage(**kwargs)
+
+
 @app.action("morning_reauth")
 async def on_morning_reauth(ack, body, client):
     await ack()
     log.info("button_morning_reauth", user=body.get("user", {}).get("id"))
     await cmd_reauth()
-    await _post_in_channel(client, body,
-                           "🔧 Reauth helper started — sign in to each browser tab.")
+    intro = (
+        "🔧 *Reauth helper started* — browser tabs opening on bridge host.\n"
+        "Sign in to each tab (~30 seconds), then pick an action:"
+    )
+    await _reply_in_thread(client, body, "Reauth started — pick next action",
+                           blocks=_morning_menu_blocks(intro))
 
 
 @app.action("morning_brief_now")
@@ -693,8 +715,52 @@ async def on_morning_brief_now(ack, body, client):
     await ack()
     log.info("button_morning_brief_now", user=body.get("user", {}).get("id"))
     await cmd_brief("")
-    await _post_in_channel(client, body,
-                           "📅 Generating today's brief — back in ~60s.")
+    await _reply_in_thread(client, body,
+                           "📅 Generating today's brief — back in ~60s in this DM (top level).")
+
+
+# ── Action-menu buttons (posted in morning thread or after reauth) ────
+
+@app.action("menu_brief_day")
+async def on_menu_brief_day(ack, body, client):
+    await ack()
+    log.info("button_menu_brief_day", user=body.get("user", {}).get("id"))
+    await cmd_brief("")
+    await _reply_in_thread(client, body, "📅 Daily brief generating — back in ~60s.")
+
+
+@app.action("menu_brief_week")
+async def on_menu_brief_week(ack, body, client):
+    await ack()
+    log.info("button_menu_brief_week", user=body.get("user", {}).get("id"))
+    await cmd_brief("week")
+    await _reply_in_thread(client, body, "📊 Weekly recap generating — back in ~60s.")
+
+
+@app.action("menu_brief_month")
+async def on_menu_brief_month(ack, body, client):
+    await ack()
+    log.info("button_menu_brief_month", user=body.get("user", {}).get("id"))
+    await cmd_brief("month")
+    await _reply_in_thread(client, body, "📆 Monthly recap generating — back in ~60s.")
+
+
+@app.action("menu_mcp_status")
+async def on_menu_mcp_status(ack, body, client):
+    await ack()
+    log.info("button_menu_mcp_status", user=body.get("user", {}).get("id"))
+    try:
+        body_text = await cmd_mcp()
+    except Exception as exc:
+        body_text = f"⚠️ `mcp` failed: `{exc}`"
+    await _reply_in_thread(client, body, body_text)
+
+
+@app.action("menu_help")
+async def on_menu_help(ack, body, client):
+    await ack()
+    log.info("button_menu_help", user=body.get("user", {}).get("id"))
+    await _reply_in_thread(client, body, HELP_TEXT)
 
 
 # ── Periodic MCP-auth health check ──────────────────────────────────────
@@ -782,13 +848,44 @@ def _seconds_until_next_morning() -> float:
     return (target - now).total_seconds()
 
 
-async def run_morning_routine(client) -> None:
-    """Daily morning DM: check MCPs first, then brief or warn.
+def _morning_menu_blocks(intro_text: str) -> list[dict]:
+    """Standard "what next?" menu — posted in-thread after reauth or as
+    the daily starter when MCPs are healthy. All buttons reply in the
+    same thread so the morning's conversation stays organized."""
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": intro_text}},
+        {"type": "actions", "elements": [
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📅 Daily brief"},
+             "action_id": "menu_brief_day", "style": "primary"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📊 Weekly recap"},
+             "action_id": "menu_brief_week"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "📆 Monthly"},
+             "action_id": "menu_brief_month"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔄 Verify MCPs"},
+             "action_id": "menu_mcp_status"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "❓ Help"},
+             "action_id": "menu_help"},
+        ]},
+    ]
 
-    First message of the day is always the MCP-auth status. If anything
-    needs re-auth, send a notification with a [Reauth now] button and
-    skip the brief — the brief would partially fail anyway with stale
-    tokens. If everything is healthy, kick off the brief immediately.
+
+async def run_morning_routine(client) -> None:
+    """Daily morning conversation in DM.
+
+    Flow:
+      1. Post a fresh date-headed STARTER message (becomes thread root).
+      2. Run `claude mcp list` to check MCP auth state.
+      3. Reply in thread:
+         - If anything stale → reauth prompt with [🔧 Reauth now] +
+           [📅 Brief anyway] buttons.
+         - If healthy → action menu (Daily / Weekly / Monthly / MCP / Help).
+      4. After user clicks Reauth, the action handler replies in the
+         same thread with the action menu so they can pick what's next.
     """
     log.info("morning_routine_running")
     dm = await ensure_dm_channel(client)
@@ -796,7 +893,24 @@ async def run_morning_routine(client) -> None:
         log.warning("morning_no_dm_channel — set SLACK_ALLOWED_USER_ID")
         return
 
-    # Step 1: MCP health probe.
+    # Step 1: Starter message with date header — this becomes the day's thread root.
+    today = datetime.now(MORNING_TZ).strftime("%A · %Y-%m-%d")
+    starter = await client.chat_postMessage(
+        channel=dm,
+        text=f"☀️ Good morning — {today}",
+        blocks=[
+            {"type": "header",
+             "text": {"type": "plain_text", "text": f"☀️ Good morning — {today}"}},
+            {"type": "context", "elements": [
+                {"type": "mrkdwn",
+                 "text": "_New session for today. Running MCP health check first…_"},
+            ]},
+        ],
+    )
+    starter_ts = starter["ts"]
+    log.info("morning_starter_posted", ts=starter_ts)
+
+    # Step 2: MCP probe.
     try:
         out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
         need_auth = sorted(
@@ -808,16 +922,15 @@ async def run_morning_routine(client) -> None:
         log.error("morning_mcp_check_failed", err=str(exc))
         need_auth = ["(probe failed — see bridge.log)"]
 
-    today = datetime.now(MORNING_TZ).strftime("%a %Y-%m-%d")
+    # Step 3: Reply in thread with status + actions.
     if need_auth:
-        header_text = (
-            f"☀️ *Good morning — {today}*\n\n"
-            f"*{len(need_auth)} MCP server(s) need re-auth* before today's brief can fetch fresh data:\n"
+        text = (
+            f"*🔧 {len(need_auth)} MCP server(s) need re-auth* before today's data is fresh:\n"
             + ", ".join(f"`{s}`" for s in need_auth)
-            + "\n\n_Click below to refresh; the brief will still be one tap away after._"
+            + "\n\nClick *Reauth now* and sign in to each browser tab. After that, you'll see action options."
         )
         blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": header_text}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
             {"type": "actions", "elements": [
                 {"type": "button",
                  "text": {"type": "plain_text", "text": "🔧 Reauth now"},
@@ -828,28 +941,24 @@ async def run_morning_routine(client) -> None:
             ]},
         ]
         await client.chat_postMessage(
-            channel=dm,
-            text=f"☀️ Good morning — {len(need_auth)} MCP(s) need re-auth",
+            channel=dm, thread_ts=starter_ts,
+            text=f"{len(need_auth)} MCP(s) need re-auth",
             blocks=blocks,
         )
         log.info("morning_warned", need_auth_count=len(need_auth), servers=need_auth)
         return
 
-    # Step 2: All MCPs healthy → kick off brief.
-    text = (
-        f"☀️ *Good morning — {today}*\n"
-        "All MCPs are connected. Generating today's brief now — back in ~60s."
+    # All MCPs healthy → action menu.
+    intro = (
+        "✅ *All MCPs connected.*\n\n"
+        "What would you like to do?"
     )
-    await client.chat_postMessage(channel=dm, text=text)
-    await asyncio.create_subprocess_exec(
-        "uv", "run", "agent-me-brief", "--period", "day",
-        cwd=str(REPO_DIR),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
+    await client.chat_postMessage(
+        channel=dm, thread_ts=starter_ts,
+        text="All MCPs healthy — pick an action",
+        blocks=_morning_menu_blocks(intro),
     )
-    log.info("morning_brief_dispatched")
+    log.info("morning_menu_posted")
 
 
 async def morning_loop(client) -> None:
@@ -875,7 +984,6 @@ async def main_async() -> int:
     log.info("bridge_starting", phase="2a", model=MODEL,
              mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
 
-    # Periodic MCP health probe.
     async def health_loop():
         while True:
             try:
@@ -887,29 +995,45 @@ async def main_async() -> int:
     health_task = asyncio.create_task(health_loop())
     morning_task = asyncio.create_task(morning_loop(app.client))
 
-    # Graceful shutdown.
     stop = asyncio.Event()
-
-    def _sig(*_):
-        log.info("shutdown_signal_received")
-        stop.set()
-
     loop = asyncio.get_running_loop()
+
+    def _sig(signame: str):
+        log.info("shutdown_signal_received", signal=signame)
+        stop.set()
+        # Hard-exit fallback if graceful shutdown hangs (e.g. socket close stuck).
+        loop.call_later(8.0, lambda: (log.warning("force_exit_after_timeout"), os._exit(1)))
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _sig)
-        except NotImplementedError:
+            loop.add_signal_handler(sig, _sig, sig.name)
+        except (NotImplementedError, RuntimeError):
             pass
 
-    await handler.start_async()
-    log.info("bridge_running")
-    await stop.wait()
-
-    log.info("bridge_stopping")
-    health_task.cancel()
-    morning_task.cancel()
-    await handler.close_async()
-    db.close()
+    try:
+        await handler.start_async()
+        log.info("bridge_running")
+        await stop.wait()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        log.info("shutdown_via_exception")
+    finally:
+        log.info("bridge_stopping")
+        health_task.cancel()
+        morning_task.cancel()
+        for t in (health_task, morning_task):
+            try:
+                await asyncio.wait_for(t, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+        try:
+            await asyncio.wait_for(handler.close_async(), timeout=4.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            log.warning("handler_close_timed_out_or_failed", err=str(exc))
+        try:
+            db.close()
+        except Exception:
+            pass
+        log.info("bridge_stopped")
     return 0
 
 
