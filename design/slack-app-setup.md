@@ -527,25 +527,36 @@ cd ~/agent-me/services/slack-bridge && npm start
 
 ---
 
-## 12. Open questions / things to verify
+## 12. Resolved decisions (for the upstream `agent-me` deployment)
 
-These need your input before implementation:
+These were the open questions; the upstream maintainer (`@thanhpt1110`) has
+locked the following defaults. Forkers can override any of these.
 
-1. **Workspace choice.** Confirm: personal workspace for v1, NVIDIA Internal
-   later? (Recommendation in §1.)
-2. **NVIDIA approval.** If you do go NVIDIA Internal, file the approval
-   request *now* and start v1 in a personal workspace in parallel — the
-   approval typically gates install, not development.
-3. **Sandboxed `claude -p` vs full power.** §11 last bullet — do you want
-   the Slack bridge agent to be able to write files, run shell, push git,
-   or be read-only? This shapes how much you trust messages from your phone.
-4. **State store location.** SQLite under `services/slack-bridge/state.db`
-   is simple but fork-unfriendly (every forker carries an empty DB). Is that
-   OK, or should we use an env-configurable path with a default under
-   `$XDG_STATE_HOME/agent-me/`?
-5. **Streaming UX.** Do we want `chat.update`-based streaming (live
-   "typing") for v1, or a simple post-once-done reply? Streaming roughly
-   doubles the implementation complexity.
+1. **Workspace choice — _Personal Slack workspace_.**
+   First deployment uses a fresh personal workspace owned by the user. No
+   NVIDIA admin approval needed. NVIDIA Internal install is deferred — may
+   never happen since the agent's job is autonomous, not interactive
+   collaboration.
+2. **Sandboxing — _Review-before-execute, with per-thread auto-approve
+   toggle_.**
+   Default mode: every Claude action that touches state (file write, shell
+   run, git commit, git push, MCP write call) posts a Slack message with the
+   diff/command and an "Approve ✅" / "Auto-approve all from this thread ⚡️"
+   button. Once auto-approve is toggled on, future actions in that thread
+   pass through without prompting until user clicks "Disable auto-approve".
+   This mirrors Claude Code's permission model but with Slack buttons as the
+   approval UI. Read-only actions (read file, MCP read call) execute
+   without prompting.
+3. **State store location — _ENV var with XDG default_.**
+   `${AGENT_ME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-me}`.
+   Forkers override via env var; default follows XDG Base Directory spec.
+4. **Streaming UX — _Hybrid: typing indicator + final post_.**
+   On message receipt: post 🔄 "thinking…" placeholder immediately. On
+   Claude completion: replace with full reply via `chat.update`. For long
+   tasks (>2 min): post intermediate progress lines (still via `chat.update`
+   on the same message) every ~30s. Stays well under Slack's 1 update/sec
+   per channel rate limit and avoids the complexity of token-by-token
+   streaming.
 
-Ping the maintainer (`@thaphan` for the upstream) once decisions are made;
-this doc and the bridge code can land together.
+These decisions are recorded in `~/agent-me/STATE.md` and
+`~/agent-me/discussions/2026-05-10-slack-decisions.md`.
