@@ -58,9 +58,20 @@ _Last updated: 2026-05-10 by Claude (Opus 4.7)_
   - **Decision:** investigate (a) in next session before writing the bridge.
 - Brev region preference (latency vs cost)? **→ default to us-west-2 unless user says otherwise.**
 
+## Phase 4 — locked decisions (deferred to after bridge)
+
+- **Web UI dashboard:** build under `services/dashboard/` (Express + SSE, reads
+  same SQLite state DB as bridge, tails bridge.log + claude.log). Shows running
+  task, pending Slack approvals, recent actions, daily brief, system health.
+- **Public URL strategy:** Brev built-in port-expose (URL form `*.brev.dev`).
+  Accept that URL may rotate per instance restart; document the new URL in
+  `STATE.md` whenever it changes.
+- **Why not PA:** PA is a desktop app + CLI; no daemon/web mode that exposes
+  agent-me task progress externally. See `discussions/2026-05-10-pa-vs-custom-comparison.md`.
+
 ## Open questions / parking lot
 
 - Memory architecture: keep using auto-memory or externalize to a DB the agent owns?
 - Secrets management on Brev: 1Password CLI, sops + age, HashiCorp Vault?
 - Audit log: log every action the agent takes for after-the-fact review?
-- Web UI dashboard later (Phase 4+)?
+- Dashboard auth: bearer token in URL vs Cloudflare Access vs simple basic auth?
