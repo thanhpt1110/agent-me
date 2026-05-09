@@ -128,20 +128,43 @@ const insertMessage = db.prepare(`
 `);
 
 // ---------------------------------------------------------------------------
-// 5. Phase 2a: Claude tool restrictions
+// 5. Phase 2a: Claude tool permissions + model selection
 // ---------------------------------------------------------------------------
 //
-// Read-only research mode: block built-in writers and known MCP write tools.
-// Phase 2b will replace this hard block with a PreToolUse hook that posts a
+// Headless `claude -p` denies every tool that requires permission unless we
+// explicitly allow it. The project's `.claude/settings.json` bypassPermissions
+// flag is NOT honored in headless mode for MCP tools — empirically verified.
+// Solution: per-server wildcards on the allow list + specific writes on the
+// deny list. (Top-level `mcp__*` wildcard is NOT supported; per-server is.)
+// Phase 2b will replace this hard split with a PreToolUse hook that posts a
 // Slack approval prompt instead of denying outright.
+
+const PHASE_2A_ALLOWED_TOOLS = [
+  // Built-in read tools
+  'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch',
+  // Per-server MCP wildcards — read tools come for free; we deny writes below.
+  'mcp__maas-confluence__*',
+  'mcp__maas-gdrive__*',
+  'mcp__maas-gitlab__*',
+  'mcp__maas-glean__*',
+  'mcp__maas-ippsec__*',
+  'mcp__maas-jama__*',
+  'mcp__maas-jira__*',
+  'mcp__maas-mysql__*',
+  'mcp__maas-nsight-cuda__*',
+  'mcp__maas-nvbugs__*',
+  'mcp__maas-onedrive__*',
+  'mcp__maas-sharepoint__*',
+  // Skipped on purpose:
+  //   - mcp__maas-playwright__* (browser automation, not useful in chat)
+  //   - mcp__maas-pagerduty__* and mcp__maas-nvks-prometheus__* (need separate auth)
+];
 
 const PHASE_2A_DISALLOWED_TOOLS = [
   // Built-in writers / shell
-  'Bash',
-  'Write',
-  'Edit',
-  'NotebookEdit',
-  // MCP tools that mutate remote state (curated; expand as new MCPs are added)
+  'Bash', 'Write', 'Edit', 'NotebookEdit',
+  // MCP tools that mutate remote state (curated; expand as new MCPs are added).
+  // Deny list takes precedence over the per-server wildcard above.
   'mcp__maas-jira__jira_create_issue',
   'mcp__maas-jira__jira_clone_issue',
   'mcp__maas-jira__jira_update_issue',
@@ -150,10 +173,58 @@ const PHASE_2A_DISALLOWED_TOOLS = [
   'mcp__maas-nvbugs__nvbugs_update_bug',
   'mcp__maas-ippsec__register_repo',
   'mcp__maas-mysql__execute_sql', // read-shaped name but accepts arbitrary SQL incl. writes
+  // GitLab "AI prompt" tools trigger remote AI runs against the repo — treat as write.
+  'mcp__maas-gitlab__gitlab_coderabbit_ai_prompt',
+  'mcp__maas-gitlab__gitlab_greptile_ai_suggestions',
 ];
 
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 5 * 60 * 1000);
-const MAX_SLACK_TEXT = 39000; // Slack hard limit is 40k; leave headroom for footers.
+const MAX_SLACK_TEXT = 39000;     // Slack hard limit is 40k; leave headroom for footers.
+const MAX_LOG_TEXT = 4000;        // Cap how much message text we drop into structured logs.
+
+// ---------------------------------------------------------------------------
+// 5b. Daily auto-update of "best Claude model"
+// ---------------------------------------------------------------------------
+//
+// On startup + every 24h, fetch /v1/models from Anthropic if ANTHROPIC_API_KEY
+// is set, pick the newest Opus by created_at, cache it. spawnClaude() reads
+// `currentModel` and passes it via --model. If the API call fails or no key
+// is set, we fall back to FALLBACK_MODEL.
+
+const FALLBACK_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-7';
+let currentModel = FALLBACK_MODEL;
+
+async function fetchBestModel() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    if (!res.ok) {
+      log.warn({ status: res.status }, 'Anthropic /v1/models returned non-OK');
+      return null;
+    }
+    const body = await res.json();
+    const opus = (body.data ?? [])
+      .filter((m) => m.id?.includes('opus') && m.type === 'model')
+      .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+    return opus[0]?.id ?? null;
+  } catch (err) {
+    log.warn({ err: err.message }, 'failed to fetch latest model');
+    return null;
+  }
+}
+
+async function refreshModel() {
+  const latest = await fetchBestModel();
+  if (latest && latest !== currentModel) {
+    log.info({ event: 'model_updated', from: currentModel, to: latest }, 'switched to newer Opus');
+    currentModel = latest;
+  } else if (!latest) {
+    log.debug({ currentModel }, 'model refresh skipped (no API key or fetch failed)');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 6. Bolt App
@@ -188,9 +259,14 @@ function spawnClaude({ prompt, cwd }) {
   return new Promise((resolvePromise, rejectPromise) => {
     const args = [
       '-p', prompt,
-      '--disallowedTools', PHASE_2A_DISALLOWED_TOOLS.join(','),
+      '--model', currentModel,
+      '--allowedTools', PHASE_2A_ALLOWED_TOOLS.join(' '),
+      '--disallowedTools', PHASE_2A_DISALLOWED_TOOLS.join(' '),
     ];
-    log.info({ event: 'claude_spawn', cwd, promptLen: prompt.length }, 'spawning claude');
+    log.info(
+      { event: 'claude_spawn', cwd, model: currentModel, promptLen: prompt.length },
+      'spawning claude',
+    );
 
     const child = spawn('claude', args, {
       cwd,
@@ -256,11 +332,21 @@ async function requestApproval({ channel, threadTs, action, payload }) {
 /**
  * Shared pipeline used by both DM and app_mention handlers.
  */
+function clip(s, n = MAX_LOG_TEXT) {
+  if (!s) return s;
+  return s.length <= n ? s : `${s.slice(0, n)}…[+${s.length - n} chars]`;
+}
+
 async function handleUserQuery({ client, channel, threadTs, userId, text, eventTs }) {
   if (!text || text.trim().length === 0) {
     log.debug({ threadTs }, 'empty text; skipping');
     return;
   }
+
+  log.info(
+    { event: 'message_received', threadTs, channel, user: userId, prompt: clip(text) },
+    'received',
+  );
 
   const now = Date.now();
   upsertThread.run(threadTs, channel, userId ?? null, now, now);
@@ -280,9 +366,28 @@ async function handleUserQuery({ client, channel, threadTs, userId, text, eventT
     const final = answer && answer.trim().length > 0 ? answer : '_(no output)_';
     await updateProgress(client, channel, placeholderTs, final);
     insertMessage.run(threadTs, 'assistant', final, placeholderTs, Date.now());
-    log.info({ event: 'query_handled', threadTs, ms: Date.now() - start, len: final.length }, 'ok');
+    log.info(
+      {
+        event: 'query_handled',
+        threadTs,
+        ms: Date.now() - start,
+        model: currentModel,
+        prompt: clip(text),
+        response: clip(final),
+      },
+      'ok',
+    );
   } catch (err) {
-    log.error({ err: err.message, threadTs, ms: Date.now() - start }, 'claude failed');
+    log.error(
+      {
+        event: 'query_failed',
+        threadTs,
+        ms: Date.now() - start,
+        prompt: clip(text),
+        err: err.message,
+      },
+      'claude failed',
+    );
     await updateProgress(
       client,
       channel,
@@ -307,11 +412,6 @@ app.event('message', async ({ event, client }) => {
   }
 
   const threadTs = event.thread_ts ?? event.ts;
-  log.info(
-    { event: 'message_received', channel: event.channel, threadTs, user: event.user },
-    'DM received',
-  );
-
   await handleUserQuery({
     client,
     channel: event.channel,
@@ -323,15 +423,8 @@ app.event('message', async ({ event, client }) => {
 });
 
 app.event('app_mention', async ({ event, client }) => {
-  // Strip the leading `<@BOTID>` mention from the text Claude sees.
   const cleaned = (event.text || '').replace(/^<@[A-Z0-9]+>\s*/, '').trim();
   const threadTs = event.thread_ts ?? event.ts;
-
-  log.info(
-    { event: 'app_mention_received', channel: event.channel, threadTs, user: event.user },
-    'mention received',
-  );
-
   await handleUserQuery({
     client,
     channel: event.channel,
@@ -365,8 +458,19 @@ app.action('disable_auto_approve', async ({ ack, body }) => {
 // 10. Boot + graceful shutdown
 // ---------------------------------------------------------------------------
 
+// Initial model refresh (non-blocking) + daily refresh.
+refreshModel().catch((err) => log.warn({ err: err.message }, 'initial model refresh failed'));
+const MODEL_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const modelRefreshTimer = setInterval(() => {
+  refreshModel().catch((err) => log.warn({ err: err.message }, 'periodic model refresh failed'));
+}, MODEL_REFRESH_INTERVAL_MS);
+modelRefreshTimer.unref(); // do not keep process alive on its own
+
 await app.start();
-log.info({ phase: '2a' }, 'agent-me slack bridge: running on Socket Mode (read-only mode)');
+log.info(
+  { phase: '2a', initialModel: currentModel, hasApiKey: Boolean(process.env.ANTHROPIC_API_KEY) },
+  'agent-me slack bridge: running on Socket Mode (read-only mode)',
+);
 
 let shuttingDown = false;
 async function shutdown(signal) {
