@@ -57,6 +57,31 @@ TRUST_CONFIRM_GAP_S = 2.5
 
 URL_RE = re.compile(rb"https://[^\s)\]\"'`<>]+nvidia\.com[^\s)\]\"'`<>]*")
 
+# claude renders the auth URL with terminal control sequences interleaved
+# (CSI color codes, OSC 8 hyperlink markers) and may also wrap at 80 cols
+# even after we set TIOCSWINSZ on the pty. Strip the control sequences
+# and merge any newline that lands between two URL-character bytes before
+# we run URL_RE over the buffer.
+ANSI_CSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+ANSI_OSC = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+URL_CHAR = rb"A-Za-z0-9=%&_./?:~+-"
+LINE_WRAP_IN_URL = re.compile(
+    rb"(?P<a>[" + URL_CHAR + rb"])[\r\n]+(?P<b>[" + URL_CHAR + rb"])"
+)
+
+
+def clean_pty(data: bytes) -> bytes:
+    """Strip ANSI escapes and stitch URL fragments split by mid-URL wrap."""
+    data = ANSI_CSI.sub(b"", data)
+    data = ANSI_OSC.sub(b"", data)
+    # Repeat-until-stable: a single URL can be wrapped multiple times.
+    while True:
+        new = LINE_WRAP_IN_URL.sub(rb"\g<a>\g<b>", data)
+        if new == data:
+            break
+        data = new
+    return data
+
 
 def detect_stale() -> list[str]:
     res = subprocess.run(
@@ -205,26 +230,42 @@ def main() -> int:
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
             buffer += data
-            for m in URL_RE.finditer(buffer):
+            cleaned = clean_pty(buffer)
+            for m in URL_RE.finditer(cleaned):
                 url_b = m.group(0)
                 if url_b in opened:
                     continue
                 url_s = url_b.decode("utf-8", errors="replace")
-                if (
+                if not (
                     "authorize" in url_s
                     or "/oauth/" in url_s
                     or "response_type=code" in url_s
                 ):
-                    opened.add(url_b)
-                    short = url_s if len(url_s) <= 60 else url_s[:57] + "..."
+                    continue
+                # Sanity-check: every NVIDIA OAuth authorize URL must carry
+                # at minimum response_type, client_id, code_challenge, and
+                # redirect_uri. If the captured URL is missing any of those,
+                # something corrupted the extraction — skip rather than open
+                # a broken URL that produces "redirect_uri: Input should be
+                # a valid URL" errors at the IDP.
+                required = ("response_type=", "client_id=", "code_challenge=", "redirect_uri=")
+                missing = [p for p in required if p not in url_s]
+                if missing:
                     print(
-                        f"\n[helper] >>> auto-opening URL #{len(opened)} ({short})\n"
+                        f"\n[helper] !! skipping malformed URL ({len(url_s)} chars,"
+                        f" missing {', '.join(missing)}):\n{url_s}\n"
                     )
-                    subprocess.Popen(
-                        ["open", url_s],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    continue
+                opened.add(url_b)
+                print(
+                    f"\n[helper] >>> auto-opening URL #{len(opened)}"
+                    f" ({len(url_s)} chars):\n{url_s}\n"
+                )
+                subprocess.Popen(
+                    ["open", url_s],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
         try:
             wpid, status = os.waitpid(pid, os.WNOHANG)
             if wpid == pid:
