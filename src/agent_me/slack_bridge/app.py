@@ -336,17 +336,20 @@ app = AsyncApp(
 HELP_TEXT = "\n".join((
     "*agent-me bot — built-in commands*",
     "",
-    "• `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Confluence)",
-    "• `/brief week` — weekly recap (last 7 days)",
-    "• `/brief month` — monthly recap (last 30 days)",
-    "• `/mcp` — list MCP server health & auth status",
-    "• `/reauth` — trigger MCP re-auth helper (auto-opens auth URLs on bridge host)",
-    "• `/whoami` — show your Slack user id",
-    "• `/version` — bridge + claude versions and pinned model",
-    "• `/help` — this message",
+    "Type any of these as `/cmd`, plain text (`brief`, `mcp`, `reauth`…), or click buttons in posted messages — all three work.",
+    "",
+    "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Confluence)",
+    "• `brief week` / `/brief week` — weekly recap (last 7 days)",
+    "• `brief month` / `/brief month` — monthly recap (last 30 days)",
+    "• `mcp` / `/mcp` — list MCP server health & auth status",
+    "• `reauth` / `/reauth` — trigger MCP re-auth helper (auto-opens auth URLs on bridge host)",
+    "• `whoami` / `/whoami` — show your Slack user id",
+    "• `version` / `/version` — bridge + claude versions and pinned model",
+    "• `help` / `/help` — this message",
     "",
     "_Anything else is sent to Claude headlessly with read-only tools enabled (Phase 2a)._",
     "_The bridge auto-checks MCP auth health every 6h and DMs you when re-auth is needed._",
+    "_Daily morning routine fires at 6am Vietnam time when the bridge is running._",
 ))
 
 
@@ -458,6 +461,41 @@ async def update_progress(client, channel: str, ts: str, text: str) -> None:
 _operator_user_id: str | None = os.environ.get("SLACK_ALLOWED_USER_ID") or None
 
 
+# Plain-text command shortcuts: typing "brief", "brief week", "mcp",
+# "reauth", "help", etc. in a DM is treated as the corresponding slash
+# command. Match is exact (after lower() + strip()) so it doesn't
+# accidentally fire on sentences like "help me debug this".
+PLAIN_COMMANDS: dict[str, tuple[str, str]] = {
+    # brief variants
+    "brief":          ("/brief", ""),
+    "brief day":      ("/brief", "day"),
+    "brief daily":    ("/brief", "daily"),
+    "daily":          ("/brief", ""),
+    "today":          ("/brief", ""),
+    "brief week":     ("/brief", "week"),
+    "brief weekly":   ("/brief", "week"),
+    "weekly":         ("/brief", "week"),
+    "this week":      ("/brief", "week"),
+    "brief month":    ("/brief", "month"),
+    "brief monthly":  ("/brief", "month"),
+    "monthly":        ("/brief", "month"),
+    "this month":     ("/brief", "month"),
+    # other commands
+    "mcp":            ("/mcp", ""),
+    "status":         ("/mcp", ""),
+    "reauth":         ("/reauth", ""),
+    "auth":           ("/reauth", ""),
+    "help":           ("/help", ""),
+    "?":              ("/help", ""),
+    "commands":       ("/help", ""),
+    "version":        ("/version", ""),
+    "ver":            ("/version", ""),
+    "whoami":         ("/whoami", ""),
+    "who am i":       ("/whoami", ""),
+    "id":             ("/whoami", ""),
+}
+
+
 async def handle_user_query(*, client, channel: str, thread_ts: str,
                             user_id: str | None, text: str | None,
                             event_ts: str | None) -> None:
@@ -468,6 +506,21 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
 
     log.info("message_received", thread_ts=thread_ts, channel=channel, user=user_id,
              prompt=clip(cleaned))
+
+    # Plain-text command intercept (exact match): "brief", "brief week", "mcp", etc.
+    plain_key = cleaned.strip().lower()
+    if plain_key in PLAIN_COMMANDS:
+        cmd, args_text = PLAIN_COMMANDS[plain_key]
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        try:
+            body = await handle_slash(cmd, user_id, args_text)
+            await update_progress(client, channel, placeholder_ts, body)
+            log.info("plain_handled", trigger=plain_key, cmd=cmd, thread_ts=thread_ts)
+        except Exception as exc:
+            log.error("plain_failed", cmd=cmd, err=str(exc))
+            await update_progress(client, channel, placeholder_ts,
+                                  f"⚠️ `{cmd}` failed: `{exc}`")
+        return
 
     # Slash-prefix intercept: route /mcp etc. without spawning claude.
     m = re.match(r"^(/[a-z][a-z0-9_-]*)\b\s*(.*)$", cleaned, re.IGNORECASE)
