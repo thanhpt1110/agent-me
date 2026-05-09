@@ -326,10 +326,12 @@ const HELP_TEXT = [
   '*agent-me bot — built-in commands*',
   '',
   '• `/mcp` — list MCP server health & auth status (runs `claude mcp list`)',
+  '• `/whoami` — show your Slack user id (paste into `SLACK_ALLOWED_USER_ID` to lock down)',
   '• `/version` — show bridge + claude versions and pinned model',
   '• `/help` — this message',
   '',
   '_Anything else is sent to Claude headlessly with read-only tools enabled (Phase 2a)._',
+  '_The bridge auto-checks MCP auth health every 6h and DMs you when re-auth is needed._',
 ].join('\n');
 
 async function handleSlashCommand({ client, channel, threadTs, cmd /* , args */ }) {
@@ -343,6 +345,8 @@ async function handleSlashCommand({ client, channel, threadTs, cmd /* , args */ 
     } else if (cmd === '/version') {
       const claudeVer = (await runCommand('claude', ['--version'], { cwd: repoDir })).trim();
       body = `*Bridge:* phase 2a · *Model:* \`${MODEL}\`\n*Claude CLI:* \`${claudeVer}\`\n*Repo:* \`${repoDir}\``;
+    } else if (cmd === '/whoami') {
+      body = `Your Slack user id: \`${operatorUserId() ?? '(unknown — DM the bot once first)'}\``;
     } else if (cmd === '/help') {
       body = HELP_TEXT;
     } else {
@@ -447,6 +451,12 @@ app.event('message', async ({ event, client }) => {
     return;
   }
 
+  // Auto-discover operator user id for DM notifications when ALLOWED is unset.
+  if (!process.env.SLACK_ALLOWED_USER_ID && !globalThis.__discoveredUserId && event.user) {
+    globalThis.__discoveredUserId = event.user;
+    log.info({ user: event.user }, 'auto-discovered operator user id for notifications');
+  }
+
   const threadTs = event.thread_ts ?? event.ts;
   await handleUserQuery({
     client,
@@ -496,6 +506,8 @@ async function handleNativeSlash({ ack, respond, command }) {
     } else if (cmd === '/version') {
       const claudeVer = (await runCommand('claude', ['--version'], { cwd: repoDir })).trim();
       body = `*Bridge:* phase 2a · *Model:* \`${MODEL}\`\n*Claude CLI:* \`${claudeVer}\`\n*Repo:* \`${repoDir}\``;
+    } else if (cmd === '/whoami') {
+      body = `Your Slack user id: \`${command.user_id}\``;
     } else if (cmd === '/help') {
       body = HELP_TEXT;
     } else {
@@ -517,7 +529,97 @@ async function handleNativeSlash({ ack, respond, command }) {
 
 app.command('/mcp', handleNativeSlash);
 app.command('/version', handleNativeSlash);
+app.command('/whoami', handleNativeSlash);
 app.command('/help', handleNativeSlash);
+
+// ---------------------------------------------------------------------------
+// 8c. Periodic MCP-auth health check + DM notify
+// ---------------------------------------------------------------------------
+//
+// Claude Code's GrowthBook flag tengu_willow_refresh_ttl_hours is 0, which
+// means it does NOT proactively refresh OAuth tokens. MAAS-MCP access tokens
+// expire ~daily; user has to re-auth from terminal (see
+// design/mcp-authentication.md). To make this less painful, the bridge:
+//   - Auto-discovers the operator's Slack user_id from the first DM (or
+//     reads SLACK_ALLOWED_USER_ID if pinned in .env)
+//   - On startup + every MCP_CHECK_INTERVAL_MS (default 6h), runs
+//     `claude mcp list` and parses for "! Needs authentication"
+//   - DMs the operator with the list of stale servers + a copy-pasteable
+//     terminal command, throttled to at most one notification every
+//     MIN_NOTIFY_GAP_MS (default 4h).
+
+const MCP_CHECK_INTERVAL_MS = Number(process.env.MCP_CHECK_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
+const MIN_NOTIFY_GAP_MS = Number(process.env.MIN_NOTIFY_GAP_MS ?? 4 * 60 * 60 * 1000);
+
+let dmChannelId = null;
+let lastNotifyTs = 0;
+let lastNeedAuthSet = '';   // hash of last reported set, to skip dup notifies
+
+function operatorUserId() {
+  return process.env.SLACK_ALLOWED_USER_ID || globalThis.__discoveredUserId || null;
+}
+
+async function ensureDmChannel(client) {
+  if (dmChannelId) return dmChannelId;
+  const uid = operatorUserId();
+  if (!uid) return null;
+  try {
+    const res = await client.conversations.open({ users: uid });
+    dmChannelId = res.channel?.id ?? null;
+    log.info({ dmChannelId, uid }, 'opened DM channel for notifications');
+  } catch (err) {
+    log.warn({ err: err.message }, 'failed to open DM channel');
+  }
+  return dmChannelId;
+}
+
+async function checkMcpAuth(client) {
+  try {
+    const out = await runCommand('claude', ['mcp', 'list'], { cwd: repoDir, timeoutMs: 60_000 });
+    const needAuth = out.split('\n')
+      .filter((l) => l.includes('Needs authentication'))
+      .map((l) => (l.match(/^([^:\s]+):/) || [])[1])
+      .filter(Boolean);
+    log.info(
+      { event: 'mcp_health_check', need_auth_count: needAuth.length, servers: needAuth },
+      'mcp health',
+    );
+    if (needAuth.length === 0) {
+      lastNeedAuthSet = '';
+      return;
+    }
+    const setKey = needAuth.sort().join(',');
+    const now = Date.now();
+    if (setKey === lastNeedAuthSet && now - lastNotifyTs < MIN_NOTIFY_GAP_MS) {
+      log.debug({ setKey }, 'skipping notify (same servers, recent)');
+      return;
+    }
+    const dm = await ensureDmChannel(client);
+    if (!dm) {
+      log.warn('no DM channel — set SLACK_ALLOWED_USER_ID or DM the bot once to register');
+      return;
+    }
+    const text = [
+      `🔔 *${needAuth.length} MCP server(s) need re-auth:* ${needAuth.map((s) => '`' + s + '`').join(', ')}`,
+      '',
+      'On the bridge host (your Mac), run:',
+      '```',
+      'claude',
+      '> use mcp__maas-jira__jira_search to find any issue assigned to me',
+      '```',
+      'Click the SSO link Claude prints; one auth refreshes all maas-* servers.',
+      'Bridge will pick up new tokens automatically — no restart needed.',
+      '',
+      '_See `design/mcp-authentication.md` for full playbook._',
+    ].join('\n');
+    await client.chat.postMessage({ channel: dm, text });
+    lastNotifyTs = now;
+    lastNeedAuthSet = setKey;
+    log.info({ event: 'mcp_auth_notified', count: needAuth.length }, 'sent reauth notification');
+  } catch (err) {
+    log.warn({ err: err.message }, 'mcp health check failed');
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 9. Action handlers (Phase 2b — currently no-op acks)
@@ -544,9 +646,17 @@ app.action('disable_auto_approve', async ({ ack, body }) => {
 
 await app.start();
 log.info(
-  { phase: '2a', model: MODEL },
+  { phase: '2a', model: MODEL, mcpCheckIntervalMs: MCP_CHECK_INTERVAL_MS },
   'agent-me slack bridge: running on Socket Mode (read-only mode)',
 );
+
+// Initial check + periodic MCP-auth health probe.
+checkMcpAuth(app.client).catch((err) => log.warn({ err: err.message }, 'initial mcp check failed'));
+const mcpCheckTimer = setInterval(
+  () => checkMcpAuth(app.client).catch((err) => log.warn({ err: err.message }, 'periodic mcp check failed')),
+  MCP_CHECK_INTERVAL_MS,
+);
+mcpCheckTimer.unref();
 
 let shuttingDown = false;
 async function shutdown(signal) {

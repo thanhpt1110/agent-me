@@ -4,14 +4,20 @@
 
 - MAAS-MCP tokens (NVIDIA-internal MCPs at `nvaihub.nvidia.com/maas/*` and
   `maas.prd.astra.nvidia.com/*`) expire **every ~24 hours**.
-- When tokens expire, every server flips to `! Needs authentication` in
-  `/mcp` output and the bot can no longer call those tools.
+- This is a **Claude Code client limitation**, not an NVIDIA server-side
+  revoke: Anthropic's GrowthBook flag `tengu_willow_refresh_ttl_hours = 0`
+  disables proactive OAuth-token refresh in Claude Code. Cursor's MCP
+  extension implements its own refresh loop, which is why Cursor sessions
+  appear to last longer than `claude` sessions for the same MAAS endpoints.
 - **Re-auth has to happen on the host running the bridge** (today: your Mac;
   Phase 3+: Brev). It cannot happen from Slack — the OAuth flow needs an
   interactive browser session and writes to the host's `~/.claude.json`.
 - Re-auth takes ~30 seconds and **does not require restarting the bridge** —
   it shells out to fresh `claude` per request and picks up the new token on
   the next call.
+- The bridge **auto-detects** stale tokens every 6 hours via `claude mcp
+  list` and **DMs you** the re-auth one-liner so you don't have to remember
+  to check.
 
 ## Where the auth state lives
 
@@ -100,18 +106,47 @@ likely cause is **token expiry between the two events**. The bridge does
 not maintain its own auth — it inherits from `~/.claude.json` — so a stale
 config affects both equally. Re-auth from terminal fixes both.
 
+## How the bridge helps
+
+- **Periodic health probe.** On startup and every `MCP_CHECK_INTERVAL_MS`
+  (default 6h) the bridge runs `claude mcp list`, parses out servers
+  flagged `! Needs authentication`, and DMs the operator (auto-discovered
+  from the first DM, or pinned via `SLACK_ALLOWED_USER_ID` in `.env`).
+- **Throttled.** Same set of stale servers won't re-notify within
+  `MIN_NOTIFY_GAP_MS` (default 4h), so you don't get spam if you read the
+  first ping but haven't re-auth'd yet.
+- **`/mcp`** is always there for ad-hoc checks.
+- **`/whoami`** echoes your Slack user id so you can pin
+  `SLACK_ALLOWED_USER_ID` in `.env` for both notification routing and
+  single-user lockdown.
+
+## Experiments that probably won't help
+
+- **Override the GrowthBook flag.** Editing
+  `~/.claude.json:cachedGrowthBookFeatures.tengu_willow_refresh_ttl_hours`
+  to a non-zero value (e.g. 23) is tempting but Claude Code resyncs the
+  cache periodically and will revert. Even if it stuck, the refresh code
+  path may be guarded by additional flags. We don't recommend this hack.
+- **Daemon-keepalive.** Leaving an interactive `claude` REPL alive in tmux
+  doesn't extend MCP-token life — the bridge spawns fresh `claude -p`
+  children that read the same on-disk auth state regardless.
+- **Static API key headers.** Cursor's `~/.cursor/mcp.json` shows
+  `headers: {}` for the same maas-* servers — i.e. NVIDIA does not
+  publish long-lived bearer tokens for these endpoints. Both clients use
+  the same OAuth flow; the difference is purely in client-side refresh.
+
 ## Future: bot-driven re-auth?
 
-Not feasible. OAuth requires:
+Not feasible end-to-end. OAuth requires:
 1. An HTTP redirect URI registered with NVIDIA's IDP.
 2. A browser session that you control.
 
-We could in theory:
-- Have the bot DM you the auth URL when `/mcp` shows expired tokens,
+A Phase-3+ enhancement could:
+- Detect stale tokens (already done), then
+- Capture the SSO link `claude` would print and DM it to you,
 - And let you paste the resulting code back into the bot.
 
-That's a Phase-3+ enhancement (see `STATE.md` parking lot). For now, the
-30-second terminal flow is the path.
+For now, the bridge's notification + 30-second terminal flow is the path.
 
 ## Quick checklist
 
