@@ -207,7 +207,16 @@ def main() -> int:
 
     threading.Thread(target=writer, daemon=True).start()
 
-    opened: set[bytes] = set()
+    # Dedupe by OAuth client_id rather than the raw URL bytes:
+    # - URL_RE may match slightly different byte ranges as buffer grows.
+    # - The tail-trim heuristic produces a NEW url_b vs what's in the
+    #   buffer, so url_b-based dedupe lets the next iteration's
+    #   untrimmed match through and re-open the same URL forever.
+    # - After SSO success claude may even re-print the URL in its reply.
+    # client_id is unique per server's OAuth registration and stable
+    # across all those cases — exactly the right dedupe key.
+    opened_client_ids: set[str] = set()
+    CLIENT_ID_RE = re.compile(r"client_id=([A-Za-z0-9._\-]+)")
     buffer = b""
     shutting_down = False
     debug_fp = open(debug_bytes_path, "wb") if debug_bytes_path else None
@@ -254,14 +263,19 @@ def main() -> int:
             cleaned = clean_pty(buffer)
             for m in URL_RE.finditer(cleaned):
                 url_b = m.group(0)
-                if url_b in opened:
-                    continue
                 url_s = url_b.decode("utf-8", errors="replace")
                 if not (
                     "authorize" in url_s
                     or "/oauth/" in url_s
                     or "response_type=code" in url_s
                 ):
+                    continue
+                # Dedupe by client_id (stable across re-prints and trims).
+                cid_match = CLIENT_ID_RE.search(url_s)
+                if not cid_match:
+                    continue
+                cid = cid_match.group(1)
+                if cid in opened_client_ids:
                     continue
                 # Sanity-check: every NVIDIA OAuth authorize URL must carry
                 # at minimum response_type, client_id, code_challenge, and
@@ -310,10 +324,10 @@ def main() -> int:
                             f"(URL now {len(url_s)} chars)"
                         )
                         break
-                opened.add(url_b)
+                opened_client_ids.add(cid)
                 print(
-                    f"\n[helper] >>> auto-opening URL #{len(opened)}"
-                    f" ({len(url_s)} chars):\n{url_s}\n"
+                    f"\n[helper] >>> auto-opening URL #{len(opened_client_ids)}"
+                    f" (client_id={cid[:8]}…, {len(url_s)} chars):\n{url_s}\n"
                 )
                 subprocess.Popen(
                     ["open", url_s],
@@ -326,7 +340,7 @@ def main() -> int:
                 code = os.waitstatus_to_exitcode(status)
                 print(
                     f"\n[helper] claude exited (code {code}). "
-                    f"opened {len(opened)}/{len(stale)} auth URL(s).\n"
+                    f"opened {len(opened_client_ids)}/{len(stale)} auth URL(s).\n"
                     "[helper] verify with:  claude mcp list"
                 )
                 return code
