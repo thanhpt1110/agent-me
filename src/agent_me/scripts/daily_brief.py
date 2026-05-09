@@ -638,8 +638,57 @@ async def main_async(period: str = "day", dry_run: bool = False,
     if not preset:
         log.error("unknown period", period=period, valid=list(PERIOD_PRESETS))
         return 2
+    started_at = time.time()
     log.info("brief_starting", repo_dir=str(REPO_DIR), period=period, days=preset["days"])
 
+    # ── Resolve Slack target FIRST so we can post a progress placeholder
+    #    before the (slow) MCP fetch starts. Skip in --dry-run.
+    placeholder_channel: str | None = None
+    placeholder_ts: str | None = None
+    client: WebClient | None = None
+    if not dry_run:
+        bot_token = os.environ.get("SLACK_BOT_TOKEN")
+        target = channel_override or os.environ.get("SLACK_ALLOWED_USER_ID")
+        if not bot_token or "REPLACE-ME" in bot_token:
+            log.error("missing SLACK_BOT_TOKEN")
+            return 2
+        if not target:
+            log.error("no target — set SLACK_ALLOWED_USER_ID in configs/.env or use --channel")
+            return 2
+        client = WebClient(token=bot_token)
+        if target.startswith("U"):
+            try:
+                opened = client.conversations_open(users=target)
+                placeholder_channel = opened["channel"]["id"]
+            except Exception as exc:
+                log.error("conversations_open_failed", err=str(exc))
+                return 3
+        else:
+            placeholder_channel = target
+
+        try:
+            res = client.chat_postMessage(
+                channel=placeholder_channel,
+                text=(
+                    f"🔄 *{preset['title']} — generating…*\n"
+                    "_Step 1/3: Asking Claude to query MCPs "
+                    "(Jira / GitLab / NVBugs / Confluence) + GitHub via `gh`…_"
+                ),
+            )
+            placeholder_ts = res["ts"]
+            log.info("placeholder_posted", channel=placeholder_channel, ts=placeholder_ts)
+        except Exception as exc:
+            log.warning("placeholder_post_failed", err=str(exc))
+
+    def progress(text: str) -> None:
+        if not (client and placeholder_channel and placeholder_ts):
+            return
+        try:
+            client.chat_update(channel=placeholder_channel, ts=placeholder_ts, text=text)
+        except Exception as exc:
+            log.warning("progress_update_failed", err=str(exc))
+
+    # ── Fetch in parallel
     errors: list[str] = []
     claude_task = asyncio.create_task(fetch_via_claude(preset["days"]))
     gh_task = asyncio.create_task(fetch_github())
@@ -658,10 +707,21 @@ async def main_async(period: str = "day", dry_run: bool = False,
         errors.append(f"github: {exc}")
         gh_data = {}
 
+    elapsed_fetch = int(time.time() - started_at)
     items = to_items(claude_data, gh_data)
     by_source = {s: sum(1 for i in items if i.source == s)
                  for s in {i.source for i in items}}
-    log.info("items_collected", count=len(items), by_source=by_source)
+    log.info("items_collected", count=len(items), by_source=by_source,
+             fetch_seconds=elapsed_fetch)
+
+    by_source_pretty = " · ".join(f"{n} {s}" for s, n in sorted(by_source.items(), key=lambda kv: -kv[1]))
+    progress(
+        f"🔄 *{preset['title']} — generating…*\n"
+        f"_Step 2/3: Fetched in {elapsed_fetch}s — {len(items)} items "
+        f"({by_source_pretty or 'none'}). Building blocks…_"
+    )
+    if errors:
+        log.warning("fetch_errors", count=len(errors), details=errors)
 
     blocks = build_blocks(items, errors, period=period)
 
@@ -670,27 +730,34 @@ async def main_async(period: str = "day", dry_run: bool = False,
         log.info("dry_run_done", item_count=len(items))
         return 0
 
-    bot_token = os.environ.get("SLACK_BOT_TOKEN")
-    if not bot_token or "REPLACE-ME" in bot_token:
-        log.error("missing SLACK_BOT_TOKEN")
-        return 2
-
-    target = channel_override or os.environ.get("SLACK_ALLOWED_USER_ID")
-    if not target:
-        log.error("no target — set SLACK_ALLOWED_USER_ID in configs/.env or use --channel")
-        return 2
-
-    client = WebClient(token=bot_token)
-    if target.startswith("U"):
-        opened = client.conversations_open(users=target)
-        channel = opened["channel"]["id"]
-    else:
-        channel = target
+    progress(
+        f"🔄 *{preset['title']} — generating…*\n"
+        f"_Step 3/3: Posting {len(items)} items across {len(by_source)} source(s)…_"
+    )
 
     fallback = f"{preset['title']} — {date.today().isoformat()} ({len(items)} items)"
-    res = client.chat_postMessage(channel=channel, text=fallback, blocks=blocks)
-    log.info("posted", ok=res.get("ok"), ts=res.get("ts"), channel=channel,
-             item_count=len(items))
+    if placeholder_channel and placeholder_ts and client:
+        try:
+            res = client.chat_update(
+                channel=placeholder_channel, ts=placeholder_ts,
+                text=fallback, blocks=blocks,
+            )
+            log.info("posted_via_update", ok=res.get("ok"), ts=res.get("ts"),
+                     channel=placeholder_channel, item_count=len(items),
+                     total_seconds=int(time.time() - started_at))
+            return 0
+        except Exception as exc:
+            log.warning("chat_update_failed_falling_back", err=str(exc))
+
+    # Fallback: post a fresh message if we couldn't update the placeholder.
+    assert client is not None
+    res = client.chat_postMessage(
+        channel=placeholder_channel or target,  # type: ignore[name-defined]
+        text=fallback, blocks=blocks,
+    )
+    log.info("posted", ok=res.get("ok"), ts=res.get("ts"),
+             channel=placeholder_channel, item_count=len(items),
+             total_seconds=int(time.time() - started_at))
     return 0
 
 

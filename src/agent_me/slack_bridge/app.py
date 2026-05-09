@@ -374,11 +374,16 @@ async def cmd_whoami(user_id: str | None) -> str:
     return f"Your Slack user id: `{user_id or '(unknown — DM the bot once first)'}`"
 
 
+BRIEF_LOG_FILE = _LOG_DIR / "brief.log"
+
+
 async def cmd_brief(args_text: str = "") -> str:
     """Spawn `uv run agent-me-brief --period <X>` detached.
 
-    `args_text` is the trailing text after the slash command (e.g.
-    "weekly" / "week" / "monthly" / "month"). Default = day.
+    The brief script posts a placeholder DM immediately and updates it as
+    it progresses (Step 1/3 → 2/3 → 3/3 → final blocks). If the script
+    itself crashes, stdout/stderr are appended to brief.log so `tail -f`
+    on the host shows what happened.
     """
     arg = (args_text or "").strip().lower()
     period_map = {
@@ -390,20 +395,32 @@ async def cmd_brief(args_text: str = "") -> str:
     if period is None:
         return f"Unknown period `{arg}`. Try `/brief`, `/brief week`, or `/brief month`."
 
-    await asyncio.create_subprocess_exec(
-        "uv", "run", "agent-me-brief", "--period", period,
-        cwd=str(REPO_DIR),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
+    # Open the brief log in append mode and pass its fd to the subprocess.
+    # Parent closes its fd after spawn; the child keeps its dup'd copy.
+    BRIEF_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    log_fp = open(BRIEF_LOG_FILE, "ab")
+    log_fp.write(
+        f"\n=== {datetime.now().isoformat()} brief --period {period} (pid {os.getpid()} parent) ===\n".encode()
     )
+    log_fp.flush()
+    try:
+        await asyncio.create_subprocess_exec(
+            "uv", "run", "agent-me-brief", "--period", period,
+            cwd=str(REPO_DIR),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=log_fp, stderr=log_fp,
+            start_new_session=True,
+        )
+    finally:
+        log_fp.close()
+
     label = {"day": "Daily", "week": "Weekly", "month": "Monthly"}[period]
     return (
         f"📅 *{label} brief generation started.* "
-        "I'll post the result in your DM in ~30-60s once Claude finishes "
-        "fetching from Jira / GitLab / GitHub / NVBugs / Confluence.\n"
-        "_If MCPs are stale this will fail silently — run `/mcp` to check, `/reauth` to refresh._"
+        "Watch for a `🔄 generating…` message in your DM (it auto-updates with progress, "
+        "then becomes the final brief). Total time ~30-90s.\n"
+        f"_If something goes wrong, tail `{BRIEF_LOG_FILE}` for crash details "
+        "or run `/mcp` + `/reauth` for stale tokens._"
     )
 
 
