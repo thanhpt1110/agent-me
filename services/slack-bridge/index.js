@@ -602,19 +602,28 @@ async function checkMcpAuth(client) {
     const text = [
       `🔔 *${needAuth.length} MCP server(s) need re-auth:* ${needAuth.map((s) => '`' + s + '`').join(', ')}`,
       '',
-      'Fastest fix — run on the bridge host (your Mac):',
+      'Run on the bridge host (your Mac):',
       '```',
-      '~/agent-me/scripts/reauth-mcps.sh',
+      '~/agent-me/scripts/reauth-mcps.mjs',
       '```',
-      'Auto-copies the right prompt, opens `claude` REPL. Cmd-V → Enter → Cmd-click each printed auth URL to complete NVIDIA SSO.',
-      'Bridge will pick up new tokens automatically — no restart needed.',
+      'Auto-detects stale servers, spawns a `claude` REPL, and `open`s every NVIDIA auth URL in your browser. Sign in to each tab; the still-alive REPL captures the redirects and stores tokens. Press Ctrl-C in the helper when done.',
+      'Bridge picks up new tokens on the next call — no restart needed.',
       '',
       '_See `design/mcp-authentication.md` for the full playbook._',
     ].join('\n');
-    await client.chat.postMessage({ channel: dm, text });
+    const postRes = await client.chat.postMessage({ channel: dm, text });
     lastNotifyTs = now;
     lastNeedAuthSet = setKey;
-    log.info({ event: 'mcp_auth_notified', count: needAuth.length }, 'sent reauth notification');
+    log.info(
+      {
+        event: 'mcp_auth_notified',
+        count: needAuth.length,
+        ok: postRes.ok,
+        slack_ts: postRes.ts,
+        slack_error: postRes.error,
+      },
+      postRes.ok ? 'sent reauth notification' : 'reauth notification API said not-ok',
+    );
   } catch (err) {
     log.warn({ err: err.message }, 'mcp health check failed');
   }

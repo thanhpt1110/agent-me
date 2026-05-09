@@ -49,26 +49,30 @@ In practice: **once a day** is the rough cadence.
 
 ## How to re-auth (Mac dev — today)
 
-### Fast path: helper script
+### Fast path: helper script (auto-open)
 
 ```
-~/agent-me/scripts/reauth-mcps.sh
+~/agent-me/scripts/reauth-mcps.mjs
 ```
 
 What it does:
 
 1. Runs `claude mcp list` and parses out every server flagged
    `! Needs authentication`.
-2. Builds a Claude prompt that calls a read-only tool from each stale
-   server (forces each one's OAuth flow).
-3. Copies the prompt to your macOS clipboard (`pbcopy`).
-4. After a 3-second countdown, `exec`s an interactive `claude` REPL.
+2. Spawns a persistent `claude` REPL via piped stdin (so the local
+   OAuth callback listeners stay alive).
+3. Sends a single prompt instructing Claude to call
+   `mcp__<server>__authenticate` for each stale server.
+4. As Claude streams its output, the helper extracts each
+   `https://...nvidia.com/...` auth URL and `open`s it in your default
+   browser.
 
-In the REPL: **Cmd-V → Enter**. Claude prints one auth URL per stale
-server. **Cmd-click each URL** to complete NVIDIA SSO in the browser.
-The OAuth callback handler running inside the REPL captures each redirect
-and stores the new tokens in `~/.claude.json`. Type `/exit` when all
-servers show ✓ in the next `/mcp` check.
+You sign in to NVIDIA SSO in each tab. Each browser redirects back to
+the still-alive REPL on `localhost:<random>/callback`; tokens are stored
+in `~/.claude.json`. When you're done, press Ctrl-C in the helper — it
+sends `/exit` to claude and shuts down cleanly.
+
+You don't paste anything. You don't type any prompts. Just sign in.
 
 ### Manual path
 
