@@ -36,6 +36,11 @@ from agent_me.dashboard.auth import (
     issue_cookie_value,
 )
 from agent_me.dashboard.brief_runner import BriefRunner
+from agent_me.dashboard.log_sources import (
+    tail_bridge_slack_filtered,
+    tail_journal_unit,
+    tail_session_jsonl,
+)
 from agent_me.dashboard.state_reader import (
     SOURCE_IDS,
     SOURCES,
@@ -133,6 +138,22 @@ async def page_ops(request: Request):
         "approvals": approvals,
         "brief_runs": brief_runs,
         "mcp_cache": _MCP_CACHE,
+        "sources": SOURCES,
+    })
+
+
+async def page_logs(request: Request):
+    """3-tab log viewer: watcher unit / Slack interactions / session trace.
+
+    The threads list is filtered to ones with a `session_id` so the
+    session-tab dropdown only shows traceable threads.
+    """
+    threads = [
+        t for t in StateReader.recent_threads(limit=50)
+        if t.get("session_id")
+    ]
+    return TEMPLATES.TemplateResponse(request, "logs.html", {
+        "recent_threads": threads,
         "sources": SOURCES,
     })
 
@@ -239,6 +260,34 @@ async def sse_logs(_request: Request):
     return EventSourceResponse(stream())
 
 
+async def sse_logs_watcher(_request: Request):
+    """Stream `journalctl --user -u agent-me-watch -f`."""
+    async def stream():
+        async for evt in tail_journal_unit("agent-me-watch", from_lines=80):
+            yield {"event": "log", "data": json.dumps(evt, ensure_ascii=False, default=str)}
+    return EventSourceResponse(stream())
+
+
+async def sse_logs_slack(_request: Request):
+    """Stream the bridge.log filtered to user-facing Slack interaction events."""
+    async def stream():
+        async for evt in tail_bridge_slack_filtered(from_lines=50):
+            yield {"event": "log", "data": json.dumps(evt, ensure_ascii=False, default=str)}
+    return EventSourceResponse(stream())
+
+
+async def sse_logs_session(request: Request):
+    """Stream a Claude session JSONL trace by session_id."""
+    session_id = request.query_params.get("session_id", "").strip()
+    if not session_id:
+        return JSONResponse({"error": "missing session_id"}, status_code=400)
+
+    async def stream():
+        async for evt in tail_session_jsonl(session_id, from_lines=30):
+            yield {"event": "log", "data": json.dumps(evt, ensure_ascii=False, default=str)}
+    return EventSourceResponse(stream())
+
+
 async def sse_refresh(request: Request):
     job_id = request.path_params["job_id"]
     async def stream():
@@ -288,6 +337,7 @@ def build_app() -> Starlette:
         Route("/", page_index, name="index"),
         Route("/source/{source_id}", page_source, name="source"),
         Route("/ops", page_ops, name="ops"),
+        Route("/logs", page_logs, name="logs"),
         Route("/login", page_login, name="login"),
         Route("/api/login", api_login, methods=["POST"], name="api_login"),
         Route("/api/state", api_state, name="api_state"),
@@ -300,6 +350,9 @@ def build_app() -> Starlette:
         Route("/api/mcp/refresh", api_mcp_refresh, methods=["POST"],
               name="api_mcp_refresh"),
         Route("/api/sse/logs", sse_logs, name="sse_logs"),
+        Route("/api/sse/logs/watcher", sse_logs_watcher, name="sse_logs_watcher"),
+        Route("/api/sse/logs/slack", sse_logs_slack, name="sse_logs_slack"),
+        Route("/api/sse/logs/session", sse_logs_session, name="sse_logs_session"),
         Route("/api/sse/refresh/{job_id}", sse_refresh, name="sse_refresh"),
         Route("/healthz", healthz, name="healthz"),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),

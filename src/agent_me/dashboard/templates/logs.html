@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block title %}Logs · agent-me dashboard{% endblock %}
+
+{% block content %}
+<section class="mb-4" x-data="logsPage({{ recent_threads | tojson }})" x-init="init()">
+  <header class="mb-4">
+    <h1 class="text-2xl font-semibold text-slate-100">Logs</h1>
+    <p class="text-slate-400 text-sm mt-1">
+      Three live streams: the watcher unit (git poll), filtered Slack
+      interactions from the bridge, and per-session Claude traces.
+    </p>
+  </header>
+
+  <!-- ── Tab strip ─────────────────────────────────────────────── -->
+  <div class="border-b border-ink-700 mb-3 flex items-center gap-1 text-sm">
+    <template x-for="t in tabs" :key="t.id">
+      <button @click="switchTo(t.id)"
+              :class="active === t.id
+                ? 'border-accent-400 text-slate-100'
+                : 'border-transparent text-slate-400 hover:text-slate-200'"
+              class="px-3 py-2 -mb-px border-b-2 transition-colors">
+        <span x-text="t.label"></span>
+        <span class="ml-2 text-xs text-slate-500"
+              x-text="`(${(panes[t.id]?.lines.length) ?? 0})`"></span>
+      </button>
+    </template>
+  </div>
+
+  <!-- ── Watcher pane ─────────────────────────────────────────── -->
+  <section x-show="active === 'watcher'" x-cloak
+           class="rounded-lg border border-ink-700 bg-ink-900">
+    <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800 flex-wrap gap-2">
+      <div>
+        <h2 class="font-semibold text-slate-100">Watcher · agent-me-watch</h2>
+        <p class="text-xs text-slate-500 mt-0.5">
+          <code class="font-mono">journalctl --user -u agent-me-watch -f</code>
+        </p>
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <label class="flex items-center gap-1 text-slate-400">
+          <input type="checkbox" x-model="panes.watcher.autoScroll" class="accent-accent-500" /> auto-scroll
+        </label>
+        <button @click="clearPane('watcher')" class="text-slate-400 hover:text-accent-400">clear</button>
+        <span class="text-slate-500" x-text="`${panes.watcher.lines.length} lines`"></span>
+      </div>
+    </header>
+    <pre class="p-3 text-xs font-mono max-h-[36rem] overflow-y-auto text-slate-300 bg-ink-950"
+         x-ref="boxWatcher">
+      <template x-for="(l, idx) in panes.watcher.lines" :key="idx">
+        <div class="whitespace-pre-wrap" :class="l.replay ? 'text-slate-500' : 'text-slate-300'"
+             x-text="formatWatcher(l)"></div>
+      </template>
+      <template x-if="panes.watcher.lines.length === 0">
+        <div class="text-slate-500 italic">(connecting…)</div>
+      </template>
+    </pre>
+  </section>
+
+  <!-- ── Slack pane ───────────────────────────────────────────── -->
+  <section x-show="active === 'slack'" x-cloak
+           class="rounded-lg border border-ink-700 bg-ink-900">
+    <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800 flex-wrap gap-2">
+      <div>
+        <h2 class="font-semibold text-slate-100">Slack interactions · bridge.log (filtered)</h2>
+        <p class="text-xs text-slate-500 mt-0.5">
+          Only user-facing events: messages, slash commands, button clicks, soft-rejects.
+        </p>
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <label class="flex items-center gap-1 text-slate-400">
+          <input type="checkbox" x-model="panes.slack.autoScroll" class="accent-accent-500" /> auto-scroll
+        </label>
+        <button @click="clearPane('slack')" class="text-slate-400 hover:text-accent-400">clear</button>
+        <span class="text-slate-500" x-text="`${panes.slack.lines.length} lines`"></span>
+      </div>
+    </header>
+    <pre class="p-3 text-xs font-mono max-h-[36rem] overflow-y-auto text-slate-300 bg-ink-950"
+         x-ref="boxSlack">
+      <template x-for="(l, idx) in panes.slack.lines" :key="idx">
+        <div class="whitespace-pre-wrap" :class="l.replay ? 'text-slate-500' : 'text-slate-300'">
+          <span class="text-accent-400" x-text="`[${(l.line && l.line.event) || '?'}]`"></span>
+          <span x-text="formatJson(l.line)"></span>
+        </div>
+      </template>
+      <template x-if="panes.slack.lines.length === 0">
+        <div class="text-slate-500 italic">(no Slack-interaction events yet)</div>
+      </template>
+    </pre>
+  </section>
+
+  <!-- ── Session pane ─────────────────────────────────────────── -->
+  <section x-show="active === 'session'" x-cloak
+           class="rounded-lg border border-ink-700 bg-ink-900">
+    <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800 flex-wrap gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <h2 class="font-semibold text-slate-100">Claude session trace</h2>
+        <select x-model="sessionId" @change="onSessionChange()"
+                class="text-xs bg-ink-800 border border-ink-700 rounded px-2 py-1 text-slate-200 font-mono">
+          <option value="">— select a session —</option>
+          <template x-for="t in threads" :key="t.thread_ts">
+            <option :value="t.session_id"
+                    x-text="`${t.session_id.slice(0,8)}…  thread ${t.thread_ts}  (${t.turn_count || 0} turns)`"></option>
+          </template>
+        </select>
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <label class="flex items-center gap-1 text-slate-400">
+          <input type="checkbox" x-model="panes.session.autoScroll" class="accent-accent-500" /> auto-scroll
+        </label>
+        <button @click="clearPane('session')" class="text-slate-400 hover:text-accent-400">clear</button>
+        <span class="text-slate-500" x-text="`${panes.session.lines.length} entries`"></span>
+      </div>
+    </header>
+    <pre class="p-3 text-xs font-mono max-h-[36rem] overflow-y-auto text-slate-300 bg-ink-950"
+         x-ref="boxSession">
+      <template x-if="!sessionId">
+        <div class="text-slate-500 italic">(no session selected)</div>
+      </template>
+      <template x-for="(l, idx) in panes.session.lines" :key="idx">
+        <div class="whitespace-pre-wrap py-0.5" :class="l.replay ? 'text-slate-500' : 'text-slate-300'">
+          <span class="text-accent-400" x-text="formatSessionType(l.line)"></span>
+          <span x-text="formatJson(l.line)"></span>
+        </div>
+      </template>
+    </pre>
+  </section>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function logsPage(threads) {
+    return {
+      threads: threads || [],
+      tabs: [
+        { id: "watcher", label: "Watcher" },
+        { id: "slack",   label: "Slack" },
+        { id: "session", label: "Session" },
+      ],
+      active: "watcher",
+      sessionId: "",
+      MAX: 500,
+      panes: {
+        watcher: { lines: [], autoScroll: true, es: null, url: "/api/sse/logs/watcher" },
+        slack:   { lines: [], autoScroll: true, es: null, url: "/api/sse/logs/slack" },
+        session: { lines: [], autoScroll: true, es: null, url: null },
+      },
+
+      init() {
+        this.connect("watcher");
+        this.connect("slack");
+        // Session is connected lazily when the user picks one — there's
+        // no point in opening an EventSource with no session_id.
+      },
+
+      switchTo(id) {
+        this.active = id;
+      },
+
+      onSessionChange() {
+        this.disconnect("session");
+        this.panes.session.lines = [];
+        if (!this.sessionId) {
+          this.panes.session.url = null;
+          return;
+        }
+        this.panes.session.url =
+          `/api/sse/logs/session?session_id=${encodeURIComponent(this.sessionId)}`;
+        this.connect("session");
+      },
+
+      clearPane(id) {
+        this.panes[id].lines = [];
+      },
+
+      disconnect(id) {
+        const p = this.panes[id];
+        if (p.es) {
+          try { p.es.close(); } catch (_) {}
+          p.es = null;
+        }
+      },
+
+      connect(id) {
+        const pane = this.panes[id];
+        if (!pane.url) return;
+        const es = new EventSource(pane.url);
+        pane.es = es;
+        es.addEventListener("log", (e) => {
+          let data = {};
+          try { data = JSON.parse(e.data); } catch (_) {}
+          pane.lines.push(data);
+          if (pane.lines.length > this.MAX) {
+            pane.lines.splice(0, pane.lines.length - this.MAX);
+          }
+          if (pane.autoScroll && this.active === id) {
+            this.$nextTick(() => {
+              const ref = { watcher: "boxWatcher", slack: "boxSlack", session: "boxSession" }[id];
+              const box = this.$refs[ref];
+              if (box) box.scrollTop = box.scrollHeight;
+            });
+          }
+        });
+        es.onerror = () => {
+          if (pane.es === es) pane.es = null;
+          es.close();
+          // Backoff and reconnect, but only if we still have a URL
+          // (e.g. user didn't deselect the session in the meantime).
+          setTimeout(() => { if (pane.url) this.connect(id); }, 2000);
+        };
+      },
+
+      formatWatcher(l) {
+        if (!l) return "";
+        if (typeof l.line === "string") return l.line;
+        if (l.line && l.line.raw) return l.line.raw;
+        return JSON.stringify(l.line);
+      },
+
+      formatJson(line) {
+        if (!line) return "";
+        if (typeof line === "string") return ` ${line}`;
+        if (line.raw) return ` ${line.raw}`;
+        const { event, type, level, timestamp, ...rest } = line;
+        const head = [timestamp, level].filter(Boolean).join(" ");
+        const tail = Object.keys(rest).length ? " " + JSON.stringify(rest) : "";
+        return ` ${head}${tail}`;
+      },
+
+      formatSessionType(line) {
+        if (!line) return "";
+        // Claude session JSONL lines have a `type` field (user / assistant
+        // / tool_use / tool_result / system). Fall back to event/raw.
+        const tag = line.type || line.event || (line.raw ? "raw" : "?");
+        return `[${tag}]`;
+      },
+    };
+  }
+</script>
+{% endblock %}

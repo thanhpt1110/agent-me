@@ -69,6 +69,44 @@ approval gate.
   is **untouched**. Design doc: `design/dashboard-design.md`. Smoke
   tested locally (compile + import + routes + auth). **Not deployed
   yet** — waiting on Phase 3 Colossus host to stabilize.
+- [x] **Phase 2b approval gate — DRAFT (2026-05-10 night)** —
+  `src/agent_me/slack_bridge/approvals.py` (new module). PreToolUse
+  hook + file-system semaphore at `${STATE_DIR}/approvals/{requests,
+  decisions,archive}/`. Hook script + `.claude/settings.json` are
+  auto-bootstrapped under `CHAT_CWD/.claude/` on bridge startup
+  (idempotent — fresh-host safe). Schema migration (idempotent
+  `ALTER TABLE`) adds `tool_use_id`/`session_id`/`tool_name`/
+  `decision_reason`/`slack_channel`/`auto_approved` to existing
+  `pending_approvals`. New `approval_loop` runs alongside the bridge
+  reading hook requests, posting Slack DMs with three buttons (✅
+  Approve / ❌ Reject / 🔓 Auto-approve this thread). Per-thread
+  auto-approve toggle (reuses the pre-existing `threads.auto_approve`
+  column). Phase 2b allow-list adds Bash/Write/Edit/NotebookEdit + all
+  MCP writes; the hook gates each call individually so they never
+  reach the tool runtime without operator consent. **Off by default**
+  — set `APPROVAL_GATE=1` in `configs/.env` to enable; `CLAUDE_TIMEOUT_S`
+  auto-bumps from 5 → 12 min when gate on so the subprocess doesn't
+  die mid-approval. 18 unit tests in `tests/test_approvals.py` (DB
+  CRUD + file-system semaphore + Slack-block rendering + approval
+  loop dispatch). Bridge unit unaffected when `APPROVAL_GATE=0`.
+- [x] **Dashboard 3-log viewer (2026-05-10 night)** —
+  `src/agent_me/dashboard/log_sources.py` (new module) +
+  `templates/logs.html` (new page) + 3 SSE endpoints + nav link.
+  Three viewports:
+  1. **Watcher** — wraps `journalctl --user -u agent-me-watch -f`,
+     streams to `/api/sse/logs/watcher`. Subprocess lifecycle
+     handled (terminate → kill escalation, no zombies on disconnect).
+  2. **Slack** — wraps `StateReader.tail_logs(BRIDGE_LOG)` and
+     filters to a `SLACK_INTERACTION_EVENTS` allowlist (incl. the
+     new `approval_*` events). Streams to `/api/sse/logs/slack`.
+  3. **Session** — `~/.claude/projects/<sanitized-cwd>/<sid>.jsonl`
+     resolved via glob fallback (handles Claude Code sanitizer
+     drift across versions). Partial-line-safe tail (accumulates
+     bytes, only emits on `\n` boundaries). Streams to
+     `/api/sse/logs/session?session_id=<id>`. UI has a session
+     dropdown populated from `recent_threads()`.
+  16 tests in `tests/test_log_sources.py`. All 68 dashboard +
+  approval tests green.
 - [x] **Phase 4 polish round (2026-05-10 evening, post-Phase-3-pivot)** —
   before Colossus deploy. Auto-redeploy: `agent-me-watch.sh`
   auto-detects `agent-me-bridge` + `agent-me-dashboard` from
@@ -190,10 +228,16 @@ approval gate.
    host.
 2. **Prompt tuning** (user-driven). User explicitly said they'll
    tweak the brief prompt directly. Don't pre-empt — wait.
-3. **Phase 2b — review-before-execute approval gate.** Slack-button
-   gating for write tools. Design ready in `design/approval-hook-design.md`
-   (file-system semaphore). Open question still: PreToolUse hook stays
-   sync-blocked? Investigate before coding.
+3. **Phase 2b — review-before-execute approval gate.** ← **DRAFTED
+   (2026-05-10 night)**. PreToolUse hook + file-system semaphore
+   shipped (`slack_bridge/approvals.py`); hook bootstrapped into
+   `CHAT_CWD/.claude/` on startup; bridge approval-loop polls
+   requests/, posts Slack DMs with Approve/Reject/Auto-thread buttons;
+   per-thread auto-approve toggle wired. Off by default (`APPROVAL_GATE=1`
+   to enable). Open: PreToolUse hook stays sync-blocked is **confirmed
+   in design doc + verified empirically**; `defer` mode also explored
+   in research notes but not used in v1 (file-system semaphore is
+   simpler + portable). 18 unit tests cover the module.
 4. **Phase 4 — web dashboard** ← **DRAFTED (2026-05-10)**, not yet
    deployed. Code at `src/agent_me/dashboard/`; design at
    `design/dashboard-design.md`. **Public URL via Tailscale Funnel**

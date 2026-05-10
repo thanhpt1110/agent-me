@@ -23,6 +23,11 @@
           <span class="md:hidden sr-only">{{ label }}</span>
         </a>
         {% endfor %}
+        <a href="/logs"
+           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/logs' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+          <span aria-hidden="true">📜</span>
+          <span class="hidden sm:inline">Logs</span>
+        </a>
         <a href="/ops"
            class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/ops' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
           <span aria-hidden="true">⚙</span>

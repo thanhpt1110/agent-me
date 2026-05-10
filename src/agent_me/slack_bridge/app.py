@@ -31,15 +31,19 @@ import signal
 import sqlite3
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
 from dotenv import load_dotenv
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
+
+from agent_me.slack_bridge import approvals
 
 # ── Repo dir resolution ──────────────────────────────────────────────────
 
@@ -185,9 +189,19 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     status             TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','expired')),
     slack_message_ts   TEXT,
     created_at         INTEGER NOT NULL,
-    resolved_at        INTEGER
+    resolved_at        INTEGER,
+    -- Phase 2b additions (2026-05-10): the columns below were added later
+    -- via ALTER TABLE for existing DBs (see _migrate_pending_approvals
+    -- below). New tables include them at create time.
+    tool_use_id        TEXT,
+    session_id         TEXT,
+    tool_name          TEXT,
+    decision_reason    TEXT,
+    slack_channel      TEXT,
+    auto_approved      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS pending_status_idx ON pending_approvals(status);
+CREATE INDEX IF NOT EXISTS pending_tool_use_idx ON pending_approvals(tool_use_id);
 CREATE TABLE IF NOT EXISTS claude_sessions (
     thread_ts     TEXT PRIMARY KEY,
     session_id    TEXT NOT NULL,
@@ -201,6 +215,36 @@ db = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
 db.execute("PRAGMA journal_mode=WAL")
 db.execute("PRAGMA foreign_keys=ON")
 db.executescript(DB_SCHEMA)
+
+
+def _migrate_pending_approvals() -> None:
+    """Add Phase 2b columns to `pending_approvals` if the table predates them.
+
+    Idempotent: introspects the existing column set and only adds what's
+    missing. Safe to call on every startup. SQLite ALTER TABLE doesn't
+    support `IF NOT EXISTS` for columns, so we have to introspect first.
+    """
+    cur = db.execute("PRAGMA table_info(pending_approvals)")
+    existing_cols = {row[1] for row in cur.fetchall()}
+    additions: list[tuple[str, str]] = [
+        ("tool_use_id", "TEXT"),
+        ("session_id", "TEXT"),
+        ("tool_name", "TEXT"),
+        ("decision_reason", "TEXT"),
+        ("slack_channel", "TEXT"),
+        ("auto_approved", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for col, type_ in additions:
+        if col not in existing_cols:
+            db.execute(f"ALTER TABLE pending_approvals ADD COLUMN {col} {type_}")
+            log.info("schema_migrate_added_column",
+                     table="pending_approvals", column=col)
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS pending_tool_use_idx ON pending_approvals(tool_use_id)"
+    )
+
+
+_migrate_pending_approvals()
 log.info("state db ready", db_path=str(DB_PATH))
 
 DB_LOCK = asyncio.Lock()
@@ -276,7 +320,17 @@ async def clear_session(thread_ts: str) -> str | None:
     return old_id
 
 
-# ── Phase-2a tool restrictions ──────────────────────────────────────────
+# ── Tool restrictions: Phase 2a vs Phase 2b ─────────────────────────────
+#
+# Phase 2a (default until APPROVAL_GATE=1): blanket disallow of all
+# write / side-effect tools. Safe but the bot can't actually do anything
+# beyond reading.
+#
+# Phase 2b (APPROVAL_GATE=1): write tools are *allowed* but each call
+# triggers a PreToolUse hook that posts to Slack and waits for
+# approval before letting Claude execute. The hook matcher lives in
+# approvals.HOOK_MATCHER; Claude Code's CLI flags here just need to
+# stop pre-blocking those tools so the hook gets a chance to fire.
 
 PHASE_2A_ALLOWED_TOOLS = " ".join((
     "Read", "Grep", "Glob", "WebFetch", "WebSearch",
@@ -308,7 +362,45 @@ PHASE_2A_DISALLOWED_TOOLS = " ".join((
     "mcp__maas-gitlab__gitlab_greptile_ai_suggestions",
 ))
 
-CLAUDE_TIMEOUT_S = float(os.environ.get("CLAUDE_TIMEOUT_S", 5 * 60))
+# Phase 2b allow-list = read tools + every MCP wildcard, including the
+# write actions that 2a blocked. The PreToolUse hook (approvals.py)
+# matches the same write tools and gates them via Slack buttons.
+PHASE_2B_ALLOWED_TOOLS = " ".join((
+    "Read", "Grep", "Glob", "WebFetch", "WebSearch",
+    "Write", "Edit", "NotebookEdit", "Bash",
+    "mcp__maas-confluence__*",
+    "mcp__maas-gdrive__*",
+    "mcp__maas-gitlab__*",
+    "mcp__maas-glean__*",
+    "mcp__maas-ippsec__*",
+    "mcp__maas-jama__*",
+    "mcp__maas-jira__*",
+    "mcp__maas-mysql__*",
+    "mcp__maas-nsight-cuda__*",
+    "mcp__maas-nvbugs__*",
+    "mcp__maas-onedrive__*",
+    "mcp__maas-sharepoint__*",
+))
+
+# Tools never allowed in chat regardless of approval (truly dangerous /
+# operationally unsuitable for chat surface). Empty for v1 — the hook
+# is the gate. Move things here only after a real incident.
+PHASE_2B_DISALLOWED_TOOLS = ""
+
+# Toggle. Default 0 (Phase 2a behaviour, no behavioural change for
+# already-deployed bridges). Setting `APPROVAL_GATE=1` in configs/.env
+# turns on the hook + Slack flow.
+APPROVAL_GATE_ON = os.environ.get("APPROVAL_GATE", "0") == "1"
+
+# Default 5 min for Phase 2a (no human in loop). With Phase 2b approval
+# gate on, bump it to 12 min so a hook waiting on a Slack button click
+# doesn't kill the subprocess. Operator can override via env.
+CLAUDE_TIMEOUT_S = float(
+    os.environ.get(
+        "CLAUDE_TIMEOUT_S",
+        12 * 60 if os.environ.get("APPROVAL_GATE", "0") == "1" else 5 * 60,
+    )
+)
 MAX_SLACK_TEXT = 39000
 MAX_LOG_TEXT = 4000
 
@@ -362,7 +454,7 @@ async def run_command(cmd: list[str], cwd: str, timeout: float = 30.0) -> str:
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise RuntimeError(f"{cmd[0]} timed out after {timeout}s")
@@ -395,6 +487,13 @@ async def spawn_claude(
     Raises SessionExpired if --resume hit a missing session — caller can
     retry without --resume to recover.
     """
+    if APPROVAL_GATE_ON:
+        allowed_tools = PHASE_2B_ALLOWED_TOOLS
+        disallowed_tools = PHASE_2B_DISALLOWED_TOOLS
+    else:
+        allowed_tools = PHASE_2A_ALLOWED_TOOLS
+        disallowed_tools = PHASE_2A_DISALLOWED_TOOLS
+
     args = [
         "claude", "-p", prompt,
         "--model", MODEL,
@@ -406,9 +505,10 @@ async def spawn_claude(
         # cwd change below, --disallowedTools (Write/Edit/Bash) is enforced and
         # CLAUDE.md isn't loaded at all — chat is just chat.
         "--permission-mode", "dontAsk",
-        "--allowedTools", PHASE_2A_ALLOWED_TOOLS,
-        "--disallowedTools", PHASE_2A_DISALLOWED_TOOLS,
+        "--allowedTools", allowed_tools,
     ]
+    if disallowed_tools:
+        args += ["--disallowedTools", disallowed_tools]
     if resume_session_id:
         args += ["--resume", resume_session_id]
     log.info("claude_spawn", cwd=str(CHAT_CWD), model=MODEL,
@@ -420,7 +520,7 @@ async def spawn_claude(
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
@@ -1241,12 +1341,264 @@ async def morning_loop(client) -> None:
             log.error("morning_routine_failed", err=str(exc))
 
 
+# ── Phase 2b approval gate ──────────────────────────────────────────────
+#
+# Claude Code's PreToolUse hook runs `slack-approval.sh` (bootstrapped
+# at startup into CHAT_CWD/.claude/) for any write tool call. The hook
+# writes a request JSON to `${STATE_DIR}/approvals/requests/` and polls
+# `${STATE_DIR}/approvals/decisions/` for the bridge's reply.
+#
+# This loop scans the requests/ dir, posts an Approve/Reject DM to the
+# operator, and inserts a `pending_approvals` row. The Slack action
+# handlers below write the decision file when the user clicks.
+#
+# Why polling not inotify: cross-platform, no extra deps, ~1s latency
+# is invisible against a human round-trip. If we ever need sub-second
+# latency the loop signature is ready for an asyncio.Queue swap-in.
+
+
+async def _post_approval_request(client, req: approvals.ApprovalRequest) -> None:
+    """Insert a DB row + post the Approve/Reject message to operator DM."""
+    # Fast path: per-thread auto-approve. We don't know the thread_ts
+    # from the hook input directly (Claude has no idea about Slack),
+    # but we keyed each spawn_claude on a thread. The mapping lives in
+    # claude_sessions: session_id → thread_ts. If session_id is set on
+    # the request and the thread has auto_approve = 1, just allow.
+    thread_ts: str | None = None
+    if req.session_id:
+        async with DB_LOCK:
+            row = db.execute(
+                "SELECT thread_ts FROM claude_sessions WHERE session_id = ?",
+                (req.session_id,),
+            ).fetchone()
+        if row:
+            thread_ts = row[0]
+            if approvals.thread_auto_approve(db, thread_ts):
+                approvals.write_decision(
+                    state_dir=STATE_DIR,
+                    tool_use_id=req.tool_use_id,
+                    decision="allow",
+                    reason="auto-approved (per-thread toggle)",
+                )
+                approval_id = uuid.uuid4().hex[:12]
+                async with DB_LOCK:
+                    approvals.insert_pending(
+                        db,
+                        approval_id=approval_id,
+                        thread_ts=thread_ts,
+                        tool_use_id=req.tool_use_id,
+                        tool_name=req.tool_name,
+                        tool_input_json=json.dumps(req.tool_input,
+                                                   ensure_ascii=False),
+                        session_id=req.session_id,
+                        slack_channel=None,
+                        slack_message_ts=None,
+                    )
+                    approvals.resolve(
+                        db, approval_id=approval_id, status="approved",
+                        decision_reason="auto-approved (per-thread toggle)",
+                        auto=True,
+                    )
+                approvals.archive_request(STATE_DIR, req.tool_use_id, "approved")
+                log.info("approval_auto_allowed",
+                         tool=req.tool_name, tool_use_id=req.tool_use_id,
+                         thread_ts=thread_ts)
+                return
+
+    # Slow path: ask the human.
+    dm = await ensure_dm_channel(client)
+    if not dm:
+        log.warning("approval_no_dm — denying by default",
+                    tool_use_id=req.tool_use_id)
+        approvals.write_decision(
+            state_dir=STATE_DIR,
+            tool_use_id=req.tool_use_id,
+            decision="deny",
+            reason="bridge: no DM channel configured",
+        )
+        approvals.archive_request(STATE_DIR, req.tool_use_id, "rejected")
+        return
+
+    approval_id = uuid.uuid4().hex[:12]
+    fallback_text, blocks = approvals.format_request_for_slack(req)
+    posted_ts: str | None = None
+    try:
+        res = await client.chat_postMessage(
+            channel=dm,
+            text=f"⚠️ Tool wants approval: {fallback_text}",
+            blocks=blocks,
+        )
+        posted_ts = res.get("ts") if isinstance(res, dict) else res["ts"]
+    except Exception as exc:
+        log.error("approval_post_failed", tool_use_id=req.tool_use_id, err=str(exc))
+        approvals.write_decision(
+            state_dir=STATE_DIR,
+            tool_use_id=req.tool_use_id,
+            decision="deny",
+            reason=f"bridge: failed to post Slack message ({exc!s:.80})",
+        )
+        approvals.archive_request(STATE_DIR, req.tool_use_id, "rejected")
+        return
+
+    async with DB_LOCK:
+        approvals.insert_pending(
+            db,
+            approval_id=approval_id,
+            thread_ts=thread_ts or "",
+            tool_use_id=req.tool_use_id,
+            tool_name=req.tool_name,
+            tool_input_json=json.dumps(req.tool_input, ensure_ascii=False),
+            session_id=req.session_id,
+            slack_channel=dm,
+            slack_message_ts=posted_ts,
+        )
+    log.info("approval_posted",
+             tool=req.tool_name,
+             tool_use_id=req.tool_use_id,
+             approval_id=approval_id,
+             slack_ts=posted_ts)
+
+
+async def _resolve_approval_from_button(
+    *,
+    client,
+    body: dict,
+    decision: str,
+    reason: str,
+    auto: bool = False,
+) -> None:
+    """Common path for Approve / Reject button handlers.
+
+    Looks the row up by tool_use_id (carried in button `value`), writes
+    the decision file, marks the DB row, edits the original Slack
+    message to disable the buttons + show outcome.
+    """
+    actions = body.get("actions") or []
+    tool_use_id = (actions[0].get("value") if actions else "") or ""
+    if not tool_use_id:
+        log.warning("approval_button_missing_tool_use_id", body_keys=list(body.keys()))
+        return
+
+    async with DB_LOCK:
+        row = approvals.get_by_tool_use_id(db, tool_use_id)
+
+    if not row:
+        log.warning("approval_button_no_row", tool_use_id=tool_use_id)
+        return
+    if row["status"] != "pending":
+        log.info("approval_button_already_resolved",
+                 tool_use_id=tool_use_id, status=row["status"])
+        return
+
+    # Write decision FIRST. The hook is polling and may pick it up
+    # before we finish updating Slack — that's fine, we want the tool
+    # call unblocked ASAP.
+    status_word = "approved" if decision == "allow" else "rejected"
+    approvals.write_decision(
+        state_dir=STATE_DIR, tool_use_id=tool_use_id,
+        decision=decision, reason=reason,
+    )
+    approvals.archive_request(STATE_DIR, tool_use_id, status_word)
+
+    async with DB_LOCK:
+        approvals.resolve(
+            db, approval_id=row["id"], status=status_word,
+            decision_reason=reason, auto=auto,
+        )
+
+    user_id = (body.get("user") or {}).get("id")
+    log.info("approval_resolved",
+             approval_id=row["id"],
+             tool_use_id=tool_use_id,
+             status=status_word,
+             auto=auto,
+             user=user_id)
+
+    # Update the original Slack message: strip buttons, show outcome.
+    channel = (body.get("channel") or {}).get("id") or row.get("slack_channel")
+    msg_ts = (body.get("message") or {}).get("ts") or row.get("slack_message_ts")
+    if not channel or not msg_ts:
+        return
+    icon = {"approved": "✅", "rejected": "❌"}[status_word]
+    auto_note = " · auto-thread" if auto else ""
+    decided_text = (
+        f"{icon} *{status_word.title()}* — {row.get('tool_name', '?')}"
+        f" · `{tool_use_id[:12]}`{auto_note}"
+    )
+    try:
+        await client.chat_update(
+            channel=channel, ts=msg_ts,
+            text=decided_text,
+            blocks=[
+                {"type": "section",
+                 "text": {"type": "mrkdwn", "text": decided_text}},
+                {"type": "context",
+                 "elements": [{"type": "mrkdwn",
+                               "text": f"_resolved by <@{user_id or '?'}>_"}]},
+            ],
+        )
+    except Exception as exc:
+        log.warning("approval_chat_update_failed",
+                    tool_use_id=tool_use_id, err=str(exc))
+
+
+@app.action("approval_approve")
+async def on_approval_approve(ack, body, client):
+    await ack()
+    await _resolve_approval_from_button(
+        client=client, body=body,
+        decision="allow",
+        reason="approved via Slack",
+    )
+
+
+@app.action("approval_reject")
+async def on_approval_reject(ack, body, client):
+    await ack()
+    await _resolve_approval_from_button(
+        client=client, body=body,
+        decision="deny",
+        reason="rejected via Slack",
+    )
+
+
+@app.action("approval_auto_thread")
+async def on_approval_auto_thread(ack, body, client):
+    """Approve THIS request and turn on auto-approve for the rest of the thread."""
+    await ack()
+    actions = body.get("actions") or []
+    tool_use_id = (actions[0].get("value") if actions else "") or ""
+    async with DB_LOCK:
+        row = approvals.get_by_tool_use_id(db, tool_use_id)
+    if row and row.get("thread_ts"):
+        async with DB_LOCK:
+            approvals.set_thread_auto_approve(db, row["thread_ts"], True)
+        log.info("approval_auto_thread_on", thread_ts=row["thread_ts"])
+    await _resolve_approval_from_button(
+        client=client, body=body,
+        decision="allow",
+        reason="approved + thread set auto-approve",
+        auto=True,
+    )
+
+
 # ── Boot ────────────────────────────────────────────────────────────────
 
 async def main_async() -> int:
     handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    log.info("bridge_starting", phase="2a", model=MODEL,
-             mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
+    log.info("bridge_starting", phase=("2b" if APPROVAL_GATE_ON else "2a"),
+             approval_gate=APPROVAL_GATE_ON,
+             model=MODEL, mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
+
+    # Phase 2b bootstrap: write the PreToolUse hook + .claude/settings.json
+    # into CHAT_CWD so claude -p picks them up. Idempotent — overwrites on
+    # every startup so a fresh state dir on a new host works without
+    # manual intervention.
+    if APPROVAL_GATE_ON:
+        try:
+            approvals.bootstrap_hooks(chat_cwd=CHAT_CWD, state_dir=STATE_DIR)
+        except Exception as exc:
+            log.error("approval_bootstrap_failed", err=str(exc))
 
     async def health_loop():
         while True:
@@ -1256,8 +1608,20 @@ async def main_async() -> int:
                 log.warning("health_loop_iter_failed", err=str(exc))
             await asyncio.sleep(MCP_CHECK_INTERVAL_S)
 
+    async def approval_dispatch(req: approvals.ApprovalRequest) -> None:
+        await _post_approval_request(app.client, req)
+
     health_task = asyncio.create_task(health_loop())
     morning_task = asyncio.create_task(morning_loop(app.client))
+    approval_task: asyncio.Task[None] | None = None
+    if APPROVAL_GATE_ON:
+        approval_task = asyncio.create_task(
+            approvals.approval_loop(
+                db=db, state_dir=STATE_DIR,
+                on_request=approval_dispatch,
+                poll_interval_s=1.0,
+            )
+        )
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -1284,14 +1648,18 @@ async def main_async() -> int:
         log.info("bridge_stopping")
         health_task.cancel()
         morning_task.cancel()
-        for t in (health_task, morning_task):
+        bg_tasks: list[asyncio.Task[Any]] = [health_task, morning_task]
+        if approval_task is not None:
+            approval_task.cancel()
+            bg_tasks.append(approval_task)
+        for t in bg_tasks:
             try:
                 await asyncio.wait_for(t, timeout=2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
         try:
             await asyncio.wait_for(handler.close_async(), timeout=4.0)
-        except (asyncio.TimeoutError, Exception) as exc:
+        except (TimeoutError, Exception) as exc:
             log.warning("handler_close_timed_out_or_failed", err=str(exc))
         try:
             db.close()
