@@ -35,9 +35,11 @@ from __future__ import annotations
 
 import fcntl
 import os
+import platform
 import pty
 import re
 import select
+import shutil
 import signal
 import struct
 import subprocess
@@ -329,15 +331,34 @@ def main() -> int:
                         )
                         break
                 opened_client_ids.add(cid)
+                # Pick a platform-appropriate opener. macOS uses `open`,
+                # Linux desktops use `xdg-open`. On headless servers
+                # (no DISPLAY/WAYLAND_DISPLAY env), there's no point
+                # trying — the URL is printed prominently below and the
+                # user opens it themselves (typically via SSH port-
+                # forward to a workstation browser).
+                opener = None
+                if platform.system() == "Darwin":
+                    opener = "open"
+                elif (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) \
+                        and shutil.which("xdg-open"):
+                    opener = "xdg-open"
+                action = "auto-opening" if opener else "PRINT-ONLY (no browser available — open manually)"
                 print(
-                    f"\n[helper] >>> auto-opening URL #{len(opened_client_ids)}"
+                    f"\n[helper] >>> {action} URL #{len(opened_client_ids)}"
                     f" (client_id={cid[:8]}…, {len(url_s)} chars):\n{url_s}\n"
                 )
-                subprocess.Popen(
-                    ["open", url_s],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                if opener:
+                    try:
+                        subprocess.Popen(
+                            [opener, url_s],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except (FileNotFoundError, OSError) as exc:
+                        # Should be rare given the shutil.which gate, but
+                        # don't crash the helper if it does happen.
+                        print(f"[helper] {opener} launch failed: {exc} — open the URL manually")
         try:
             wpid, status = os.waitpid(pid, os.WNOHANG)
             if wpid == pid:
