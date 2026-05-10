@@ -314,6 +314,25 @@ MAX_LOG_TEXT = 4000
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-7")
 
+# Chat-only working directory for `claude -p` invocations from Slack.
+#
+# Why not REPO_DIR: REPO_DIR holds the agent-me project's CLAUDE.md,
+# which contains the "auto memory" protocol meant for development
+# sessions. When a Slack user said "ghi nhớ" (remember), claude faithfully
+# followed the protocol — read MEMORY.md, wrote a new memory file, and
+# updated the index. 10 turns, 78s, $1.09 for one chat message. Bridge
+# users want a chat assistant, not a memory-management agent.
+#
+# A purpose-built empty cwd has no CLAUDE.md, no auto-memory directives,
+# and no project-specific tooling instructions. Claude responds
+# conversationally. Sessions persist in ~/.claude/projects/<sanitized
+# CHAT_CWD>/ so --resume across this dir works exactly the same as it
+# would from REPO_DIR — different on-disk location, same behavior.
+#
+# MCP tools are user-scope, so they're available from any cwd.
+CHAT_CWD = STATE_DIR / "chat-cwd"
+CHAT_CWD.mkdir(parents=True, exist_ok=True)
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def clip(s: str | None, n: int = MAX_LOG_TEXT) -> str | None:
@@ -380,16 +399,22 @@ async def spawn_claude(
         "claude", "-p", prompt,
         "--model", MODEL,
         "--output-format", "json",
-        "--dangerously-skip-permissions",
+        # NO --dangerously-skip-permissions: that flag bypasses --disallowedTools,
+        # which made claude follow the project's "auto memory" protocol (loaded
+        # from REPO_DIR/CLAUDE.md back when the bridge ran with cwd=REPO_DIR) and
+        # write .md files via the Write tool. With this flag removed plus the
+        # cwd change below, --disallowedTools (Write/Edit/Bash) is enforced and
+        # CLAUDE.md isn't loaded at all — chat is just chat.
+        "--permission-mode", "dontAsk",
         "--allowedTools", PHASE_2A_ALLOWED_TOOLS,
         "--disallowedTools", PHASE_2A_DISALLOWED_TOOLS,
     ]
     if resume_session_id:
         args += ["--resume", resume_session_id]
-    log.info("claude_spawn", cwd=str(REPO_DIR), model=MODEL,
+    log.info("claude_spawn", cwd=str(CHAT_CWD), model=MODEL,
              prompt_len=len(prompt), resume=resume_session_id)
     proc = await asyncio.create_subprocess_exec(
-        *args, cwd=str(REPO_DIR),
+        *args, cwd=str(CHAT_CWD),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
