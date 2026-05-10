@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # github/codeql-action is first-party but we SHA-pin per OpenSSF
       # guidance — actions are an attack surface regardless of publisher.
