@@ -6,28 +6,32 @@ Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous 
 
 ## Quickstart for forkers
 
-Prerequisites: Python 3.12+, [uv](https://docs.astral.sh/uv/), `claude` CLI, `gh` CLI.
+Prerequisites: `claude` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Python 3.12+, Node (`claude` itself + the playwright MCP).
 
 1. **Use this template** on GitHub → create your own copy.
-2. Clone & install:
+2. **Clone & bootstrap**:
    ```bash
    git clone git@github.com:<you>/agent-me.git
    cd agent-me
-   uv sync
+   ./scripts/bootstrap.sh
    ```
-3. **Slack app**: follow `design/slack-app-setup.md` to create your own app (personal workspace, ~10 min). Drop tokens into `configs/.env` (template at `configs/.env.example`).
-4. **Authenticate MCPs**:
+   Runs `uv sync`, prepares `configs/.env`, and registers all 17 MaaS MCP servers idempotently (Jira, GitLab, Confluence, NVBugs, Slack, Outlook, GDrive, OneDrive, SharePoint, Glean, Jama, IPPSEC, MySQL, Nsight-CUDA, NVKS-Prometheus, PagerDuty, Playwright). See `design/setup-on-fresh-host.md` for the long version (incl. Brev specifics).
+3. **Three interactive steps** the bootstrap script reminds you to do (browser required):
+   - `claude /login` — one-time per machine. (Or `export ANTHROPIC_API_KEY=...` for headless deploys.)
+   - `uv run agent-me-reauth` — opens NVIDIA-SSO tabs for each MCP. Tokens last ~24h.
+   - Fill `configs/.env` with Slack tokens (template = `configs/.env.example`). Slack app walkthrough: `design/slack-app-setup.md`.
+4. **Verify**:
    ```bash
-   uv run agent-me-reauth
+   claude mcp list                            # all 17 should be ✓ Connected
+   uv run agent-me-brief --period day --dry-run
    ```
-   Auto-opens every stale MCP's auth URL in your browser; sign in to NVIDIA SSO in each tab. Tokens persist for ~24h. See `design/mcp-authentication.md`.
 5. **Run the bridge**:
    ```bash
    uv run agent-me-bridge
    ```
-   From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`.
-6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
-7. **(Optional) Deploy**: Phase 3 moves the bridge to a 24/7 host (Brev). See `STATE.md` for current phase.
+   From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`, `/brief`.
+6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
+7. **(Optional) Deploy on Brev for 24/7**: see `design/setup-on-fresh-host.md` §"Brev-specific notes" for the systemd unit + token-sync recipe.
 
 ## Architecture overview
 

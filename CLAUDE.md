@@ -42,14 +42,17 @@ Project is **Python 3.12+** with [uv](https://docs.astral.sh/uv/) for dependency
 
 ```bash
 cd ~/agent-me
-uv sync           # creates .venv, installs everything in pyproject.toml
+./scripts/bootstrap.sh    # idempotent: uv sync + register all 17 MaaS MCPs + reminders
 ```
+
+Bootstrap delegates the MCP-registration step to `scripts/setup-mcps.sh`, which is also idempotent — re-run anytime to detect/add new servers without disturbing existing ones. The full setup walkthrough (Brev specifics, headless ANTHROPIC_API_KEY mode, systemd unit) lives in `design/setup-on-fresh-host.md`.
 
 Run any first-party script through `uv run <entry-point>` (the venv stays implicit; agents don't need to manually `source .venv/bin/activate`):
 
 ```bash
 uv run agent-me-bridge         # Slack bridge (Socket Mode, slash commands, MCP health probe)
 uv run agent-me-reauth         # MCP re-auth helper — auto-opens auth URLs in browser
+uv run agent-me-brief --period day [--dry-run]   # fan-out brief: 7 subagents in parallel
 ```
 
 Console-script entry points are declared in `pyproject.toml` under `[project.scripts]`. To add a new script:

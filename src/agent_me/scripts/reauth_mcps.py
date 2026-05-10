@@ -50,7 +50,7 @@ REPO_DIR = os.environ.get(
     "AGENT_ME_REPO_DIR",
     os.path.join(os.path.expanduser("~"), "agent-me"),
 )
-PER_CALL_GAP_S = 12.0  # Claude needs ~6-10s per authenticate call
+PER_CALL_GAP_S = 20.0  # Claude needs ~6-15s per authenticate call (Slack/Outlook OAuth slower)
 SUBMIT_GAP_S = 0.3     # split prompt body and Enter to avoid bracketed-paste batching
 BOOT_DELAY_S = 4.0
 TRUST_CONFIRM_GAP_S = 2.5
@@ -298,20 +298,24 @@ def main() -> int:
                     continue
                 # Trim suspicious tail: claude often emits the auth URL
                 # immediately followed by sentences like "Once they complete
-                # the flow..." with cursor-positioning escapes between that
+                # the flow..." with cursor-positioning escapes between, so
                 # CSI strip + line-stitch glues directly onto the URL. We
                 # detect this by looking for a lowercase->uppercase camel
-                # boundary near the end where the chars after have no URL
-                # syntax (no '&', '=', '?'). Legitimate base64 state values
-                # have URL syntax around them; sentence prefixes don't.
+                # boundary where the ENTIRE rest of the URL has no URL
+                # syntax (`&` or `=`). Legitimate base64 state values are
+                # always followed by more `&key=value` query params; English
+                # prose isn't. Earlier versions checked only a 40-char tail,
+                # which falsely fired on long state/code_challenge values
+                # (e.g. `RuDr_9YyeOay-VVdS31uQXg`) when the next param was
+                # >40 chars away.
                 for m_camel in re.finditer(rb"[a-z]([A-Z])", url_b):
                     cut = m_camel.start() + 1
                     if cut < 200:
                         continue  # too early — probably inside a real value
-                    tail = url_b[cut : cut + 40]
-                    if not re.search(rb"[&?=]", tail):
-                        # No URL syntax follows — looks like English-word glue.
-                        trimmed_tail = url_b[cut:]
+                    rest = url_b[cut:]
+                    if not re.search(rb"[&?=]", rest):
+                        # No URL syntax in the rest — this is English glue.
+                        trimmed_tail = rest
                         url_b = url_b[:cut]
                         url_s = url_s[:cut]
                         try:
