@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}{{ snapshot.label }} · agent-me dashboard{% endblock %}
+
+{% block content %}
+<div x-data="sourcePage({{ snapshot.source | tojson }}, {{ active_job | tojson }})">
+
+<section class="mb-6 flex items-center justify-between flex-wrap gap-3">
+  <div>
+    <div class="flex items-center gap-2">
+      <span class="text-2xl">{{ snapshot.icon }}</span>
+      <h1 class="text-2xl font-semibold text-slate-100">{{ snapshot.label }}</h1>
+      {% if snapshot.error %}
+      <span class="text-xs px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800">error</span>
+      {% elif snapshot.fetched_at == 0 %}
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">no cache yet</span>
+      {% elif snapshot.stale %}
+      <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">stale</span>
+      {% else %}
+      <span class="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">fresh</span>
+      {% endif %}
+    </div>
+    <p class="mt-1 text-sm text-slate-400">
+      {{ snapshot.items|length }} item(s)
+      {% if snapshot.fetched_at %} · cached {{ snapshot.fetched_at | age }} · {{ snapshot.seconds }}s fetch{% endif %}
+    </p>
+  </div>
+
+  <div class="flex items-center gap-2">
+    <select x-model="period"
+            class="text-sm bg-ink-800 border border-ink-700 rounded px-2 py-1.5 text-slate-200">
+      <option value="day">Day</option>
+      <option value="week">Week</option>
+      <option value="month">Month</option>
+    </select>
+    <button @click="refresh()" :disabled="busy"
+            class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed text-white">
+      <span x-show="!busy">⟲ Refresh now</span>
+      <span x-show="busy" x-cloak>… running</span>
+    </button>
+  </div>
+</section>
+
+<!-- Job status panel — visible while a refresh is in flight or after it terminated -->
+<section x-show="job" x-cloak
+         class="mb-4 rounded-lg border border-accent-600/40 bg-ink-900 p-4">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <span class="text-sm font-mono" x-text="`job ${job?.job_id?.slice(0,6) || ''}`"></span>
+      <span class="text-xs px-2 py-0.5 rounded"
+            :class="{
+              'bg-slate-700 text-slate-300': job?.status === 'pending',
+              'bg-accent-600/30 text-accent-400': job?.status === 'running',
+              'bg-emerald-900/40 text-emerald-300': job?.status === 'done',
+              'bg-rose-900/50 text-rose-300': job?.status === 'error',
+            }"
+            x-text="job?.status"></span>
+    </div>
+    <div class="text-xs text-slate-500" x-text="job?.seconds ? `${job.seconds}s` : ''"></div>
+  </div>
+  <div class="mt-2 text-xs text-slate-400 max-h-32 overflow-y-auto font-mono space-y-0.5">
+    <template x-for="(evt, idx) in events" :key="idx">
+      <div x-text="JSON.stringify(evt)"></div>
+    </template>
+  </div>
+</section>
+
+{% if snapshot.error %}
+<section class="mb-4 rounded-lg border border-rose-800 bg-rose-950/30 p-4 text-sm text-rose-200">
+  <strong class="text-rose-300">Last fetch failed:</strong>
+  <pre class="mt-2 whitespace-pre-wrap font-mono text-xs">{{ snapshot.error }}</pre>
+  <p class="mt-2 text-xs text-rose-400">
+    Common cause: MCP for this source needs re-auth. Run <code class="font-mono">uv run agent-me-reauth</code>, then click Refresh.
+  </p>
+</section>
+{% endif %}
+
+<!-- Items grouped by .group -->
+<section x-data="{ items: {{ snapshot.items | tojson }} }">
+  <template x-if="items.length === 0">
+    <div class="rounded-lg border border-ink-700 bg-ink-900 p-8 text-center text-slate-400">
+      <div class="text-3xl mb-2">{{ snapshot.icon }}</div>
+      <p class="text-sm">No items cached yet for {{ snapshot.label }}.</p>
+      <p class="text-xs text-slate-500 mt-1">Click <span class="text-accent-400">Refresh now</span> to fetch.</p>
+    </div>
+  </template>
+
+  <template x-if="items.length > 0">
+    <div class="space-y-4">
+      <template x-for="group in groupBy(items, 'group')" :key="group.name">
+        <div class="rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
+          <div class="px-4 py-2 border-b border-ink-700 flex items-center justify-between bg-ink-800">
+            <div class="flex items-center gap-2">
+              <span>📁</span>
+              <span class="font-mono text-sm text-slate-200" x-text="group.name"></span>
+            </div>
+            <span class="text-xs text-slate-500" x-text="`${group.items.length} item(s)`"></span>
+          </div>
+          <ul class="divide-y divide-ink-700">
+            <template x-for="i in group.items" :key="i.item_id || i.title">
+              <li class="px-4 py-2 hover:bg-ink-800/50">
+                <div class="flex items-baseline justify-between gap-3">
+                  <a :href="i.url" target="_blank" rel="noopener"
+                     class="text-sm text-slate-100 hover:text-accent-400 truncate">
+                    <span class="font-mono text-xs text-slate-500" x-text="i.item_id"></span>
+                    <span class="ml-2" x-text="i.title"></span>
+                  </a>
+                  <div class="flex items-center gap-2 text-xs text-slate-500 shrink-0">
+                    <template x-if="i.priority">
+                      <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300" x-text="i.priority"></span>
+                    </template>
+                    <template x-if="i.status">
+                      <span class="text-slate-400" x-text="i.status"></span>
+                    </template>
+                    <template x-if="i.deadline">
+                      <span class="text-rose-300" x-text="`due ${i.deadline}`"></span>
+                    </template>
+                  </div>
+                </div>
+                <template x-if="i.reason">
+                  <div class="mt-1 text-xs text-slate-500" x-text="i.reason"></div>
+                </template>
+              </li>
+            </template>
+          </ul>
+        </div>
+      </template>
+    </div>
+  </template>
+</section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function sourcePage(sourceId, initialJob) {
+    return {
+      source: sourceId,
+      busy: !!(initialJob && (initialJob.status === "pending" || initialJob.status === "running")),
+      period: "day",
+      job: initialJob || null,
+      events: [],
+      _es: null,
+
+      init() {
+        if (initialJob && this.busy) {
+          this.subscribe(initialJob.job_id);
+        }
+      },
+
+      groupBy(items, key) {
+        const map = new Map();
+        for (const it of items) {
+          const k = it[key] || "uncategorized";
+          if (!map.has(k)) map.set(k, []);
+          map.get(k).push(it);
+        }
+        return [...map.entries()]
+          .map(([name, items]) => ({ name, items }))
+          .sort((a, b) => b.items.length - a.items.length);
+      },
+
+      async refresh() {
+        if (this.busy) return;
+        this.busy = true;
+        this.events = [];
+        try {
+          const r = await fetch(`/api/refresh/${this.source}?period=${this.period}`,
+                                { method: "POST", headers: { "Accept": "application/json" } });
+          const job = await r.json();
+          this.job = job;
+          this.subscribe(job.job_id);
+        } catch (err) {
+          this.busy = false;
+          this.events.push({ event: "error", error: String(err) });
+        }
+      },
+
+      subscribe(jobId) {
+        if (this._es) this._es.close();
+        const es = new EventSource(`/api/sse/refresh/${jobId}`);
+        this._es = es;
+        const onMsg = (e) => {
+          let data = {};
+          try { data = JSON.parse(e.data); } catch {}
+          this.events.push(data);
+          if (data.event === "done" || data.event === "error" || data.event === "timeout") {
+            this.busy = false;
+            es.close();
+            this._es = null;
+            // Reload after a short delay so the cached items refresh.
+            if (data.event === "done") setTimeout(() => location.reload(), 600);
+          }
+          if (data.event === "running" || data.event === "snapshot") {
+            this.job = { ...this.job, status: "running" };
+          }
+        };
+        ["message", "snapshot", "running", "done", "error", "timeout"].forEach(
+          evt => es.addEventListener(evt, onMsg)
+        );
+        es.onerror = () => {
+          this.busy = false;
+          if (this._es === es) this._es = null;
+          es.close();
+        };
+      },
+    };
+  }
+</script>
+{% endblock %}

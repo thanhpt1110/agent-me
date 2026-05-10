@@ -16,6 +16,12 @@ dependencies = [
     "pydantic>=2.7",      # config + payload models
     "python-dotenv>=1.0", # load configs/.env
     "structlog>=24.1",    # structured logging (pino-equivalent)
+    # Phase 4 — dashboard (additive; bridge doesn't import these)
+    "starlette>=0.40",    # ASGI framework for the dashboard
+    "uvicorn[standard]>=0.30",  # ASGI server (used only by `agent-me-dashboard`)
+    "jinja2>=3.1",        # templates
+    "itsdangerous>=2.2",  # signed cookies for dashboard auth
+    "sse-starlette>=2.1", # SSE response helper
 ]
 
 [project.optional-dependencies]
@@ -27,9 +33,10 @@ dev = [
 
 [project.scripts]
 # Console scripts — run via `uv run <name>` after `uv sync`.
-agent-me-bridge = "agent_me.slack_bridge.app:main"
-agent-me-reauth = "agent_me.scripts.reauth_mcps:main"
-agent-me-brief  = "agent_me.scripts.daily_brief:main"
+agent-me-bridge    = "agent_me.slack_bridge.app:main"
+agent-me-reauth    = "agent_me.scripts.reauth_mcps:main"
+agent-me-brief     = "agent_me.scripts.daily_brief:main"
+agent-me-dashboard = "agent_me.dashboard.app:main"
 
 [build-system]
 requires = ["hatchling"]

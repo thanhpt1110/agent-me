@@ -1,18 +1,23 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-10 by Claude (Opus 4.7) — fan-out brief + Slack session persistence shipped._
+_Last updated: 2026-05-10 by Claude (Opus 4.7) — Phase 4 dashboard drafted (Tailscale Funnel locked); Phase 3 Colossus deploy in flight._
 
 ## Phase
 
-**Phase 2a + brief fan-out + Slack session persistence live.** Bridge
-is Python+uv; daily-brief now uses 7-subagent fan-out (jira / gitlab /
-confluence / nvbugs / slack / outlook / github), one Slack root header
-+ threaded reply per source, ~39s wall-clock vs old 60–230s.
-Slack DM ↔ Claude Code session persistence: each `thread_ts` maps to
-a `session_id` so multi-turn chat works (cache hits ~76k tokens on
-turn 2). Morning routine fires daily at 6am Vietnam time. PA hybrid
-attempted and reverted earlier today. Next: user-driven prompt
-tuning → Phase 3 Brev deploy → Phase 2b approval gate.
+**Phase 2a + brief fan-out + Slack session persistence live + Phase 4
+dashboard drafted (not deployed).** Bridge is Python+uv; daily-brief
+uses 7-subagent fan-out, ~39s wall-clock. Slack DM ↔ Claude Code
+session persistence shipped. Morning routine fires daily at 6am
+Vietnam time. **Phase 4 dashboard scaffold landed today (2026-05-10):**
+Starlette + Jinja2 + Alpine.js + Tailwind CDN; reads bridge SQLite
+read-only; on-demand brief refresh per source with single-flight
+locks; SSE log tail; bearer-token auth; **Tailscale Funnel chosen for
+public URL** (no DNS, no bandwidth/request cap, no interstitial).
+Smoke test passed locally — code compiles, all 14 routes respond,
+auth enforces. **Not yet deployed** — pending Phase 3 Colossus host
+ready (MCP reauth verify in flight). Next: user-driven prompt tuning
+→ finish Phase 3 deploy → install dashboard on Colossus → Phase 2b
+approval gate.
 
 ## Decisions locked
 
@@ -49,6 +54,19 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
 - [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
 - [x] **Secrets vault** at `~/agent-me-secrets.md` (outside repo, chmod 600)
 - [x] **PA hybrid experiment** — built, then reverted (see Recent decisions)
+- [x] **Phase 4 dashboard — DRAFT (2026-05-10)** — `src/agent_me/dashboard/`
+  (Starlette + Jinja2 + Alpine.js + Tailwind CDN). Read-only over
+  bridge SQLite (URI `mode=ro`); on-demand brief refresh per source
+  via `agent-me-brief` reused fetcher/parser (no Slack post,
+  single-flight per source); SSE log tail; bearer-token auth
+  (`DASHBOARD_TOKEN`). Public URL via **Tailscale Funnel** —
+  `<host>.<tailnet>.ts.net`, no DNS, no bandwidth cap (free
+  Personal), no interstitial. Two new systemd `--user` units
+  (`agent-me-dashboard.service`, `agent-me-funnel.service`) +
+  `scripts/install-dashboard.sh` idempotent installer. Bridge service
+  is **untouched**. Design doc: `design/dashboard-design.md`. Smoke
+  tested locally (compile + import + routes + auth). **Not deployed
+  yet** — waiting on Phase 3 Colossus host to stabilize.
 
 ## Recent decisions
 
@@ -98,6 +116,31 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
   commits: `2dd8b40 / 85c7119 / fd8799d`. Original PA work still in
   history (`d8907db / bdadca1 / efddcb6`) if we want to revisit.
 
+## Recent decisions (continued, 2026-05-10 evening)
+
+- **2026-05-10 — Phase 4 tunnel: Tailscale Funnel (locked).** Compared
+  Cloudflare Quick Tunnel (random URL, no SSE), ngrok free static
+  (1GB/20K req cap + interstitial every 7d), Cloudflare Named Tunnel
+  (needs owned domain), and Tailscale Funnel. User explicitly flagged
+  "report daily/weekly + đôi khi chat" — chat over SSE could blow
+  ngrok's 1GB/20K caps and the interstitial is constant UX friction.
+  Tailscale Funnel: stable URL `<host>.<tailnet>.ts.net`, no cap on
+  free Personal, no interstitial, supports SSE/WebSocket, outbound-
+  only from host (same security posture as bridge). Trade-off: cost
+  one `apt install tailscale` and one Tailscale account signup
+  (free, OAuth via Google/GitHub). Worth it. STATE.md "Phase 4 — locked
+  decisions" section's old "Brev port-expose" line is **superseded**
+  by this — Brev was abandoned same morning when MaaS MCPs proved
+  unreachable from external networks.
+- **2026-05-10 — Phase 4 FE stack: Jinja2+Alpine, NOT Flutter Web.**
+  Bandwidth isn't the deciding factor (Tailscale Funnel has no cap),
+  but Flutter Web's 3-6 MB bundle + 3-7s cold-start trade UX in the
+  wrong direction for "open dashboard, see report" use case. Plus
+  it'd add a Dart toolchain to a Python-only project. Sticking with
+  server-rendered HTML + sprinkled Alpine reactivity; if UX ever
+  feels insufficient, upgrade path is SvelteKit (~30 KB), not
+  Flutter.
+
 ## Roadmap (next session priorities)
 
 1. **Phase 3 — host deploy** ← **in flight (2026-05-10)**. Deploy
@@ -120,9 +163,16 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
    gating for write tools. Design ready in `design/approval-hook-design.md`
    (file-system semaphore). Open question still: PreToolUse hook stays
    sync-blocked? Investigate before coding.
-4. **Phase 4 — web dashboard** at `src/agent_me/dashboard/` (starlette
-   + SSE) on Brev port-expose. Reads same SQLite state DB the bridge
-   writes to.
+4. **Phase 4 — web dashboard** ← **DRAFTED (2026-05-10)**, not yet
+   deployed. Code at `src/agent_me/dashboard/`; design at
+   `design/dashboard-design.md`. **Public URL via Tailscale Funnel**
+   (locked), supersedes the earlier "Brev port-expose" plan since
+   Brev was abandoned same day. Once Phase 3 Colossus is stable, run
+   `scripts/install-dashboard.sh` on Colossus → installs tailscale
+   if missing, generates `DASHBOARD_TOKEN`, registers two systemd
+   `--user` units (dashboard + funnel). Public URL after install:
+   `https://<host>.<tailnet>.ts.net`. The bridge service is not
+   modified or restarted.
 
 ## Open research / unresolved
 
@@ -134,13 +184,30 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
   `claude mcp` reauth. Not blocking briefs (other sources keep
   working) but nags morning routine.
 
-## Phase 4 — locked decisions (deferred to after bridge stable)
+## Phase 4 — locked decisions
 
-- Web UI dashboard at `src/agent_me/dashboard/` (Python — likely
-  Starlette + SSE; not Express).
-- Public URL via Brev port-expose (`*.brev.dev`); URL may rotate per
-  instance restart.
-- Reads the bridge's SQLite + tails brief.log/bridge.log.
+- Web UI dashboard at `src/agent_me/dashboard/` — **drafted
+  2026-05-10**. Stack: Starlette + Jinja2 + Alpine.js + Tailwind
+  CDN + sse-starlette. No Node, no bundler.
+- **Public URL via Tailscale Funnel** (`<host>.<tailnet>.ts.net`).
+  Free Personal tier, no bandwidth/request cap, no interstitial, no
+  DNS to manage. Outbound-only from host. Supersedes earlier
+  Brev-port-expose idea (Brev abandoned 2026-05-10 due to
+  MaaS-MCP unreachability from external networks).
+- Reads the bridge's SQLite (URI `mode=ro`) + tails
+  `bridge.log`/`brief.log` over SSE. Never writes to bridge state.
+- On-demand refresh per source: reuses `agent_me.scripts.daily_brief`
+  fetcher/parser via in-process import (single `claude -p`
+  subprocess per source, single-flight lock); does **not** post to
+  Slack — bridge's 6am cron remains the only Slack-posting path.
+- Auth: shared bearer token (`DASHBOARD_TOKEN` in `configs/.env`),
+  signed-cookie session for browsers. Refuses to bind to non-loopback
+  if token unset.
+- The Slack bridge is **not modified** by Phase 4 — bridge keeps its
+  SQLite write connection, its `claude -p` cwd
+  (`~/.local/state/agent-me/chat-cwd`), its Socket Mode WebSocket.
+  Dashboard is purely additive. Two new systemd `--user` units; the
+  bridge unit is unchanged.
 
 ## Open questions / parking lot
 

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Overview · agent-me dashboard{% endblock %}
+
+{% block content %}
+<section class="mb-6">
+  <h1 class="text-2xl font-semibold text-slate-100">Overview</h1>
+  <p class="text-slate-400 text-sm mt-1">
+    Latest cached brief items per source, plus bridge stats. Click a source to drill in or trigger a refresh.
+  </p>
+</section>
+
+<section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6"
+         x-data="{ stats: { threads_total: {{ bridge_stats.threads_total }}, threads_active_24h: {{ bridge_stats.threads_active_24h }}, sessions_total: {{ bridge_stats.sessions_total }}, pending_approvals: {{ bridge_stats.pending_approvals }} } }">
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Threads (24h)</div>
+    <div class="mt-1 text-2xl font-semibold text-slate-100" x-text="stats.threads_active_24h"></div>
+    <div class="text-xs text-slate-500 mt-1" x-text="`${stats.threads_total} total`"></div>
+  </div>
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Claude sessions</div>
+    <div class="mt-1 text-2xl font-semibold text-slate-100" x-text="stats.sessions_total"></div>
+    <div class="text-xs text-slate-500 mt-1">
+      last used {{ bridge_stats.last_session_used_at | age }}
+    </div>
+  </div>
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Pending approvals</div>
+    <div class="mt-1 text-2xl font-semibold {% if bridge_stats.pending_approvals %}text-amber-300{% else %}text-slate-100{% endif %}"
+         x-text="stats.pending_approvals"></div>
+    <div class="text-xs text-slate-500 mt-1">
+      {% if bridge_stats.pending_approvals %}awaiting your review{% else %}no Phase 2b items{% endif %}
+    </div>
+  </div>
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Last bridge activity</div>
+    <div class="mt-1 text-lg font-semibold text-slate-100">{{ bridge_stats.last_thread_active_at | age }}</div>
+    <div class="text-xs text-slate-500 mt-1">across all threads</div>
+  </div>
+</section>
+
+<section class="mb-3 flex items-center justify-between">
+  <h2 class="text-lg font-semibold text-slate-100">Sources</h2>
+  <button class="text-xs text-accent-400 hover:underline"
+          @click="$dispatch('refresh-all')">⟲ refresh all</button>
+</section>
+
+<section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+  {% for snap in snapshots %}
+  <a href="/source/{{ snap.source }}"
+     class="block rounded-lg border border-ink-700 bg-ink-900 p-4 hover:border-accent-600 transition">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-xl">{{ snap.icon }}</span>
+        <span class="font-semibold text-slate-100">{{ snap.label }}</span>
+      </div>
+      {% if snap.error %}
+      <span class="text-xs px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800">error</span>
+      {% elif snap.fetched_at == 0 %}
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">no cache</span>
+      {% elif snap.stale %}
+      <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">stale</span>
+      {% else %}
+      <span class="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">fresh</span>
+      {% endif %}
+    </div>
+
+    <div class="mt-3 flex items-baseline gap-2">
+      <span class="text-3xl font-semibold text-slate-100">{{ snap.items|length }}</span>
+      <span class="text-xs text-slate-500">item(s)</span>
+    </div>
+
+    <div class="mt-2 text-xs text-slate-500">
+      {% if snap.fetched_at %}
+        cached {{ snap.fetched_at | age }} · {{ snap.seconds }}s fetch
+      {% else %}
+        click to refresh
+      {% endif %}
+    </div>
+
+    {% if snap.error %}
+    <div class="mt-2 text-xs text-rose-300 truncate" title="{{ snap.error }}">
+      {{ snap.error[:120] }}
+    </div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</section>
+{% endblock %}

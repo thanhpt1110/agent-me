@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}agent-me dashboard{% endblock %}</title>
+
+  <!-- Tailwind via CDN keeps the draft zero-build. Switch to compiled
+       Tailwind once the layout settles. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            ink: { 950: "#0b0f17", 900: "#0f1420", 800: "#141a28", 700: "#1c2334", 600: "#283045" },
+            accent: { 400: "#7dd3fc", 500: "#38bdf8", 600: "#0284c7" },
+          },
+          fontFamily: {
+            mono: ["JetBrains Mono", "ui-monospace", "monospace"],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Alpine.js for sprinkled reactivity (SSE wiring, refresh state). -->
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='28'%3E🤖%3C/text%3E%3C/svg%3E" />
+</head>
+<body class="h-full bg-ink-950 text-slate-200 font-sans antialiased dark">
+  <div class="min-h-full">
+    {% include "partials/nav.html" %}
+
+    <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="mx-auto max-w-7xl px-4 py-6 text-xs text-slate-500">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span>agent-me · Phase 4 draft · read-only over bridge state.db + brief output</span>
+        <span><a class="hover:text-accent-400" href="https://github.com/thanhpt1110/agent-me">repo</a> · <a class="hover:text-accent-400" href="/healthz">healthz</a></span>
+      </div>
+    </footer>
+  </div>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

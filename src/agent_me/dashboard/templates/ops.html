@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% block title %}Ops · agent-me dashboard{% endblock %}
+
+{% block content %}
+<section class="mb-6">
+  <h1 class="text-2xl font-semibold text-slate-100">Operations</h1>
+  <p class="text-slate-400 text-sm mt-1">
+    Bridge state, MCP health, recent brief runs, live log tail.
+  </p>
+</section>
+
+<!-- ── Bridge stats ─────────────────────────────────────────────── -->
+<section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Threads total</div>
+    <div class="mt-1 text-2xl font-semibold text-slate-100">{{ bridge_stats.threads_total }}</div>
+  </div>
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Active 24h</div>
+    <div class="mt-1 text-2xl font-semibold text-slate-100">{{ bridge_stats.threads_active_24h }}</div>
+  </div>
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Sessions</div>
+    <div class="mt-1 text-2xl font-semibold text-slate-100">{{ bridge_stats.sessions_total }}</div>
+  </div>
+  <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Pending approvals</div>
+    <div class="mt-1 text-2xl font-semibold {% if bridge_stats.pending_approvals %}text-amber-300{% else %}text-slate-100{% endif %}">
+      {{ bridge_stats.pending_approvals }}
+    </div>
+  </div>
+</section>
+
+<!-- ── MCP health ──────────────────────────────────────────────── -->
+<section class="mb-6 rounded-lg border border-ink-700 bg-ink-900"
+         x-data="mcpPanel({{ mcp_cache | tojson }})">
+  <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800">
+    <h2 class="font-semibold text-slate-100">MCP servers</h2>
+    <div class="flex items-center gap-3 text-xs">
+      <span class="text-slate-500" x-text="checkedAtLabel()"></span>
+      <button @click="refresh()" :disabled="busy"
+              class="text-accent-400 hover:underline disabled:opacity-50">
+        <span x-show="!busy">⟲ probe now</span>
+        <span x-show="busy" x-cloak>probing…</span>
+      </button>
+    </div>
+  </header>
+  <div class="p-2">
+    <template x-if="servers.length === 0">
+      <p class="px-2 py-3 text-sm text-slate-400">
+        No probe yet. Click <span class="text-accent-400">probe now</span> to run <code class="font-mono">claude mcp list</code>.
+      </p>
+    </template>
+    <template x-if="servers.length > 0">
+      <ul class="divide-y divide-ink-700">
+        <template x-for="s in servers" :key="s.name">
+          <li class="px-2 py-2 flex items-center justify-between text-sm">
+            <span class="font-mono text-slate-200" x-text="s.name"></span>
+            <span class="text-xs px-2 py-0.5 rounded"
+                  :class="{
+                    'bg-emerald-900/40 text-emerald-300 border border-emerald-800': s.connected,
+                    'bg-amber-900/40 text-amber-300 border border-amber-800': s.needs_auth,
+                    'bg-rose-900/50 text-rose-300 border border-rose-800': !s.connected && !s.needs_auth,
+                  }"
+                  x-text="s.connected ? '✓ connected' : (s.needs_auth ? '! needs auth' : '✗ failed')"></span>
+          </li>
+        </template>
+      </ul>
+    </template>
+  </div>
+</section>
+
+<!-- ── Recent brief runs ────────────────────────────────────────── -->
+<section class="mb-6 rounded-lg border border-ink-700 bg-ink-900">
+  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800">
+    <h2 class="font-semibold text-slate-100">Recent brief runs (from brief.log)</h2>
+  </header>
+  <div class="p-2">
+    {% if brief_runs %}
+    <ul class="divide-y divide-ink-700">
+      {% for r in brief_runs %}
+      <li class="px-2 py-2 text-sm">
+        <div class="flex items-center justify-between">
+          <span class="text-slate-300">{{ r.timestamp | default("—") }}</span>
+          <span class="text-xs text-slate-500">
+            {{ r.total_items | default(0) }} item(s) · {{ r.total_seconds | default(0) }}s
+            {% if r.err_count %} · <span class="text-amber-300">{{ r.err_count }} errors</span>{% endif %}
+          </span>
+        </div>
+        {% if r.per_source %}
+        <div class="mt-1 text-xs text-slate-500 font-mono truncate">{{ r.per_source }}</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="px-2 py-3 text-sm text-slate-400">No brief runs in <code class="font-mono">brief.log</code> yet.</p>
+    {% endif %}
+  </div>
+</section>
+
+<!-- ── Recent threads ──────────────────────────────────────────── -->
+<section class="mb-6 rounded-lg border border-ink-700 bg-ink-900">
+  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800">
+    <h2 class="font-semibold text-slate-100">Slack threads (last 20)</h2>
+  </header>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-xs text-slate-500 uppercase tracking-wide">
+        <tr><th class="text-left px-3 py-2">thread_ts</th><th class="text-left px-3 py-2">channel</th><th class="text-left px-3 py-2">user</th><th class="text-right px-3 py-2">msgs</th><th class="text-right px-3 py-2">turns</th><th class="text-right px-3 py-2">last active</th></tr>
+      </thead>
+      <tbody class="divide-y divide-ink-700">
+        {% for t in threads %}
+        <tr>
+          <td class="px-3 py-1.5 font-mono text-xs text-slate-300">{{ t.thread_ts }}</td>
+          <td class="px-3 py-1.5 font-mono text-xs text-slate-300">{{ t.channel }}</td>
+          <td class="px-3 py-1.5 font-mono text-xs text-slate-300">{{ t.user_id or "—" }}</td>
+          <td class="px-3 py-1.5 text-right">{{ t.msg_count or 0 }}</td>
+          <td class="px-3 py-1.5 text-right">{{ t.turn_count or 0 }}</td>
+          <td class="px-3 py-1.5 text-right text-slate-400">{{ t.last_active_at | age }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="px-3 py-3 text-slate-400 text-center">no threads yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ── Live log tail ────────────────────────────────────────────── -->
+<section class="rounded-lg border border-ink-700 bg-ink-900"
+         x-data="logTail()" x-init="start()">
+  <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800">
+    <h2 class="font-semibold text-slate-100">Live logs</h2>
+    <div class="flex items-center gap-3 text-xs">
+      <label class="flex items-center gap-1 text-slate-400">
+        <input type="checkbox" x-model="autoScroll" class="accent-accent-500" /> auto-scroll
+      </label>
+      <button @click="lines = []" class="text-slate-400 hover:text-accent-400">clear</button>
+      <span class="text-slate-500" x-text="`${lines.length} lines`"></span>
+    </div>
+  </header>
+  <pre class="p-3 text-xs font-mono max-h-96 overflow-y-auto text-slate-300 bg-ink-950"
+       x-ref="logBox">
+    <template x-for="(l, idx) in lines" :key="idx">
+      <div class="whitespace-pre-wrap">
+        <span class="text-slate-600" x-text="`[${l.source}]`"></span>
+        <span x-text="formatLine(l.line)"></span>
+      </div>
+    </template>
+  </pre>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function mcpPanel(initial) {
+    return {
+      servers: initial.servers || [],
+      checkedAt: initial.checked_at || 0,
+      busy: false,
+
+      checkedAtLabel() {
+        if (!this.checkedAt) return "never probed";
+        const s = Math.floor((Date.now() - this.checkedAt) / 1000);
+        if (s < 60) return `probed ${s}s ago`;
+        if (s < 3600) return `probed ${Math.floor(s / 60)}m ago`;
+        return `probed ${Math.floor(s / 3600)}h ago`;
+      },
+
+      async refresh() {
+        this.busy = true;
+        try {
+          const r = await fetch("/api/mcp/refresh", { method: "POST" });
+          const data = await r.json();
+          this.servers = data.servers || [];
+          this.checkedAt = data.checked_at || Date.now();
+        } finally {
+          this.busy = false;
+        }
+      },
+    };
+  }
+
+  function logTail() {
+    return {
+      lines: [],
+      autoScroll: true,
+      _es: null,
+      MAX: 500,
+
+      start() {
+        const es = new EventSource("/api/sse/logs");
+        this._es = es;
+        es.addEventListener("log", (e) => {
+          let data = {};
+          try { data = JSON.parse(e.data); } catch {}
+          this.lines.push(data);
+          if (this.lines.length > this.MAX) {
+            this.lines.splice(0, this.lines.length - this.MAX);
+          }
+          if (this.autoScroll) {
+            this.$nextTick(() => {
+              const box = this.$refs.logBox;
+              if (box) box.scrollTop = box.scrollHeight;
+            });
+          }
+        });
+        es.onerror = () => {
+          if (this._es === es) this._es = null;
+          es.close();
+          // Reconnect after a short backoff.
+          setTimeout(() => this.start(), 2000);
+        };
+      },
+
+      formatLine(line) {
+        if (!line) return "";
+        if (typeof line === "string") return line;
+        if (line.raw) return line.raw;
+        const { event, level, timestamp, ...rest } = line;
+        const head = [timestamp, level, event].filter(Boolean).join(" ");
+        const tail = Object.keys(rest).length ? " " + JSON.stringify(rest) : "";
+        return ` ${head}${tail}`;
+      },
+    };
+  }
+</script>
+{% endblock %}

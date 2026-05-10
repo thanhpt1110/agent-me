@@ -1,0 +1,37 @@
+[Unit]
+Description=agent-me dashboard (Phase 4 — read-only web view)
+Documentation=https://github.com/thanhpt1110/agent-me/blob/main/design/dashboard-design.md
+After=network-online.target agent-me-bridge.service
+Wants=network-online.target
+# We don't `Requires=agent-me-bridge.service` on purpose: the dashboard is
+# read-only and degrades gracefully if the bridge is offline (it just
+# shows zero stats). Keeping units independent means a dashboard restart
+# doesn't disturb the bridge.
+
+# This is a USER unit (systemd --user). Install via scripts/install-dashboard.sh.
+# Same rationale as agent-me-bridge.service for picking user-level over
+# system-level — see that file's preamble.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-me
+EnvironmentFile=%h/agent-me/configs/.env
+
+# Bind to 127.0.0.1 only — Tailscale Funnel (the public URL) talks to
+# localhost. If you ever need to expose without Tailscale, change to
+# `--host 0.0.0.0` and ensure DASHBOARD_TOKEN is set (the entry point
+# refuses to bind a public host without a token).
+ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 127.0.0.1 --port 8765
+
+# Read-only over the bridge's SQLite, no writes to bridge state. A
+# graceful stop just kills the uvicorn worker; nothing to flush.
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-me-dashboard
+
+[Install]
+WantedBy=default.target

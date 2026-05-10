@@ -1,0 +1,11 @@
+/* Tiny on-top-of-tailwind layer. The rest is utility classes inline. */
+[x-cloak] { display: none !important; }
+
+html, body { font-family: -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
+pre, code, .font-mono { font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace; }
+
+/* Subtle scrollbar in dark theme */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #0b0f17; }
+::-webkit-scrollbar-thumb { background: #283045; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #3a4660; }

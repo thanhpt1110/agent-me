@@ -1,0 +1,25 @@
+<nav class="border-b border-ink-700 bg-ink-900/80 backdrop-blur sticky top-0 z-30">
+  <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <div class="flex h-14 items-center justify-between">
+      <div class="flex items-center gap-3">
+        <a href="/" class="flex items-center gap-2 text-slate-100 font-semibold">
+          <span class="text-xl">🤖</span>
+          <span>agent-me</span>
+          <span class="text-xs font-mono px-1.5 py-0.5 rounded bg-ink-700 text-slate-400">dashboard</span>
+        </a>
+      </div>
+
+      <div class="flex items-center gap-1 text-sm">
+        <a href="/" class="px-3 py-1.5 rounded hover:bg-ink-700 {% if request.url.path == '/' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">Overview</a>
+        {% for src_id, label, icon in sources %}
+        <a href="/source/{{ src_id }}"
+           class="px-3 py-1.5 rounded hover:bg-ink-700 {% if request.url.path == '/source/' + src_id %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+          <span>{{ icon }}</span>
+          <span class="hidden md:inline">{{ label }}</span>
+        </a>
+        {% endfor %}
+        <a href="/ops" class="px-3 py-1.5 rounded hover:bg-ink-700 {% if request.url.path == '/ops' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">⚙ Ops</a>
+      </div>
+    </div>
+  </div>
+</nav>

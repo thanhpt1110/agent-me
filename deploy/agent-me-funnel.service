@@ -1,0 +1,40 @@
+[Unit]
+Description=agent-me Tailscale Funnel (public HTTPS for dashboard)
+Documentation=https://tailscale.com/kb/1223/funnel
+After=network-online.target tailscaled.service agent-me-dashboard.service
+Wants=network-online.target
+
+# This unit publishes the local dashboard at:
+#   https://<host>.<your-tailnet>.ts.net
+# Funnel is configured persistently by `tailscale funnel --bg 8765` (run
+# once during install). This unit is a fallback for hosts where the
+# persistent config doesn't survive — and a clear inspection point for
+# `systemctl --user status agent-me-funnel`.
+#
+# IMPORTANT: this is a USER unit, but `tailscale funnel` itself talks to
+# the system tailscaled daemon. The current user must be in the
+# `tailscale-admin` group OR have run `sudo tailscale set --operator=$USER`
+# during install (the install script does this).
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-me
+
+# Foreground form — `tailscale funnel` keeps running and streams logs.
+# Without `--bg`, the foreground process holds the funnel open.
+ExecStart=/usr/bin/tailscale funnel --https=443 --set-path=/ http://127.0.0.1:8765
+
+# On stop, retract the funnel so the public URL goes 502 cleanly instead
+# of pointing at a stale (potentially restarting) dashboard.
+ExecStopPost=/usr/bin/tailscale funnel reset
+
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-me-funnel
+
+[Install]
+WantedBy=default.target

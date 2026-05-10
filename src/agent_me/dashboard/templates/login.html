@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="utf-8" />
+  <title>Login · agent-me dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-full bg-slate-950 text-slate-200 flex items-center justify-center">
+  <form action="/api/login" method="post"
+        class="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+    <h1 class="text-lg font-semibold text-slate-100">agent-me dashboard</h1>
+    <p class="text-sm text-slate-400">
+      Paste your <code class="font-mono">DASHBOARD_TOKEN</code> to continue.
+    </p>
+    <input type="password" name="token" required autofocus
+           class="w-full rounded bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono text-sm" />
+    {% if error %}
+    <p class="text-xs text-rose-300">{{ error }}</p>
+    {% endif %}
+    <button type="submit"
+            class="w-full rounded bg-sky-600 hover:bg-sky-500 text-white text-sm py-2">
+      Continue
+    </button>
+  </form>
+</body>
+</html>
