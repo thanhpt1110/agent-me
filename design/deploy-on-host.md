@@ -248,33 +248,56 @@ This spawns `claude` under a pty and runs
 tabs (via `xdg-open` on Linux) — but on a headless server there's
 no browser, so the URLs will be printed and need manual handling.
 
-**Two ways to handle this on a remote host:**
+**Three ways to handle this on a remote host (preferred first):**
 
-1. **SSH port-forward to the human's Mac** (simplest if they're
-   already SSH'd in):
+1. **macOS Keychain transfer (recommended if you authenticate on a
+   Mac).** Claude Code stores MCP OAuth tokens in the Mac Keychain
+   item `Claude Code-credentials` as plain JSON; the host stores them
+   in `~/.claude/.credentials.json`. The keys are disjoint top-level
+   (`claudeAiOauth` for Anthropic, `mcpOAuth` for MCPs) so they merge
+   cleanly. Use the bundled helper:
 
-   On the human's Mac:
    ```bash
+   # On the Mac, after all 17 MCPs show ✓ Connected in `claude mcp list`:
+   ./scripts/sync-mcp-creds-to-host.sh <ssh-alias>
+   ```
+
+   Verify with `claude mcp list` on the host. Empirically 16/17 turn
+   ✓ Connected immediately this way; nvbugs is occasionally stale on
+   the Mac too, in which case path 2 covers it.
+
+   **Caveats**:
+   - Each token's `redirect_uri` records the Mac's localhost:NNNN
+     used at code-exchange time. Refresh requests don't re-validate
+     `redirect_uri` for ECI in practice, so token refresh from the
+     host works.
+   - Re-run after any new MCP auth on the Mac, or daily-ish to keep
+     refresh tokens fresh.
+   - macOS may pop a permission dialog the first time
+     `security find-generic-password` reads `Claude Code-credentials`
+     — click "Always Allow".
+
+2. **SSH port-forward + interactive reauth on the host.** If you
+   don't have macOS, or path 1 missed a server, do it the manual
+   way: SSH with port-forwards back to a workstation browser, then
+   run `agent-me-reauth` on the host:
+
+   ```bash
+   # On the workstation:
    ssh -L 51080:localhost:51080 -L 51081:localhost:51081 \
        -L 51082:localhost:51082 -L 51083:localhost:51083 \
        -L 51084:localhost:51084 -L 51085:localhost:51085 \
        -L 51086:localhost:51086 <host>
    ```
-   (Forward ~7 ports — one per stale MCP. Random ports in 51000-65535 range.)
 
-   Then run `agent-me-reauth` on the host. URLs printed will reference
-   `localhost:5108X` — open them in the Mac's browser; OAuth
-   redirects come back to the SSH-tunneled localhost which reaches
-   the host's listener.
+   (Forward ~7 ports — one per stale MCP. Random ports in 51000-65535
+   range.) URLs printed by the helper reference `localhost:5108X` —
+   open them in the workstation browser; OAuth redirects come back
+   through the SSH tunnel.
 
-2. **Copy `~/.claude.json` from Mac to the host** (one-time after Mac
-   has all MCPs authenticated): the file holds the OAuth tokens
-   that MCP servers grant. Tokens last ~24h. After they expire,
-   path 1 is the only sustainable option — or set up a daily cron
-   on the Mac that scp's `~/.claude.json` to the host.
-
-The user has chosen path 1 OR has scripts to keep `~/.claude.json`
-synced. Surface a question if it's not already set up.
+3. **Copy whole `~/.claude.json`** (registrations only, NOT tokens).
+   Useful for mirroring MCP server *registrations* between machines
+   without rerunning `setup-mcps.sh`. Tokens still need path 1 or 2.
 
 **Verify:**
 ```bash
