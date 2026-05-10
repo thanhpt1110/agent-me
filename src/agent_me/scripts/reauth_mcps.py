@@ -86,6 +86,17 @@ def clean_pty(data: bytes) -> bytes:
 
 
 def detect_stale() -> list[str]:
+    """Find MCP servers needing auth, filtered to ones agent-me actually uses.
+
+    Claude.ai's built-in MCPs (Linear, Figma, Amplitude, Template_Maas_Server)
+    appear in `claude mcp list` after `/login` even though we don't use them
+    here. They have their own OAuth flow paths and would clutter the helper
+    output. We only handle the maas-* set we register via setup-mcps.sh.
+    Override with AGENT_ME_REAUTH_PATTERN=<glob> if you ever need a different
+    filter (e.g. to include ones from another project).
+    """
+    import fnmatch
+    pattern = os.environ.get("AGENT_ME_REAUTH_PATTERN", "maas-*")
     res = subprocess.run(
         ["claude", "mcp", "list"],
         capture_output=True,
@@ -95,10 +106,14 @@ def detect_stale() -> list[str]:
     out = res.stdout + res.stderr
     stale: list[str] = []
     for line in out.splitlines():
-        if "Needs authentication" in line:
-            name = line.split(":", 1)[0].strip()
-            if name:
-                stale.append(name)
+        if "Needs authentication" not in line:
+            continue
+        name = line.split(":", 1)[0].strip()
+        if not name:
+            continue
+        if not fnmatch.fnmatch(name, pattern):
+            continue
+        stale.append(name)
     return stale
 
 
