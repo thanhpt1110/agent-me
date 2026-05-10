@@ -1,17 +1,18 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-10 by Claude (Opus 4.7) — after PA-mode experiment reverted._
+_Last updated: 2026-05-10 by Claude (Opus 4.7) — fan-out brief + Slack session persistence shipped._
 
 ## Phase
 
-**Phase 2a complete + daily/weekly/monthly brief shipped + morning routine
-live.** Bridge is fully Python+uv; daily-brief works end-to-end (`uv run
-agent-me-brief --period {day,week,month}`); morning routine fires daily at
-6am Vietnam time posting an MCP-status DM with reauth + brief buttons;
-plain-text shortcuts and Block Kit interactivity are wired through.
-**PA-hybrid attempt was reverted on 2026-05-10** — see "Recent decisions"
-below. Next: prompt tuning (user-driven) → Phase 3 (Brev deploy) or
-Phase 2b (approval gate).
+**Phase 2a + brief fan-out + Slack session persistence live.** Bridge
+is Python+uv; daily-brief now uses 7-subagent fan-out (jira / gitlab /
+confluence / nvbugs / slack / outlook / github), one Slack root header
++ threaded reply per source, ~39s wall-clock vs old 60–230s.
+Slack DM ↔ Claude Code session persistence: each `thread_ts` maps to
+a `session_id` so multi-turn chat works (cache hits ~76k tokens on
+turn 2). Morning routine fires daily at 6am Vietnam time. PA hybrid
+attempted and reverted earlier today. Next: user-driven prompt
+tuning → Phase 3 Brev deploy → Phase 2b approval gate.
 
 ## Decisions locked
 
@@ -35,17 +36,34 @@ Phase 2b (approval gate).
 
 - [x] Project + scaffold + bypassPermissions
 - [x] **GitHub repo public template:** https://github.com/thanhpt1110/agent-me
-- [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, 5 native slash commands (`/brief /mcp /reauth /version /whoami /help`), text-intercept slash, 25 plain-text shortcuts, Block Kit interactive buttons
-- [x] **MCP re-auth helper** (`uv run agent-me-reauth`) — pty + auto-open browser tabs, 9 bug iterations resolved
-- [x] **Daily-brief script** (`uv run agent-me-brief --period day|week|month`) — Jira/GitLab/GitHub/NVBugs/Confluence; grouped by project/repo/space; priority table; live placeholder updates; Block Kit refresh/reauth buttons
+- [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, native slash commands (`/brief /mcp /reauth /version /whoami /help`), text-intercept slash, plain-text shortcuts (incl. `reset` / `clear` / `new`), Block Kit interactive buttons
+- [x] **MCP re-auth helper** (`uv run agent-me-reauth`) — pty + auto-open browser tabs, NVIDIA-SSO + ECI-OAuth flows
+- [x] **Daily-brief — fan-out v2 (2026-05-10)** — `uv run agent-me-brief --period day|week|month`. 7 subagents in parallel (jira / gitlab / confluence / nvbugs / slack / outlook / github), one root header + threaded reply per source, priority synthesis posted last. ~39s wall-clock vs prev ~60–230s.
+- [x] **Slack session persistence (2026-05-10)** — `claude_sessions` table maps `thread_ts → session_id`; bridge runs `claude -p --output-format json --resume <id>`. Cache hits compound across turns. `/reset` (+ plain shortcuts) clears a thread's session. `SessionExpired` exception falls back to fresh session if id is stale. See `design/session-persistence.md`.
+- [x] **MCPs registered (17 total)** — Slack + Outlook added 2026-05-10 at user scope (project-local scope confused the OAuth helper; learnt the hard way).
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
+- [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` for Brev specifics
+- [x] **`design/maas-mcp-catalog.md`** — full MaaS MCP catalog reference
 - [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
 - [x] **Secrets vault** at `~/agent-me-secrets.md` (outside repo, chmod 600)
 - [x] **PA hybrid experiment** — built, then reverted (see Recent decisions)
 
 ## Recent decisions
 
+- **2026-05-10 — Brief fan-out.** Single-prompt → 7-subagent fan-out
+  in `daily_brief.py`. Each subagent scoped to one MCP server's
+  tool wildcard, posts one threaded reply when done. Cuts wall-clock
+  ~3-5×, isolates per-source failures, fits Slack message limits.
+  See `discussions/2026-05-10-fanout-and-session-persistence.md`.
+- **2026-05-10 — Slack session persistence.** `--resume <session_id>`
+  per `thread_ts`. Multi-turn chat in Slack now works; cache hits
+  stack across turns. Top-level DMs are still each their own session
+  (use threads for multi-turn). `/reset` clears.
+- **2026-05-10 — All MCPs at user scope.** `setup-mcps.sh` enforces
+  `--scope user`. Project-local servers' OAuth flow confused
+  `agent-me-reauth`; user scope behaves identically to the older
+  Azure-auth servers.
 - **2026-05-10 — PA hybrid reverted.** Built `MCP_CLI=pa|claude` swap
   in bridge + brief over a marathon session, but reverted before
   end-to-end validation. Reasoning: PA's enterprise-source auth was

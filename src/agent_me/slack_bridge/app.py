@@ -23,6 +23,7 @@ Phase 2b (deferred):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -187,6 +188,13 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
     resolved_at        INTEGER
 );
 CREATE INDEX IF NOT EXISTS pending_status_idx ON pending_approvals(status);
+CREATE TABLE IF NOT EXISTS claude_sessions (
+    thread_ts     TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    started_at    INTEGER NOT NULL,
+    last_used_at  INTEGER NOT NULL,
+    turn_count    INTEGER NOT NULL DEFAULT 0
+);
 """
 
 db = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
@@ -216,6 +224,56 @@ async def insert_message(thread_ts: str, role: str, content: str, slack_ts: str 
             "INSERT INTO messages (thread_ts, role, content, slack_ts, created_at) VALUES (?,?,?,?,?)",
             (thread_ts, role, content, slack_ts, now),
         )
+
+
+# ── Claude Code session map (thread_ts → session_id) ───────────────────
+#
+# Each Slack thread gets its own Claude Code session. First message in a
+# thread spawns a fresh session; subsequent messages resume it via
+# `claude -p --resume <session_id>`, so claude itself handles all
+# context/cache management. Session IDs persist in SQLite, so a bridge
+# restart doesn't drop conversational continuity.
+
+async def get_session_id(thread_ts: str) -> str | None:
+    async with DB_LOCK:
+        row = db.execute(
+            "SELECT session_id FROM claude_sessions WHERE thread_ts=?",
+            (thread_ts,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+async def upsert_session(thread_ts: str, session_id: str) -> None:
+    now = int(time.time() * 1000)
+    async with DB_LOCK:
+        db.execute(
+            """INSERT INTO claude_sessions (thread_ts, session_id, started_at, last_used_at, turn_count)
+                VALUES (?, ?, ?, ?, 1)
+               ON CONFLICT(thread_ts) DO UPDATE SET
+                session_id = excluded.session_id,
+                last_used_at = excluded.last_used_at,
+                turn_count = turn_count + 1""",
+            (thread_ts, session_id, now, now),
+        )
+
+
+async def clear_session(thread_ts: str) -> str | None:
+    """Forget the stored session for this thread. Returns the old id (or None)
+    so the caller can log it. Does NOT touch the messages table — those are
+    just an audit trail; the actual conversational state lives on disk in
+    claude's own session store."""
+    async with DB_LOCK:
+        row = db.execute(
+            "SELECT session_id FROM claude_sessions WHERE thread_ts=?",
+            (thread_ts,),
+        ).fetchone()
+        old_id = row[0] if row else None
+        if old_id:
+            db.execute(
+                "DELETE FROM claude_sessions WHERE thread_ts=?",
+                (thread_ts,),
+            )
+    return old_id
 
 
 # ── Phase-2a tool restrictions ──────────────────────────────────────────
@@ -296,15 +354,40 @@ async def run_command(cmd: list[str], cwd: str, timeout: float = 30.0) -> str:
     return stdout.decode(errors="replace")
 
 
-async def spawn_claude(prompt: str) -> str:
-    """Spawn `claude -p` with read-only tool restrictions; return stdout."""
+class SessionExpired(RuntimeError):
+    """Raised when --resume <id> hits a session that no longer exists.
+
+    Caller should retry without --resume to start a fresh conversation."""
+
+
+async def spawn_claude(
+    prompt: str,
+    *,
+    resume_session_id: str | None = None,
+) -> tuple[str, str | None]:
+    """Spawn `claude -p` with read-only tool restrictions.
+
+    Uses --output-format json so the wrapper can capture session_id (and
+    usage stats for logging). Pass `resume_session_id` to continue an
+    existing thread — claude handles all context and cache transparently.
+
+    Returns (response_text, session_id_or_None).
+
+    Raises SessionExpired if --resume hit a missing session — caller can
+    retry without --resume to recover.
+    """
     args = [
         "claude", "-p", prompt,
         "--model", MODEL,
+        "--output-format", "json",
+        "--dangerously-skip-permissions",
         "--allowedTools", PHASE_2A_ALLOWED_TOOLS,
         "--disallowedTools", PHASE_2A_DISALLOWED_TOOLS,
     ]
-    log.info("claude_spawn", cwd=str(REPO_DIR), model=MODEL, prompt_len=len(prompt))
+    if resume_session_id:
+        args += ["--resume", resume_session_id]
+    log.info("claude_spawn", cwd=str(REPO_DIR), model=MODEL,
+             prompt_len=len(prompt), resume=resume_session_id)
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=str(REPO_DIR),
         stdout=asyncio.subprocess.PIPE,
@@ -317,10 +400,50 @@ async def spawn_claude(prompt: str) -> str:
         await proc.wait()
         raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"claude exited {proc.returncode}: {stderr.decode(errors='replace').strip()[:500]}"
-        )
-    return stdout.decode(errors="replace").strip()
+        err = stderr.decode(errors="replace").strip()[:500]
+        # Cover the actual phrases the CLI uses when --resume <id> can't
+        # find the session. Confirmed empirically:
+        #   - "No conversation found with session ID: …"   (claude 2.1.x)
+        # Plus defensive matches for closely related variants we might see
+        # in future versions.
+        err_l = err.lower()
+        if resume_session_id and (
+            "no conversation found" in err_l
+            or "conversation not found" in err_l
+            or "session not found" in err_l
+            or "session does not exist" in err_l
+            or "no such session" in err_l
+            or "invalid session" in err_l
+            or "session expired" in err_l
+        ):
+            raise SessionExpired(
+                f"resume failed for {resume_session_id[:8]}…: {err}"
+            )
+        raise RuntimeError(f"claude exited {proc.returncode}: {err}")
+
+    raw = stdout.decode(errors="replace").strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log.error("claude_json_parse_failed", err=str(exc), preview=raw[:300])
+        raise RuntimeError(f"claude returned non-JSON: {raw[:200]}") from exc
+
+    if payload.get("is_error"):
+        api_err = payload.get("api_error_status") or payload.get("result") or "unknown"
+        raise RuntimeError(f"claude API error: {api_err}")
+
+    text = str(payload.get("result", "")).strip()
+    sid = payload.get("session_id")
+    usage = payload.get("usage") or {}
+    log.info("claude_done",
+             session_id=sid,
+             num_turns=payload.get("num_turns"),
+             duration_ms=payload.get("duration_ms"),
+             input_tokens=usage.get("input_tokens"),
+             output_tokens=usage.get("output_tokens"),
+             cache_read_tokens=usage.get("cache_read_input_tokens"),
+             cost_usd=payload.get("total_cost_usd"))
+    return text, sid
 
 
 # ── Bolt app ────────────────────────────────────────────────────────────
@@ -343,11 +466,12 @@ HELP_TEXT = "\n".join((
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `reauth` / `/reauth` — trigger MCP re-auth helper (auto-opens auth URLs on bridge host)",
+    "• `reset` / `clear` / `new` — start a fresh Claude session for this thread (drops prior context)",
     "• `whoami` / `/whoami` — show your Slack user id",
     "• `version` / `/version` — bridge + claude versions and pinned model",
     "• `help` / `/help` — this message",
     "",
-    "_Anything else is sent to Claude headlessly with read-only tools enabled (Phase 2a)._",
+    "_Anything else is sent to Claude — context is preserved per Slack thread (reply-in-thread to keep the conversation going; new top-level message = fresh session)._",
     "_The bridge auto-checks MCP auth health every 6h and DMs you when re-auth is needed._",
     "_Daily morning routine fires at 6am Vietnam time when the bridge is running._",
 ))
@@ -424,6 +548,27 @@ async def cmd_brief(args_text: str = "") -> str:
     )
 
 
+async def cmd_reset(thread_ts: str | None) -> str:
+    """Drop the Claude Code session for this thread so the next message
+    starts a fresh conversation. The audit `messages` table is left
+    intact — only the session pointer is cleared."""
+    if not thread_ts:
+        return (
+            "⚠️ I don't know which thread you mean — DM me from inside a "
+            "thread or use this from a real conversation."
+        )
+    old = await clear_session(thread_ts)
+    if not old:
+        return (
+            "ℹ️ This thread has no active Claude session yet — your next "
+            "message starts a new one automatically."
+        )
+    return (
+        f"🧹 *Cleared session* `{old[:8]}…` for this thread.\n"
+        "Your next message starts a fresh conversation (no prior context)."
+    )
+
+
 async def cmd_reauth() -> str:
     """Trigger the reauth helper as a detached background process.
 
@@ -476,7 +621,8 @@ def _help_blocks() -> list[dict]:
     ]
 
 
-async def handle_slash(cmd: str, user_id: str | None, args_text: str = "") -> str | SlashResult:
+async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
+                       *, thread_ts: str | None = None) -> str | SlashResult:
     if cmd == "/mcp":
         return await cmd_mcp()
     if cmd == "/version":
@@ -487,6 +633,8 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "") -> st
         return await cmd_reauth()
     if cmd == "/brief":
         return await cmd_brief(args_text)
+    if cmd == "/reset":
+        return await cmd_reset(thread_ts)
     if cmd == "/help":
         return HELP_TEXT, _help_blocks()
     return f"Unknown command `{cmd}`. Try `/help`."
@@ -545,6 +693,12 @@ PLAIN_COMMANDS: dict[str, tuple[str, str]] = {
     "whoami":         ("/whoami", ""),
     "who am i":       ("/whoami", ""),
     "id":             ("/whoami", ""),
+    # session reset
+    "reset":          ("/reset", ""),
+    "clear":          ("/reset", ""),
+    "new":            ("/reset", ""),
+    "new chat":       ("/reset", ""),
+    "forget":         ("/reset", ""),
 }
 
 
@@ -562,7 +716,8 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     async def _dispatch(cmd: str, args_text: str, label: str) -> None:
         placeholder_ts = await post_thinking(client, channel, thread_ts)
         try:
-            result = await handle_slash(cmd, user_id, args_text)
+            result = await handle_slash(cmd, user_id, args_text,
+                                         thread_ts=thread_ts)
             text, blocks = _split_result(result)
             if blocks:
                 # chat.update accepts blocks; include text as fallback for
@@ -605,12 +760,36 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
 
     start = time.time()
     try:
-        answer = await spawn_claude(cleaned)
+        # Look up the Claude Code session for this Slack thread. First
+        # message ⇒ no session yet ⇒ claude creates one and we save the
+        # ID. Subsequent messages resume the same session, which is how
+        # context, prompt-cache hits, and tool-use history are preserved.
+        existing_sid = await get_session_id(thread_ts)
+        try:
+            answer, new_sid = await spawn_claude(
+                cleaned, resume_session_id=existing_sid,
+            )
+        except SessionExpired as exc:
+            # The on-disk session went away (claude was restarted, project
+            # path changed, file got cleaned, etc.). Retry without --resume
+            # so the user sees the bridge respond gracefully instead of an
+            # error message — they lose continuity, that's it.
+            log.warning("session_expired_starting_fresh",
+                        thread_ts=thread_ts, expired=existing_sid, err=str(exc))
+            await clear_session(thread_ts)
+            answer, new_sid = await spawn_claude(cleaned)
+
+        if new_sid:
+            await upsert_session(thread_ts, new_sid)
+
         final = answer if answer.strip() else "_(no output)_"
         await update_progress(client, channel, placeholder_ts, final)
         await insert_message(thread_ts, "assistant", final, placeholder_ts)
-        log.info("query_handled", thread_ts=thread_ts, ms=int((time.time() - start) * 1000),
-                 model=MODEL, prompt=clip(cleaned), response=clip(final))
+        log.info("query_handled", thread_ts=thread_ts,
+                 ms=int((time.time() - start) * 1000),
+                 model=MODEL, session_id=new_sid,
+                 resumed=existing_sid is not None,
+                 prompt=clip(cleaned), response=clip(final))
     except Exception as exc:
         log.error("query_failed", thread_ts=thread_ts, err=str(exc),
                   ms=int((time.time() - start) * 1000), prompt=clip(cleaned))
