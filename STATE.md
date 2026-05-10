@@ -60,6 +60,21 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
   per `thread_ts`. Multi-turn chat in Slack now works; cache hits
   stack across turns. Top-level DMs are still each their own session
   (use threads for multi-turn). `/reset` clears.
+- **2026-05-10 — Bridge chat uses `chat-cwd`, not REPO_DIR.** First
+  test surfaced that running `claude -p` from REPO_DIR loaded the
+  project's CLAUDE.md (containing the auto-memory protocol meant for
+  dev sessions); claude faithfully wrote `.md` files when the user
+  said "ghi nhớ", costing 10 turns / 78s / $1.09. Plus the
+  `--dangerously-skip-permissions` flag I'd added in the refactor was
+  bypassing `--disallowedTools` (Write was supposed to be blocked but
+  wasn't). Fix: cwd → `~/.local/state/agent-me/chat-cwd/` (empty,
+  no CLAUDE.md), drop the dangerous flag, add
+  `--permission-mode dontAsk`. Result: 1 turn / 2.6s / $0.10 / no
+  unwanted writes. Brief and reauth helper still use REPO_DIR — they
+  need project context. Decision: app-level user-preference storage
+  (e.g. "remember user's name"), if ever needed, lives in bridge
+  SQLite — NOT in claude's `~/.claude/projects/.../memory/` .md
+  files. That dir is for Claude Code dev agents, not app users.
 - **2026-05-10 — All MCPs at user scope.** `setup-mcps.sh` enforces
   `--scope user`. Project-local servers' OAuth flow confused
   `agent-me-reauth`; user scope behaves identically to the older

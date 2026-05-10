@@ -120,11 +120,40 @@ crash on them.
   to do anything. (We're NOT passing `--fork-session`, which would mint
   a new id on resume.)
 - Project path matters. Claude Code keys sessions by sanitized cwd
-  (`~/.claude/projects/<repo-path>/`). The bridge always cd's to
-  `REPO_DIR`, so as long as that doesn't move, sessions resolve. Moving
-  the repo (e.g. clone to a different path on Brev) invalidates *all*
-  prior sessions — they'll all hit the SessionExpired path on first
-  resume after the move and start fresh. Acceptable.
+  (`~/.claude/projects/<sanitized-cwd>/`). The bridge cd's to
+  `~/.local/state/agent-me/chat-cwd/` (the `CHAT_CWD` constant, NOT
+  the repo root) for chat invocations. Moving the repo doesn't
+  invalidate chat sessions. Conversely, swapping `CHAT_CWD` would
+  invalidate all of them.
+
+### Why a dedicated chat-cwd, not REPO_DIR
+
+Originally we cd'd to `REPO_DIR` (the agent-me repo root). That broke
+horribly the first time a user said "ghi nhớ" (remember) in a Slack
+DM. Claude loaded `REPO_DIR/CLAUDE.md`, saw the project's "auto
+memory" protocol (which is meant for dev sessions where Claude is
+helping you build agent-me itself), and went off writing `.md` files
+into `~/.claude/projects/.../memory/`. 10 turns, 78 seconds, $1.09 in
+costs, plus stray files we then had to delete.
+
+Two compounding root causes:
+1. `cwd=REPO_DIR` meant CLAUDE.md was in scope, so the auto-memory
+   instructions were active.
+2. `--dangerously-skip-permissions` (added in the same refactor)
+   bypassed `--disallowedTools`, so Write/Edit/Bash were no-ops not
+   the hard blocks they should have been. Claude wrote the files.
+
+Fix: a dedicated empty cwd (`~/.local/state/agent-me/chat-cwd/`) for
+chat. No CLAUDE.md → no auto-memory instructions in claude's prompt.
+Drop `--dangerously-skip-permissions` → `--disallowedTools` is
+enforced again. Add `--permission-mode dontAsk` so claude still
+doesn't prompt the (non-interactive) bridge for permission. Result:
+1 turn, 2.6 s, $0.10, no writes.
+
+The brief (`agent-me-brief`) and reauth helper still use `REPO_DIR`
+because they actually need the project context (MCP allowedTools,
+explicit prompts that reference repo conventions). Only the bridge's
+chat path is special-cased.
 
 ## Tradeoffs vs. injecting history into prompts
 
