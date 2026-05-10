@@ -1,0 +1,55 @@
+version: 2
+
+# Dependabot config for agent-me.
+#
+# Strategy: weekly batched updates so the maintainer sees a small number
+# of PRs once a week rather than a constant trickle. Minor/patch Python
+# updates are grouped into one PR (fewer reviews, fewer CI runs); major
+# updates land as individual PRs because they can break compatibility
+# and deserve targeted review.
+#
+# We do NOT enable auto-merge here — single-maintainer repo, prefer the
+# human eye on every dep bump. If you later want auto-merge for the
+# minor/patch group, see GitHub's docs on `dependabot/auto-merge` action
+# pattern combined with branch protection.
+
+updates:
+  # Python dependencies declared in pyproject.toml + locked in uv.lock.
+  # Dependabot natively understands uv-style lockfiles via the `pip`
+  # ecosystem (PEP 621 metadata in pyproject.toml).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      # Maintainer-local time (UTC+7). Monday 06:00 ICT = Sunday 23:00
+      # UTC — PRs are waiting at the start of the work week.
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # Group minor/patch updates so we don't drown in PRs. Major
+      # updates (potential breakage) get individual PRs for review.
+      python-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions versions referenced in .github/workflows/*.yml.
+  # Important for the SHA-pinned third-party actions (setup-uv,
+  # codeql-action) — Dependabot will bump the SHA + the version comment
+  # in the same commit. Review the changelog of each bump before merge.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "ci"

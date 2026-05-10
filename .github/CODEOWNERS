@@ -1,0 +1,17 @@
+# CODEOWNERS — auto-assign reviewers for PRs based on changed paths.
+#
+# Format: <pattern>  @owner1 @owner2 ...
+# Last matching pattern wins (more specific rules go below the catch-all).
+# See: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+#
+# To make code owner review *required*, enable "Require review from Code
+# Owners" in repo Settings → Branches → Branch protection rules → main.
+
+# Default — every change in the repo gets the maintainer for review.
+*  @thanhpt1110
+
+# When the team grows, narrow ownership by path. Examples:
+#   src/agent_me/slack_bridge/  @bridge-maintainers
+#   src/agent_me/dashboard/     @dashboard-maintainers
+#   design/                     @architecture-reviewers
+#   .github/                    @ci-maintainers

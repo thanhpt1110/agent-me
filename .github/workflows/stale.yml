@@ -1,0 +1,78 @@
+name: Stale issue / PR cleanup
+
+# Runs once a day to mark inactive issues/PRs as stale and eventually
+# close them. Uses `actions/stale@v9` (first-party action — pinning to
+# the major tag is acceptable per the repo's pinning policy).
+
+on:
+  # 04:00 UTC daily — chosen to be off-peak for both NA and APAC, so
+  # if the action burns through GitHub API budget, it doesn't compete
+  # with normal CI traffic.
+  schedule:
+    - cron: "0 4 * * *"
+  # Lets a maintainer trigger a sweep manually from the Actions tab,
+  # e.g. after tweaking thresholds or `exempt-*-labels` below.
+  workflow_dispatch:
+
+# Stale-marks and close-comments require write on both surfaces.
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    # The action processes issues in batches and respects
+    # `operations-per-run` (default 30); 5 minutes is plenty.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/stale@v9
+        with:
+          # --- Issues ---
+          # 60 days idle → stale, +14 days idle → close. Long enough
+          # that legitimately slow-burn discussions don't get nuked,
+          # short enough that abandoned issues don't pile up.
+          days-before-issue-stale: 60
+          days-before-issue-close: 14
+          stale-issue-label: "stale"
+          stale-issue-message: |
+            This issue hasn't seen activity for 60 days. If it's still
+            relevant, comment to keep it open. Otherwise it'll be
+            closed in 14 days. Reopen any time.
+          close-issue-message: |
+            Closing as stale. The conversation history is preserved;
+            comment or reopen if it becomes relevant again.
+          # Issues with these labels are NEVER marked stale:
+          #   - pinned        — explicitly held open by a maintainer
+          #   - security      — security work shouldn't time out
+          #   - phase-2b/3/4  — long-horizon roadmap items tracked
+          #                     against future development phases
+          exempt-issue-labels: "pinned,security,phase-2b,phase-3,phase-4"
+
+          # --- PRs ---
+          # PRs go stale faster than issues — abandoned PRs are noisier
+          # in the review queue than abandoned issues are in triage.
+          days-before-pr-stale: 30
+          days-before-pr-close: 14
+          stale-pr-label: "stale"
+          stale-pr-message: |
+            This PR hasn't seen activity for 30 days. Push a commit or
+            comment to keep it open. Otherwise it'll be closed in 14
+            days; reopen any time.
+          close-pr-message: |
+            Closing as stale. Reopen if you want to revive it.
+          # PRs with these labels are NEVER marked stale:
+          #   - pinned   — explicit maintainer hold
+          #   - security — same as issues
+          #   - blocked  — waiting on something out of author's hands
+          #   - wip      — author is still actively iterating
+          exempt-pr-labels: "pinned,security,blocked,wip"
+
+          # --- Behaviour ---
+          # Any new comment / commit removes the `stale` label and
+          # restarts the clock — politer than silently closing things
+          # that just had activity.
+          remove-stale-when-updated: true
+          # Process oldest first so the truly abandoned items get
+          # acted on before the daily op-budget runs out.
+          ascending: true

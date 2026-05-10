@@ -1,0 +1,61 @@
+name: CodeQL
+
+# GitHub-native static security analysis. Findings appear in the repo's
+# Security tab → Code scanning alerts. This workflow is GitHub-native:
+# enabling it requires no third-party tokens or accounts. The
+# `security-extended` query pack adds taint-tracking and additional
+# CWE-mapped queries beyond the default set; `security-and-quality` adds
+# maintainability checks (dead code, complexity hotspots, etc.).
+#
+# If a PR introduces a new alert:
+#   1. Open the alert from the PR's "Code scanning" check details.
+#   2. Triage: real issue → fix; false positive → dismiss with reason
+#      ("False positive" / "Used in tests" / "Won't fix") in the UI.
+#   3. CodeQL won't fail the PR by default — it reports as a check.
+#      To make it blocking, enable "Require status checks" for
+#      "Analyze (Python)" in branch protection.
+#
+# Schedule rationale: weekly Saturday 03:00 UTC catches drift between
+# PRs (e.g. new advisory data) without colliding with weekday work.
+# 03:00 UTC = 10:00 ICT (Asia/Ho_Chi_Minh) Saturday — out of the
+# maintainer's typical morning routine.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * 6"  # Sat 03:00 UTC
+
+# CodeQL needs `security-events: write` to upload SARIF results to the
+# Security tab. Everything else stays read-only.
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # github/codeql-action is first-party but we SHA-pin per OpenSSF
+      # guidance — actions are an attack surface regardless of publisher.
+      # Both `init` and `analyze` come from the same action repo, so they
+      # share a SHA. Dependabot will bump both together.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3.35.4
+        with:
+          languages: python
+          # security-extended: adds taint analysis + extra CWE coverage.
+          # security-and-quality: adds maintainability/code-quality queries.
+          queries: security-extended,security-and-quality
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3.35.4
+        with:
+          category: "/language:python"

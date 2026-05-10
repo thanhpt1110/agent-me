@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a change to the framework.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please consider whether this change really belongs in the **framework** or in your **personal fork**. agent-me is meant to be forked and customized — workflows that only apply to your role, team, or employer should live in your fork, not upstream.
+
+        See [CONTRIBUTING.md → "What kinds of contributions are welcome"](../blob/main/CONTRIBUTING.md#what-kinds-of-contributions-are-welcome) for the rough split.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: What's missing or painful today? Concrete examples beat abstractions.
+      placeholder: e.g. The bridge has no way to pause autonomous briefs while I'm on PTO.
+    validations: { required: true }
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What should the framework do differently? Sketch the API / UX / config surface if you can.
+    validations: { required: true }
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, and why they didn't work.
+  - type: textarea
+    id: design_doc
+    attributes:
+      label: Design doc draft (optional but encouraged for non-trivial features)
+      description: |
+        Anything bigger than a one-file change should land an ADR in `design/` before code.
+        Either paste a draft here or link to a PR that adds `design/<topic>.md`.
+  - type: checkboxes
+    id: acks
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: I have read CONTRIBUTING.md
+          required: true
+        - label: I have searched existing issues and discussions for duplicates
+          required: true
+        - label: I have considered whether this belongs in my own fork instead
+          required: true

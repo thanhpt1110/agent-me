@@ -1,0 +1,48 @@
+name: PR size label
+
+# Applies a `size/xs..xl` label to every PR based on lines changed
+# (additions + deletions, minus ignored files). Reviewers use this to
+# triage queue: small PRs go first, XL PRs flag a "should this be
+# split?" conversation.
+#
+# Same security model as `labeler.yml`: `pull_request_target` so the
+# workflow runs from base, no checkout of PR code, only API calls.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      # Pinned to commit SHA. `codelytv/pr-size-labeler` is a
+      # third-party action; review the diff before bumping the pin.
+      - uses: codelytv/pr-size-labeler@095a41fca88b8764fd9e008ad269bcdb82bb38b9  # v1.10.4
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Thresholds (inclusive upper bound for each bucket; >XL has
+          # no max). Tune if the project's "normal PR" size changes.
+          xs_label: "size/xs"
+          xs_max_size: "20"
+          s_label: "size/s"
+          s_max_size: "100"
+          m_label: "size/m"
+          m_max_size: "500"
+          l_label: "size/l"
+          l_max_size: "1000"
+          xl_label: "size/xl"
+          # Files excluded from the line count. Anything machine-
+          # generated, vendored, or binary shouldn't influence the
+          # human-review-effort signal.
+          files_to_ignore: |
+            uv.lock
+            *.lock
+            *.svg
+            *.png
+            *.jpg
+            CHANGELOG.md

@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the framework misbehaves.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please run the framework's diagnostic block once and paste the output below — it answers ~80% of "what version" questions.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Concise description of the bug. Include any error message verbatim.
+      placeholder: e.g. `agent-me-brief --period day` exits 0 but the Slack DM never appears.
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: A threaded daily brief in my DM with all 7 source replies.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Smallest sequence that reproduces it.
+      render: shell
+    validations: { required: true }
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Output of the block below — paste verbatim.
+      value: |
+        # Run on the bridge host
+        uv --version
+        python3 --version
+        claude --version
+        cat ~/agent-me/STATE.md | head -20
+        git -C ~/agent-me rev-parse --short HEAD
+      render: shell
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        From the bridge host. Redact tokens / personal data.
+        ```
+        journalctl --user -u agent-me-bridge -n 100 --no-pager
+        tail -n 100 ~/.local/state/agent-me/bridge.log
+        ```
+      render: text
+  - type: checkboxes
+    id: acks
+    attributes:
+      label: Acknowledgements
+      options:
+        - label: I have read CONTRIBUTING.md and the relevant `design/<topic>.md` files
+          required: true
+        - label: I have searched existing issues for duplicates
+          required: true
+        - label: This is a framework issue, not a personalization issue in my fork
+          required: true

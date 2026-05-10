@@ -1,5 +1,10 @@
 # agent-me
 
+[![CI](https://github.com/thanhpt1110/agent-me/actions/workflows/ci.yml/badge.svg)](https://github.com/thanhpt1110/agent-me/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/thanhpt1110/agent-me/actions/workflows/codeql.yml/badge.svg)](https://github.com/thanhpt1110/agent-me/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
+
 > _myself, but in agent mode._
 
 Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous agent that handles your daily/weekly workload. Fork it, set your own configs, deploy your own `agent-me`. First operator: thaphan@nvidia.com.

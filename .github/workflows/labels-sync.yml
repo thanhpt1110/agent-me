@@ -1,0 +1,59 @@
+name: Sync labels
+
+# Keep the GitHub repo's labels in sync with `.github/labels.yml`.
+#
+# When to run:
+#   - Any push to main that modifies labels.yml
+#   - Manual dispatch (e.g. after editing labels.yml in a PR you want
+#     to test before merging — toggle `dry-run` on)
+#
+# Action used: EndBug/label-sync@v2 — pinned to commit SHA below.
+# Repo: https://github.com/EndBug/label-sync
+#
+# What gets done:
+#   - Creates labels in GH that exist in labels.yml but not the repo
+#   - Updates colour/description if they drift
+#   - Renames via `aliases:` in labels.yml
+#   - Does NOT delete labels by default (set `delete-other-labels: true`
+#     in the manual-dispatch input if you want a clean slate; review
+#     carefully — it nukes anything not in the file)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/labels.yml"
+      - ".github/workflows/labels-sync.yml"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Dry-run only (don't modify labels)"
+        type: boolean
+        default: false
+      delete-other:
+        description: "Delete labels not listed in labels.yml"
+        type: boolean
+        default: false
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      # EndBug/label-sync v2.3.3 (latest as of resolution; `v2` tag-ref
+      # also points here). Pin to commit SHA per OpenSSF guidance for
+      # third-party actions.
+      # Source: https://github.com/EndBug/label-sync/releases/tag/v2.3.3
+      - name: Sync labels
+        uses: EndBug/label-sync@52074158190acb45f3077f9099fea818aa43f97a
+        with:
+          config-file: ".github/labels.yml"
+          delete-other-labels: ${{ inputs.delete-other == true }}
+          dry-run: ${{ inputs.dry-run == true }}
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,85 @@
+# Path-based labeling rules consumed by `.github/workflows/labeler.yml`,
+# which runs the `actions/labeler@v5` action on every PR. The action
+# diffs the PR against the base branch and applies a label here for
+# every key whose glob list matches at least one changed file.
+#
+# Schema notes (v5 — the `changed-files` / `any-glob-to-any-file` shape):
+#   - Top-level key (e.g. `slack-bridge`) is the GitHub label name.
+#   - Each entry under the key is a "match object". A PR matches the
+#     label if ANY match object matches.
+#   - Inside a match object:
+#       changed-files:
+#         - any-glob-to-any-file: [globs]   # any of these globs
+#                                            # touches any changed file
+#   - Other matchers exist (`all-globs-to-all-files`,
+#     `any-glob-to-all-files`, `head-branch`, `base-branch`); we
+#     stick to `any-glob-to-any-file` because path-based area labels
+#     only need "did the PR touch this dir at all?".
+#
+# Multiple labels apply if a PR touches multiple areas — by design.
+# The workflow runs with `sync-labels: true`, so labels are removed
+# automatically when files no longer match (e.g. after a force-push).
+#
+# When you add a new top-level dir under `src/agent_me/` or `.github/`,
+# add a rule here so PRs touching it get the right area label.
+
+# --- Source code areas ---------------------------------------------------
+
+slack-bridge:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/agent_me/slack_bridge/**"
+
+dashboard:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/agent_me/dashboard/**"
+
+scripts:
+  # Both the Python in-package scripts and the top-level Bash helpers
+  # belong to the same conceptual area for review-routing.
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/agent_me/scripts/**"
+          - "scripts/**"
+
+deploy:
+  # systemd units, install/uninstall helpers, anything host-level.
+  - changed-files:
+      - any-glob-to-any-file:
+          - "deploy/**"
+
+# --- Documentation / process ---------------------------------------------
+
+design:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "design/**"
+
+discussions:
+  # ADRs, session logs, decision records.
+  - changed-files:
+      - any-glob-to-any-file:
+          - "discussions/**"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+
+ci:
+  # Anything inside `.github/` is CI/automation/repo-config — workflows,
+  # issue templates, dependabot, codeowners, this file, etc.
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+docs:
+  # Any markdown anywhere counts as docs. The two explicit subtree
+  # globs are redundant with `*.md` (since `*.md` is recursive in
+  # labeler v5 with `dot: true`), but kept explicit for clarity.
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.md"
+          - "design/**/*.md"
+          - "discussions/**/*.md"

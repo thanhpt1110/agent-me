@@ -1,0 +1,49 @@
+name: Auto-label PR
+
+# Why `pull_request_target` instead of `pull_request`:
+#   - `pull_request_target` runs in the context of the BASE ref (i.e.
+#     trunk's version of this workflow), so the workflow definition
+#     and any tokens come from `main`, not from the PR. This means a
+#     contributor cannot edit the workflow in their PR to escalate
+#     privileges or exfiltrate secrets — GitHub's recommended pattern
+#     for label-only / triage workflows that need write scope.
+#   - We never `actions/checkout` PR code in this workflow, so the
+#     "pwn-request" class of attacks (running attacker-controlled
+#     code with elevated tokens) does not apply here.
+#
+# Triggered events:
+#   - opened           — first label on PR creation
+#   - synchronize      — re-label when new commits are pushed
+#   - reopened         — re-label after reopening
+#   - ready_for_review — drafts often skip earlier triggers; cover
+#                        the moment they become reviewable
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Minimum scopes the action needs:
+#   - contents: read         — fetch the labeler.yml config from base
+#   - pull-requests: write   — add/remove labels on the PR
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    # Labeling is a few API calls; cap so a stuck job doesn't hold the
+    # runner pool indefinitely.
+    timeout-minutes: 2
+    steps:
+      # Pinned to a full commit SHA, not the `v5` tag, so an attacker
+      # who compromises the upstream tag cannot ship code into our CI.
+      # Bump deliberately when you've reviewed the diff between the
+      # current pin and the new upstream release.
+      - uses: actions/labeler@8558fd74291d67161a8a78ce36a881fa63b766a9  # v5.0.0
+        with:
+          # Path to the rules file in this repo (the default; spelled
+          # out so it's obvious where to look).
+          configuration-path: .github/labeler.yml
+          # Remove labels when files no longer match the rules — keeps
+          # area labels accurate after force-pushes / partial reverts.
+          sync-labels: true

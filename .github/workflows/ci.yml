@@ -1,0 +1,166 @@
+name: CI
+
+# Runs on every PR and on pushes to main. Acts as the merge gate: the `lint`
+# and `test` jobs are required-status candidates (configure in repo settings →
+# Branches → Branch protection rules). The `lint-advisory` and `type` jobs are
+# `continue-on-error: true` so they surface findings without blocking merges.
+#
+# Why two lint jobs?  The Slack bridge module (`slack_bridge/app.py`) and the
+# `scripts/` helpers carry pre-existing ruff warnings we haven't burned down
+# yet. The strict job runs ruff on a curated, currently-clean subset so green
+# means green; the advisory job runs ruff on the whole repo and is allowed to
+# fail. As modules clean up, move them from advisory to strict scope.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel duplicate in-progress runs when a new push lands on the same ref.
+# Saves CI minutes and gives you the latest result quickly.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least-privilege. Individual jobs can request more if needed.
+permissions:
+  contents: read
+
+jobs:
+  # ----------------------------------------------------------------------
+  # Strict lint — REQUIRED to pass before merge.
+  #
+  # Gates: ruff lint rules (E, F, I, B, UP, SIM, RUF — see [tool.ruff.lint]
+  # in pyproject.toml) on the curated clean scope.
+  #
+  # If this fails:
+  #   1. Run locally: `uv run ruff check src/agent_me/dashboard/ \
+  #        src/agent_me/slack_bridge/approvals.py tests/`
+  #   2. Auto-fix what's safe: `uv run ruff check --fix <paths>`
+  #   3. If a new file outside the scope above triggered this, you probably
+  #      added it to the scope below — either clean it up, or move it back
+  #      to the advisory job until clean.
+  #
+  # NOTE: `src/agent_me/scripts/` and `src/agent_me/slack_bridge/app.py`
+  # are intentionally EXCLUDED here — they have pre-existing warnings
+  # tracked by the `lint-advisory` job. Do not silently widen this scope
+  # without first cleaning the target module to zero warnings.
+  # ----------------------------------------------------------------------
+  lint:
+    name: Lint (ruff, strict scope)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        # astral-sh/setup-uv v8.1.0 — pinned to commit SHA per OpenSSF
+        # guidance for third-party actions. Dependabot will bump this.
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Sync dev deps
+        run: uv sync --extra dev
+      - name: ruff check (strict scope)
+        run: |
+          uv run ruff check \
+            src/agent_me/dashboard/ \
+            src/agent_me/slack_bridge/approvals.py \
+            tests/
+
+  # ----------------------------------------------------------------------
+  # Advisory lint — non-blocking. Surfaces every ruff finding in the repo
+  # so reviewers see what's outstanding without blocking merges.
+  #
+  # If this fails: open an issue or fix the warnings in a follow-up PR.
+  # Do NOT mark this job as required in branch protection — it would
+  # block all merges until the bridge module's pre-existing 9 warnings
+  # and scripts/ pre-existing 9 warnings are burned down.
+  #
+  # Also runs `ruff format --check` against the strict scope (advisory).
+  # Once the codebase is fully ruff-formatted, fold the format check into
+  # the strict `lint` job above.
+  # ----------------------------------------------------------------------
+  lint-advisory:
+    name: Lint advisory (whole repo, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --extra dev
+      - name: ruff check (full repo, advisory)
+        run: uv run ruff check src/ tests/
+      - name: ruff format check (advisory until codebase is fully formatted)
+        run: uv run ruff format --check src/ tests/
+
+  # ----------------------------------------------------------------------
+  # Type check — non-blocking. Pyright in standard mode flags many
+  # pre-existing issues in the bridge module; gating on it would block
+  # every PR until the bridge is fully typed. Findings appear in the job
+  # summary so reviewers can spot regressions in changed files.
+  #
+  # If this fails:
+  #   1. Run locally: `uv run pyright src/ tests/`
+  #   2. Compare findings before/after your change.
+  #   3. New errors in code you touched → fix them; pre-existing errors
+  #      → leave them and consider opening a typing-cleanup issue.
+  # ----------------------------------------------------------------------
+  type:
+    name: Type check (pyright, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --extra dev
+      - name: pyright
+        run: uv run pyright src/ tests/
+
+  # ----------------------------------------------------------------------
+  # Tests — REQUIRED to pass before merge.
+  #
+  # Gates: full pytest suite on Python 3.12 (project minimum) and 3.13
+  # (forward compatibility). `fail-fast: false` so one Python version's
+  # failures don't mask the other's.
+  #
+  # If this fails:
+  #   1. Run locally on the failing matrix Python:
+  #        `uv run --python 3.12 pytest tests/ -v`
+  #   2. Use `--maxfail=1 -x` to bisect quickly.
+  #   3. Common causes: missing fixture, async event-loop config,
+  #      time-sensitive assertion. See tests/conftest.py for shared
+  #      fixtures.
+  #
+  # IMPORTANT: pytest auto-collection on `tests/` is safe — the suite
+  # never imports `slack_bridge.app` (which reads SLACK_BOT_TOKEN at
+  # module import time). It only imports dashboard/approvals/state_reader.
+  # If you add a test that imports the bridge, set the env var in the
+  # test or fixture rather than relying on CI secrets.
+  # ----------------------------------------------------------------------
+  test:
+    name: Tests (pytest, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.python }}
+      - run: uv sync --extra dev
+      - name: pytest
+        run: uv run pytest tests/ -v --tb=short --maxfail=3

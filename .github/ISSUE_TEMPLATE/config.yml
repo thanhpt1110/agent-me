@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or general discussion
+    url: https://github.com/thanhpt1110/agent-me/discussions
+    about: For "how do I set this up" questions, use Discussions instead of Issues.
+  - name: Security vulnerability
+    url: https://github.com/thanhpt1110/agent-me/security/advisories/new
+    about: Report privately; please don't open a public issue.

@@ -1,0 +1,44 @@
+name: Release Drafter
+
+# Two trigger reasons:
+#   - `push` to `main`        — a PR just merged; refresh the draft.
+#   - `pull_request` events   — let release-drafter validate that the
+#                                PR has the labels it expects (the
+#                                `autolabeler` config in
+#                                `.github/release-drafter.yml`, if any,
+#                                runs from these events). It does NOT
+#                                publish anything from a PR event.
+#
+# Note: this is `pull_request`, not `pull_request_target`. We don't
+# need write tokens at PR-event time; release-drafter's PR-event work
+# is read-only validation. The `push` to `main` is what actually
+# updates the draft, and that runs in trusted context.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+# Scopes:
+#   - contents: write       — required to create/update the draft
+#                              release (drafts are repo content).
+#   - pull-requests: write  — required by some autolabeler features
+#                              even though we don't enable them yet.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update_release_draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      # Pinned to a commit SHA (the v6.4.0 tag is annotated, so the
+      # SHA below is the underlying commit, not the tag object).
+      # Third-party action — review the diff before bumping the pin.
+      - uses: release-drafter/release-drafter@6a93d829887aa2e0748befe2e808c66c0ec6e4c7  # v6.4.0
+        env:
+          # The action reads `.github/release-drafter.yml` from the
+          # default branch automatically; no `with: configuration-path`
+          # needed unless we move the file.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
