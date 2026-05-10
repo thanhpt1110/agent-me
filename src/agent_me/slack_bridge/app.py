@@ -256,13 +256,6 @@ MAX_LOG_TEXT = 4000
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-7")
 
-# Brief / MCP-fetch backend (mirrors daily_brief.py). In PA mode we ALSO
-# swap the bridge's `/mcp` and `/reauth` slash commands to use PA's own
-# tools (`pa auth status`, `pa login`) so the user gets one consistent
-# auth surface across Slack, brief, and the host CLI.
-MCP_CLI = os.environ.get("MCP_CLI", "claude").strip().lower() or "claude"
-PA_MODE = MCP_CLI == "pa"
-
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def clip(s: str | None, n: int = MAX_LOG_TEXT) -> str | None:
@@ -361,15 +354,6 @@ HELP_TEXT = "\n".join((
 
 
 async def cmd_mcp() -> str:
-    if PA_MODE:
-        try:
-            out = await run_command(["pa", "auth", "status"], cwd=str(REPO_DIR), timeout=30.0)
-            return (
-                "`pa auth status`:\n```\n" + out.strip() + "\n```\n"
-                "_Run `/reauth` to refresh any service flagged as needing auth._"
-            )
-        except Exception as exc:
-            log.warning("pa_auth_status_failed_falling_back", err=str(exc))
     out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
     return (
         "`claude mcp list`:\n```\n" + out.strip() + "\n```\n"
@@ -443,25 +427,11 @@ async def cmd_brief(args_text: str = "") -> str:
 async def cmd_reauth() -> str:
     """Trigger the reauth helper as a detached background process.
 
-    PA mode: spawns `pa login` (PA already auto-opens each service's
-    OAuth tab itself). Default mode: spawns the Python `agent-me-reauth`
-    helper which uses pty + per-server `authenticate` tool calls.
-    Either way the user signs in to browser tabs on the bridge host.
+    The helper will open auth URLs in the bridge host's default browser.
+    User signs in to NVIDIA SSO in each tab on the host.
     """
-    if PA_MODE:
-        await asyncio.create_subprocess_exec(
-            "pa", "login",
-            cwd=str(REPO_DIR),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        return (
-            "🚀 *PA login started* on the bridge host.\n\n"
-            "Browser tabs will open shortly — sign in to NVIDIA SSO + each connected service.\n"
-            "When done, run `/mcp` here to verify everything is connected."
-        )
+    # Spawn detached so we don't block. stdout/stderr go to /dev/null;
+    # the user sees results by checking `claude mcp list` after signing in.
     await asyncio.create_subprocess_exec(
         "uv", "run", "agent-me-reauth",
         cwd=str(REPO_DIR),
@@ -881,33 +851,16 @@ async def ensure_dm_channel(client) -> str | None:
 
 async def check_mcp_auth(client) -> None:
     global _last_notify_ts, _last_need_auth_set
-    if PA_MODE:
-        try:
-            out = await run_command(["pa", "auth", "status"], cwd=str(REPO_DIR), timeout=30.0)
-        except Exception as exc:
-            log.warning("pa_auth_status_failed", err=str(exc))
-            return
-        # PA auth status output format isn't documented; match common
-        # negative-status keywords. Adjust as we learn the real format.
-        need_auth = sorted({
-            line.split(":")[0].strip().split()[-1]  # last token before ':' / fallback to whole line
-            for line in out.splitlines()
-            if any(k in line.lower() for k in (
-                "not authenticated", "needs auth", "expired", "missing",
-                "not connected", "✗", "❌",
-            ))
-        })
-    else:
-        try:
-            out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
-        except Exception as exc:
-            log.warning("mcp_list_failed", err=str(exc))
-            return
-        need_auth = sorted(
-            line.split(":")[0].strip()
-            for line in out.splitlines()
-            if "Needs authentication" in line
-        )
+    try:
+        out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+    except Exception as exc:
+        log.warning("mcp_list_failed", err=str(exc))
+        return
+    need_auth = sorted(
+        line.split(":")[0].strip()
+        for line in out.splitlines()
+        if "Needs authentication" in line
+    )
     log.info("mcp_health_check", need_auth_count=len(need_auth), servers=need_auth)
     if not need_auth:
         _last_need_auth_set = ""
@@ -1019,23 +972,12 @@ async def run_morning_routine(client) -> None:
 
     # Step 2: MCP probe.
     try:
-        if PA_MODE:
-            out = await run_command(["pa", "auth", "status"], cwd=str(REPO_DIR), timeout=30.0)
-            need_auth = sorted({
-                line.split(":")[0].strip().split()[-1]
-                for line in out.splitlines()
-                if any(k in line.lower() for k in (
-                    "not authenticated", "needs auth", "expired", "missing",
-                    "not connected", "✗", "❌",
-                ))
-            })
-        else:
-            out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
-            need_auth = sorted(
-                line.split(":")[0].strip()
-                for line in out.splitlines()
-                if "Needs authentication" in line
-            )
+        out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+        need_auth = sorted(
+            line.split(":")[0].strip()
+            for line in out.splitlines()
+            if "Needs authentication" in line
+        )
     except Exception as exc:
         log.error("morning_mcp_check_failed", err=str(exc))
         need_auth = ["(probe failed — see bridge.log)"]
@@ -1099,7 +1041,7 @@ async def morning_loop(client) -> None:
 
 async def main_async() -> int:
     handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    log.info("bridge_starting", phase="2a", model=MODEL, mcp_cli=MCP_CLI,
+    log.info("bridge_starting", phase="2a", model=MODEL,
              mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
 
     async def health_loop():
