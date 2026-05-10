@@ -31,7 +31,7 @@ Prerequisites: `claude` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, P
    ```
    From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`, `/brief`.
 6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
-7. **(Optional) Deploy on Brev for 24/7**: see `design/setup-on-fresh-host.md` §"Brev-specific notes" for the systemd unit + token-sync recipe.
+7. **(Optional) Deploy on a 24/7 host**: `design/deploy-on-host.md` is the end-to-end playbook (Colossus / any internal-NVIDIA systemd Linux box). Auto-deploys on every git push (60s polling watcher → systemctl restart bridge).
 
 ## Architecture overview
 

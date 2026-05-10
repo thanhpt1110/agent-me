@@ -98,5 +98,6 @@ The remaining steps need a human at a browser:
   d) Start the bridge (foreground, Ctrl-C to stop):
         uv run agent-me-bridge
 
-For 24/7 deploy on Brev, also see design/setup-on-fresh-host.md.
+For the 24/7 deploy playbook (systemd + watcher + auto-update on git push),
+see design/deploy-on-host.md.
 NEXT

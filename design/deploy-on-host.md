@@ -1,8 +1,21 @@
-# Deploy on Brev — single-shot playbook
+# Deploy on host — single-shot playbook
 
-This file is the **single source of truth** for taking a fresh Brev
-(or any systemd-based Linux) host from `git clone` to a 24/7
-auto-updating agent-me deployment.
+This file is the **single source of truth** for taking a fresh
+systemd-based Linux host from `git clone` to a 24/7 auto-updating
+agent-me deployment.
+
+Tested / recommended targets:
+- **Colossus (NVIDIA internal)** — first-class, what we use. Internal
+  network reaches all MaaS MCP endpoints without VPN gymnastics.
+- **Any internal NVIDIA Linux box** with `systemd --user`, outbound
+  to slack.com + github.com, and inbound from the human's browser
+  (over SSH) for OAuth callbacks.
+- **External cloud (Brev / EC2 / Lambda Cloud)** — works for the
+  bridge process itself but the MaaS MCP endpoints (`*.nvidia.com`,
+  `maas.prd.astra.nvidia.com`) generally aren't reachable from
+  external networks, so Jira / GitLab / Confluence / NVBugs / Slack /
+  Outlook MCP tools all 401 on the deployed bridge. Use only if you
+  have a working VPN-on-the-host story.
 
 It's written so a Claude Code session running on the host can follow
 it end-to-end with minimal back-and-forth from the human. Each step
@@ -14,9 +27,35 @@ includes:
 The deployer needs **two things from the human**:
 1. The secrets file (`~/agent-me-secrets.md`, scp'd up before starting)
 2. A browser, twice — once for `claude /login`, once for
-   `agent-me-reauth` (NVIDIA SSO tabs)
+   `agent-me-reauth` (NVIDIA SSO tabs, port-forwarded over SSH)
 
 Everything else is automated.
+
+## Outbound network the host must reach
+
+Sanity-check before running the playbook on a new host. Run from the
+target host:
+
+```bash
+for url in https://github.com https://slack.com \
+           https://maas.prd.astra.nvidia.com \
+           https://nvaihub.nvidia.com \
+           https://enterprise-content-intelligence.nvidia.com; do
+    if curl -fsSL --connect-timeout 5 -o /dev/null -w "%{http_code}\n" "$url" >/dev/null 2>&1; then
+        echo "  ✓ $url"
+    else
+        echo "  ✗ $url   (will block deployment)"
+    fi
+done
+```
+
+NVIDIA-internal hosts (`*.nvidia.com`, `maas.prd.astra.nvidia.com`)
+require internal network. Colossus has it; Brev/EC2 don't.
+
+`api.anthropic.com` is needed if you authenticate Claude Code via
+`claude /login`. NVIDIA-internal Inference Hub is an alternative if
+Anthropic's API is blocked from your host (`NVIDIA_API_KEY` env var,
+present in the secrets vault).
 
 ## Architecture (refresher)
 
@@ -28,8 +67,8 @@ Everything else is automated.
                        │ poll origin/main every 60s
                        ▼
        ┌───────────────────────────────────────────┐
-       │  Brev host (this machine)                 │
-       │                                           │
+       │  Deploy host (Colossus / any systemd Linux│
+       │                  on internal NVIDIA net)  │
        │  ┌───────────────────────┐  user systemd  │
        │  │ agent-me-watch.service│  enable-linger │
        │  │   git fetch / pull    │                │
@@ -52,13 +91,13 @@ Everything else is automated.
 **Slack does not need a public URL.** Bridge uses Socket Mode: it
 opens a WebSocket *out* to Slack with the `xapp-…` token, and Slack
 delivers events over that. No public endpoint, no firewall holes, no
-Brev port-expose needed for the bridge itself. (Watcher also doesn't
-need inbound — it polls outbound to GitHub.)
+port-expose needed for the bridge itself. (Watcher also doesn't need
+inbound — it polls outbound to GitHub.) The host can sit fully behind
+NVIDIA's internal network.
 
 ## Prerequisites the host should have
 
-Most are pre-installed on Brev's Ubuntu 22.04 image. Run this as a
-checklist:
+Run this as a checklist on the target host:
 
 ```bash
 for cmd in git curl python3 jq node; do
@@ -127,11 +166,11 @@ The human will scp `~/agent-me-secrets.md` from their Mac before
 running this step:
 
 ```bash
-# Run on the human's Mac (NOT on Brev):
-scp ~/agent-me-secrets.md agent-me-brev:~/agent-me-secrets.md
+# Run on the human's Mac (NOT on the deploy host):
+scp ~/agent-me-secrets.md <host>:~/agent-me-secrets.md
 ```
 
-Once `~/agent-me-secrets.md` is on the Brev host, apply it to
+Once `~/agent-me-secrets.md` is on the deploy host, apply it to
 `configs/.env` and any other places the file says it goes:
 
 ```bash
@@ -186,7 +225,7 @@ source ~/.bashrc
 ```
 
 NVIDIA users: the user's local Mac may have NVIDIA-internal Claude
-auth (no `~/.claude/credentials.json`). On Brev, easiest is Option A
+auth (no `~/.claude/credentials.json`). On a fresh server, easiest is Option A
 unless the human is using `ANTHROPIC_API_KEY`.
 
 **Verify:**
@@ -206,10 +245,10 @@ uv run agent-me-reauth
 This spawns `claude` under a pty and runs
 `mcp__<server>__authenticate` for each MCP showing
 "! Needs authentication" in `claude mcp list`. It auto-opens browser
-tabs (via `xdg-open` on Linux) — but on a headless Brev host there's
+tabs (via `xdg-open` on Linux) — but on a headless server there's
 no browser, so the URLs will be printed and need manual handling.
 
-**Two ways to handle this on Brev:**
+**Two ways to handle this on a remote host:**
 
 1. **SSH port-forward to the human's Mac** (simplest if they're
    already SSH'd in):
@@ -219,20 +258,20 @@ no browser, so the URLs will be printed and need manual handling.
    ssh -L 51080:localhost:51080 -L 51081:localhost:51081 \
        -L 51082:localhost:51082 -L 51083:localhost:51083 \
        -L 51084:localhost:51084 -L 51085:localhost:51085 \
-       -L 51086:localhost:51086 agent-me-brev
+       -L 51086:localhost:51086 <host>
    ```
    (Forward ~7 ports — one per stale MCP. Random ports in 51000-65535 range.)
 
-   Then run `agent-me-reauth` on Brev. URLs printed will reference
+   Then run `agent-me-reauth` on the host. URLs printed will reference
    `localhost:5108X` — open them in the Mac's browser; OAuth
    redirects come back to the SSH-tunneled localhost which reaches
-   the Brev listener.
+   the host's listener.
 
-2. **Copy `~/.claude.json` from Mac to Brev** (one-time after Mac
+2. **Copy `~/.claude.json` from Mac to the host** (one-time after Mac
    has all MCPs authenticated): the file holds the OAuth tokens
    that MCP servers grant. Tokens last ~24h. After they expire,
    path 1 is the only sustainable option — or set up a daily cron
-   on the Mac that scp's `~/.claude.json` to Brev.
+   on the Mac that scp's `~/.claude.json` to the host.
 
 The user has chosen path 1 OR has scripts to keep `~/.claude.json`
 synced. Surface a question if it's not already set up.
@@ -293,7 +332,7 @@ git add README.md && git commit -m "deploy test (revert in next commit)"
 git push origin main
 ```
 
-Within 60s, on the Brev host:
+Within 60s, on the deploy host:
 ```bash
 journalctl --user -u agent-me-watch -f
 # should show "behind by 1 commit" → "pulled <old> → <new>" → "restarted agent-me-bridge"
@@ -351,8 +390,8 @@ uv run agent-me-brief --period day
 | Watcher pulls but bridge doesn't restart | `loginctl enable-linger` not run | `sudo loginctl enable-linger $USER && systemctl --user daemon-reload` |
 | `journalctl --user` empty after logout | linger not enabled, services died | same as above |
 | MCPs go to 401 after a day | normal (tokens expire ~24h) | `uv run agent-me-reauth` |
-| `git pull` fails: "would clobber" | local change on Brev (someone edited there) | `git stash` (only if intentional) or hand-resolve |
-| `git pull` fails: "diverged" | local commit on Brev that isn't on origin | `git log origin/main..HEAD` to inspect; either push or reset |
+| `git pull` fails: "would clobber" | local change on the host (someone edited there) | `git stash` (only if intentional) or hand-resolve |
+| `git pull` fails: "diverged" | local commit on the host that isn't on origin | `git log origin/main..HEAD` to inspect; either push or reset |
 
 ## Why systemd --user (not system-level)
 

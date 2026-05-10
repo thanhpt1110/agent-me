@@ -43,8 +43,8 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
 - [x] **MCPs registered (17 total)** — Slack + Outlook added 2026-05-10 at user scope (project-local scope confused the OAuth helper; learnt the hard way).
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
-- [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` for Brev specifics
-- [x] **Brev deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-brev.md` is the step-by-step playbook another Claude session can follow on Brev with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets).
+- [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites
+- [x] **Deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-host.md` is the step-by-step playbook another Claude session can follow with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets). Targets any internal-NVIDIA systemd Linux host (Colossus is first-class; external clouds like Brev work for the bridge but block on MaaS MCP endpoints).
 - [x] **`design/maas-mcp-catalog.md`** — full MaaS MCP catalog reference
 - [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
 - [x] **Secrets vault** at `~/agent-me-secrets.md` (outside repo, chmod 600)
@@ -76,6 +76,13 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
   (e.g. "remember user's name"), if ever needed, lives in bridge
   SQLite — NOT in claude's `~/.claude/projects/.../memory/` .md
   files. That dir is for Claude Code dev agents, not app users.
+- **2026-05-10 — Deploy target: Colossus, not Brev.** First Brev
+  attempt revealed external network can't reach NVIDIA MaaS MCP
+  endpoints (`*.nvidia.com`). MaaS MCPs are non-negotiable for the
+  bridge to work, so deployment moved to Colossus (internal network).
+  Playbook stays generic (`design/deploy-on-host.md`) — works on any
+  internal NVIDIA systemd Linux box; Brev kept as documented
+  alternative for the future-VPN scenario.
 - **2026-05-10 — All MCPs at user scope.** `setup-mcps.sh` enforces
   `--scope user`. Project-local servers' OAuth flow confused
   `agent-me-reauth`; user scope behaves identically to the older
@@ -93,17 +100,20 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
 
 ## Roadmap (next session priorities)
 
-1. **Phase 3 — Brev deploy** ← **in flight (2026-05-10)**. Deploy
+1. **Phase 3 — host deploy** ← **in flight (2026-05-10)**. Deploy
    artifacts shipped (`deploy/agent-me-bridge.service`,
    `agent-me-watch.service`, `scripts/agent-me-watch.sh`,
-   `scripts/install-systemd.sh`); `design/deploy-on-brev.md` is the
-   single playbook a Claude session on Brev follows end-to-end. User
-   will SSH to Brev, install Claude Code CLI, then ask local Claude
-   to walk the playbook, scp `~/agent-me-secrets.md` once for tokens.
+   `scripts/install-systemd.sh`); `design/deploy-on-host.md` is the
+   single playbook a Claude session on the host follows end-to-end.
+   Pivot from Brev → Colossus on 2026-05-10: Brev is external network
+   so MaaS MCP endpoints (`*.nvidia.com`) 401 from there. Colossus
+   has internal network and is the new target. User will SSH to
+   Colossus, install Claude Code CLI, then ask that Claude to walk
+   the playbook, scp `~/agent-me-secrets.md` once for tokens.
    Auto-deploy via 60s polling watcher → git pull → uv sync (if
    pyproject changed) → `systemctl --user restart agent-me-bridge`.
    Slack uses Socket Mode (no public endpoint needed). Awaiting user
-   to run the playbook on Brev.
+   to provide Colossus hostname/SSH access.
 2. **Prompt tuning** (user-driven). User explicitly said they'll
    tweak the brief prompt directly. Don't pre-empt — wait.
 3. **Phase 2b — review-before-execute approval gate.** Slack-button

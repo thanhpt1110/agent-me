@@ -45,7 +45,7 @@ cd ~/agent-me
 ./scripts/bootstrap.sh    # idempotent: uv sync + register all 17 MaaS MCPs + reminders
 ```
 
-Bootstrap delegates the MCP-registration step to `scripts/setup-mcps.sh`, which is also idempotent — re-run anytime to detect/add new servers without disturbing existing ones. The full setup walkthrough (Brev specifics, headless ANTHROPIC_API_KEY mode, systemd unit) lives in `design/setup-on-fresh-host.md`.
+Bootstrap delegates the MCP-registration step to `scripts/setup-mcps.sh`, which is also idempotent — re-run anytime to detect/add new servers without disturbing existing ones. The full setup walkthrough (prerequisites, why each step) lives in `design/setup-on-fresh-host.md`. The end-to-end 24/7 deployment playbook (systemd, watcher, secrets, verification) lives in `design/deploy-on-host.md` — Claude on the deploy host can follow it step-by-step.
 
 Run any first-party script through `uv run <entry-point>` (the venv stays implicit; agents don't need to manually `source .venv/bin/activate`):
 

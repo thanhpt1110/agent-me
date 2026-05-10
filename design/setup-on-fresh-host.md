@@ -1,9 +1,14 @@
 # Setup on a fresh host
 
-Goal: a clean machine (Brev, new Mac, anything with Linux/macOS) goes
-from `git clone` to a working agent-me deployment. The path is
-deliberately scripted so you don't have to remember which 17 MCP
-servers we use, or which env vars need filling.
+Goal: a clean machine (Colossus, Brev, new Mac, anything with
+Linux/macOS) goes from `git clone` to a working agent-me deployment.
+The path is deliberately scripted so you don't have to remember which
+17 MCP servers we use, or which env vars need filling.
+
+> **Note:** This file walks through the *manual* setup — useful for
+> understanding what `bootstrap.sh` does and why. For the *end-to-end
+> automated playbook* (clone → secrets → systemd → auto-deploy), see
+> [`deploy-on-host.md`](deploy-on-host.md).
 
 ## TL;DR
 
