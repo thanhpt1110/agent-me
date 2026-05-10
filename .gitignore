@@ -69,6 +69,8 @@ temp/
 .claude/projects/
 .claude/local/
 .claude/cache/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # OS / misc
 Thumbs.db

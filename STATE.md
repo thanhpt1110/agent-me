@@ -1,73 +1,102 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-10 by Claude (Opus 4.7)_
+_Last updated: 2026-05-10 by Claude (Opus 4.7) — after PA-mode experiment reverted._
 
 ## Phase
 
-**Phase 2a complete — bridge live, fully Python+uv.** Slack bridge ported from Node to Python (`uv run agent-me-bridge`); Node code deleted. MCP re-auth helper (`uv run agent-me-reauth`) auto-opens browser tabs. Slash commands `/mcp /version /whoami /help /reauth` work both as native Slack commands and as in-message text. Periodic 6h MCP-auth health probe DMs the operator when re-auth is needed. Next: Phase 3 (Brev deploy) or Phase 2b (PreToolUse approval gate).
+**Phase 2a complete + daily/weekly/monthly brief shipped + morning routine
+live.** Bridge is fully Python+uv; daily-brief works end-to-end (`uv run
+agent-me-brief --period {day,week,month}`); morning routine fires daily at
+6am Vietnam time posting an MCP-status DM with reauth + brief buttons;
+plain-text shortcuts and Block Kit interactivity are wired through.
+**PA-hybrid attempt was reverted on 2026-05-10** — see "Recent decisions"
+below. Next: prompt tuning (user-driven) → Phase 3 (Brev deploy) or
+Phase 2b (approval gate).
 
 ## Decisions locked
 
 | Topic | Choice |
 |---|---|
-| Runtime host | Brev cloud CPU instance (24/7) |
-| Primary interface | **Personal Slack workspace** (Socket Mode bridge) |
+| Runtime host | Brev cloud CPU instance (24/7) — Phase 3 |
+| Primary interface | Personal Slack workspace (Socket Mode bridge) |
 | Config repo | Personal GitHub, **public template** (`thanhpt1110/agent-me`) |
 | Default model | Claude Opus 4.7 (1M ctx) |
+| MCP backend | **Claude Code only** (PA hybrid tried and reverted) |
 | Git identity | `includeIf` per-host: github.com → personal, default → NVIDIA |
 | License | MIT |
-| Slack sandboxing | Review-by-default + per-thread auto-approve toggle |
+| Slack sandboxing | Review-by-default + per-thread auto-approve toggle (Phase 2b) |
 | State store path | `${AGENT_ME_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-me}` |
-| Streaming UX | Hybrid: 🔄 placeholder → progress every ~30s → final `chat.update` |
+| Streaming UX | Hybrid: 🔄 placeholder → progress steps → final `chat.update` |
+| File logging | structlog → console (pretty) + rotating JSON file `bridge.log` (10MB×5) |
+| Morning routine | 6am Vietnam time (`Asia/Ho_Chi_Minh`); thread-rooted DM |
+| Secrets vault | `~/agent-me-secrets.md` outside repo, chmod 600 |
 
 ## Done
 
-- [x] Project named **agent-me** ("myself, but in agent mode")
-- [x] Folder scaffold + bypassPermissions
-- [x] CLAUDE.md, STATE.md, README.md, LICENSE, .gitignore
-- [x] `~/.gitconfig` `includeIf` rules for per-host identity
-- [x] `gh` CLI installed + authed as `thanhpt1110`
-- [x] **GitHub repo published:** public template at https://github.com/thanhpt1110/agent-me
-- [x] `design/slack-app-setup.md` — end-to-end Slack app + Socket Mode bridge guide
-- [x] Slack design questions resolved (`discussions/2026-05-10-slack-decisions.md`)
-- [x] Personal Slack workspace + custom app + bot/app/signing tokens in `configs/.env`
-- [x] **Phase 2a bridge live** — DM + mention; slash commands `/mcp /version /whoami /help /reauth` (native + text-intercept); 6h MCP health probe + DM notify
-- [x] **Python+uv migration** — Node bridge deleted; bridge runs via `uv run agent-me-bridge`; pyproject.toml + uv.lock
-- [x] `src/agent_me/scripts/reauth_mcps.py` — auto-open MCP re-auth helper (pty + URL extraction + client_id dedupe + tail-trim heuristic)
-- [x] `design/mcp-authentication.md` — full re-auth playbook
-- [x] `discussions/2026-05-10-pa-vs-custom-comparison.md` — defense of build-vs-PA choice
-- [x] STATE.md Phase 4 dashboard decisions locked (Brev port-expose, build after bridge stable)
-- [x] Terminal.app default profile switched to Basic (light)
+- [x] Project + scaffold + bypassPermissions
+- [x] **GitHub repo public template:** https://github.com/thanhpt1110/agent-me
+- [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, 5 native slash commands (`/brief /mcp /reauth /version /whoami /help`), text-intercept slash, 25 plain-text shortcuts, Block Kit interactive buttons
+- [x] **MCP re-auth helper** (`uv run agent-me-reauth`) — pty + auto-open browser tabs, 9 bug iterations resolved
+- [x] **Daily-brief script** (`uv run agent-me-brief --period day|week|month`) — Jira/GitLab/GitHub/NVBugs/Confluence; grouped by project/repo/space; priority table; live placeholder updates; Block Kit refresh/reauth buttons
+- [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
+- [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
+- [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
+- [x] **Secrets vault** at `~/agent-me-secrets.md` (outside repo, chmod 600)
+- [x] **PA hybrid experiment** — built, then reverted (see Recent decisions)
 
-## Roadmap (locked order)
+## Recent decisions
 
-1. **Daily-brief sub-agent** ← _in flight_. Sources: Jira, GitLab, GitHub, NVBugs, Confluence, email-via-Glean (best-effort). Priority table at top + grouped sections per infra. Posted to operator DM via launchd at 8am local. Spec + bug history in `discussions/2026-05-10-phase-2a-complete-daily-brief-kickoff.md`.
-2. **Phase 3 — Brev deploy.** Cron only matters with a 24/7 host. Provision instance, install uv + claude CLI, systemd unit for `agent-me-bridge` and timer for `agent-me-brief`, MCP auth via SSH port-forward (`design/mcp-authentication.md` Pattern A).
-3. **Phase 2b — review-before-execute approval gate.** Slack buttons + PreToolUse hook + file-system semaphore. Design ready in `design/approval-hook-design.md`.
-4. **Phase 4 — web dashboard** at `src/agent_me/dashboard/` (starlette + SSE) on Brev port-expose.
+- **2026-05-10 — PA hybrid reverted.** Built `MCP_CLI=pa|claude` swap
+  in bridge + brief over a marathon session, but reverted before
+  end-to-end validation. Reasoning: PA's enterprise-source auth was
+  not retained between sessions (all 8 sources showed 401 the next
+  morning), so the hypothesized "auth-retention win" didn't
+  materialize on the bench. PA also adds 5–15s cold-start per
+  invocation. Net: not worth the abstraction cost. Decision: stay
+  on claude-only; user will tune the brief prompt directly. Revert
+  commits: `2dd8b40 / 85c7119 / fd8799d`. Original PA work still in
+  history (`d8907db / bdadca1 / efddcb6`) if we want to revisit.
+
+## Roadmap (next session priorities)
+
+1. **Prompt tuning** (user-driven). User explicitly said they'll
+   tweak the brief prompt directly. Don't pre-empt this — wait for
+   their direction.
+2. **Phase 3 — Brev deploy** (highest leverage). Always-on host means
+   morning routine, future cron jobs, and MCP auth retention all
+   become reliable. Document Brev provisioning + systemd unit for
+   bridge + timer for brief.
+3. **Phase 2b — review-before-execute approval gate.** Slack-button
+   gating for write tools. Design ready in `design/approval-hook-design.md`
+   (file-system semaphore). Open question still: PreToolUse hook stays
+   sync-blocked? Investigate before coding.
+4. **Phase 4 — web dashboard** at `src/agent_me/dashboard/` (starlette
+   + SSE) on Brev port-expose. Reads same SQLite state DB the bridge
+   writes to.
 
 ## Open research / unresolved
 
-- **Action interception mechanism** for review-by-default flow:
-  - (a) Claude Code `PreToolUse` hook posts to Slack and blocks → cleanest
-  - (b) Bridge parses Claude's stream and pauses subprocess → more invasive
-  - **Decision:** investigate (a) in next session before writing the bridge.
-- Brev region preference (latency vs cost)? **→ default to us-west-2 unless user says otherwise.**
+- **Action interception mechanism** for Phase 2b: PreToolUse hook
+  (cleanest) vs stream-parse (invasive). Investigate hook-blocking
+  semantics first.
+- **Brev region** — default us-west-2 unless user prefers otherwise.
+- **NVBugs MCP auth** — periodically goes 401; requires manual
+  `claude mcp` reauth. Not blocking briefs (other sources keep
+  working) but nags morning routine.
 
-## Phase 4 — locked decisions (deferred to after bridge)
+## Phase 4 — locked decisions (deferred to after bridge stable)
 
-- **Web UI dashboard:** build under `services/dashboard/` (Express + SSE, reads
-  same SQLite state DB as bridge, tails bridge.log + claude.log). Shows running
-  task, pending Slack approvals, recent actions, daily brief, system health.
-- **Public URL strategy:** Brev built-in port-expose (URL form `*.brev.dev`).
-  Accept that URL may rotate per instance restart; document the new URL in
-  `STATE.md` whenever it changes.
-- **Why not PA:** PA is a desktop app + CLI; no daemon/web mode that exposes
-  agent-me task progress externally. See `discussions/2026-05-10-pa-vs-custom-comparison.md`.
+- Web UI dashboard at `src/agent_me/dashboard/` (Python — likely
+  Starlette + SSE; not Express).
+- Public URL via Brev port-expose (`*.brev.dev`); URL may rotate per
+  instance restart.
+- Reads the bridge's SQLite + tails brief.log/bridge.log.
 
 ## Open questions / parking lot
 
-- Memory architecture: keep using auto-memory or externalize to a DB the agent owns?
-- Secrets management on Brev: 1Password CLI, sops + age, HashiCorp Vault?
-- Audit log: log every action the agent takes for after-the-fact review?
-- Dashboard auth: bearer token in URL vs Cloudflare Access vs simple basic auth?
+- Memory architecture: keep auto-memory file-based or externalize to
+  a DB the agent owns?
+- Secrets management on Brev: scp-once vs 1Password CLI vs sops + age
+  vs HashiCorp Vault. Current stop-gap = `~/agent-me-secrets.md` + scp.
+- Audit log: log every action the agent takes for after-the-fact review.
+- Dashboard auth: bearer token in URL vs Cloudflare Access vs simple basic auth.
