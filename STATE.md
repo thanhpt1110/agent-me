@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-10 by Claude (Opus 4.7) — Phase 4 dashboard drafted (Tailscale Funnel locked); Phase 3 Colossus deploy in flight._
+_Last updated: 2026-05-10 by Claude (Opus 4.7) — Phase 4 dashboard drafted; Phase 3 Colossus deploy steps 1–5 done (16/17 MCPs ✓ via Keychain transfer); steps 6–8 (systemd / smoke test / auto-deploy verify) on the user._
 
 ## Phase
 
@@ -50,6 +50,8 @@ approval gate.
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites
 - [x] **Deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-host.md` is the step-by-step playbook another Claude session can follow with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets). Targets any internal-NVIDIA systemd Linux host (Colossus is first-class; external clouds like Brev work for the bridge but block on MaaS MCP endpoints).
+- [x] **Mac→host MCP token sync (2026-05-10)** — `scripts/sync-mcp-creds-to-host.sh`. Extracts the Mac Keychain item `Claude Code-credentials` (plain JSON `{"mcpOAuth":{...}}`), jq-merges with the host's existing `~/.claude/.credentials.json` (which already has `claudeAiOauth` from `claude /login`), scp's back. **One command instead of 16 browser OAuth flows** when bringing up a new host; idempotent so it doubles as the daily refresh after a Mac-side reauth. Empirically 16/17 maas-* turn ✓ Connected immediately on Colossus this way (only nvbugs needed Mac-side reauth first). Caveat: each token's `redirect_uri` records the Mac's localhost:NNNN, but ECI doesn't enforce redirect_uri match on refresh, so refresh from the host works.
+- [x] **Phase 3 deploy on Colossus 1xA100-40 — steps 1–5 done (2026-05-10)** — Ubuntu 24.04, 16 CPU / 125 GB RAM / 731 GB free; passwordless sudo. Tools installed (uv, claude, gh, node), repo cloned at `~/agent-me`, `bootstrap.sh` registered all 17 MCPs at user scope, secrets vault scp'd + applied to `configs/.env`, `gh auth` linked, `claude /login` done, MCP tokens synced from Mac (16/17 ✓; nvbugs stale on both Mac and Colossus). Steps 6–8 (`scripts/install-systemd.sh` + Slack DM smoke test + auto-deploy verify) handed back to user — they're driving from a claude session on Colossus.
 - [x] **`design/maas-mcp-catalog.md`** — full MaaS MCP catalog reference
 - [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
 - [x] **Secrets vault** at `~/agent-me-secrets.md` (outside repo, chmod 600)
@@ -132,6 +134,16 @@ approval gate.
   decisions" section's old "Brev port-expose" line is **superseded**
   by this — Brev was abandoned same morning when MaaS MCPs proved
   unreachable from external networks.
+- **2026-05-10 — Mac Keychain → host credentials transfer.** Discovered
+  the Mac stores all MCP OAuth tokens as plain JSON inside the Keychain
+  item `Claude Code-credentials` (`{"mcpOAuth":{"<server>|<id>":{...}}}`).
+  The Linux host stores the same shape at `~/.claude/.credentials.json`
+  with `claudeAiOauth` next to `mcpOAuth` — disjoint top-level keys, jq
+  merge is a one-liner. Codified as `scripts/sync-mcp-creds-to-host.sh`.
+  Daily refresh workflow: `uv run agent-me-reauth` on Mac → opens stale
+  URLs locally (Mac has a browser) → `./scripts/sync-mcp-creds-to-host.sh
+  <host>` → host gets fresh tokens. Replaces the SSH-port-forward +
+  agent-me-reauth-on-the-host path as the recommended ritual.
 - **2026-05-10 — Phase 4 FE stack: Jinja2+Alpine, NOT Flutter Web.**
   Bandwidth isn't the deciding factor (Tailscale Funnel has no cap),
   but Flutter Web's 3-6 MB bundle + 3-7s cold-start trade UX in the
@@ -143,20 +155,18 @@ approval gate.
 
 ## Roadmap (next session priorities)
 
-1. **Phase 3 — host deploy** ← **in flight (2026-05-10)**. Deploy
-   artifacts shipped (`deploy/agent-me-bridge.service`,
-   `agent-me-watch.service`, `scripts/agent-me-watch.sh`,
-   `scripts/install-systemd.sh`); `design/deploy-on-host.md` is the
-   single playbook a Claude session on the host follows end-to-end.
-   Pivot from Brev → Colossus on 2026-05-10: Brev is external network
-   so MaaS MCP endpoints (`*.nvidia.com`) 401 from there. Colossus
-   has internal network and is the new target. User will SSH to
-   Colossus, install Claude Code CLI, then ask that Claude to walk
-   the playbook, scp `~/agent-me-secrets.md` once for tokens.
-   Auto-deploy via 60s polling watcher → git pull → uv sync (if
-   pyproject changed) → `systemctl --user restart agent-me-bridge`.
-   Slack uses Socket Mode (no public endpoint needed). Awaiting user
-   to provide Colossus hostname/SSH access.
+1. **Phase 3 — host deploy** ← **steps 1–5 done, 6–8 in user's
+   hands (2026-05-10)**. Target = Colossus `1xA100-40` (Ubuntu 24.04,
+   16 CPU / 125 GB RAM, internal NVIDIA network so MaaS MCPs reach).
+   Deploy artifacts shipped (`deploy/*.service`, `agent-me-watch.sh`,
+   `install-systemd.sh`); `design/deploy-on-host.md` is the playbook.
+   Done: tools, bootstrap, secrets, `claude /login`, **MCP tokens
+   synced from Mac via `scripts/sync-mcp-creds-to-host.sh`** (16/17 ✓
+   in one command, no per-server browser flow). Remaining for user:
+   `./scripts/install-systemd.sh` on Colossus → smoke-test by DMing
+   `mcp` to bot → push trivial commit to verify watcher restarts
+   bridge within 60s. User is driving from a claude session on the
+   host.
 2. **Prompt tuning** (user-driven). User explicitly said they'll
    tweak the brief prompt directly. Don't pre-empt — wait.
 3. **Phase 2b — review-before-execute approval gate.** Slack-button
