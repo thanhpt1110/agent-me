@@ -69,6 +69,27 @@ approval gate.
   is **untouched**. Design doc: `design/dashboard-design.md`. Smoke
   tested locally (compile + import + routes + auth). **Not deployed
   yet** — waiting on Phase 3 Colossus host to stabilize.
+- [x] **Phase 4 polish round (2026-05-10 evening, post-Phase-3-pivot)** —
+  before Colossus deploy. Auto-redeploy: `agent-me-watch.sh`
+  auto-detects `agent-me-bridge` + `agent-me-dashboard` from
+  `~/.config/systemd/user/` and restarts both on git pull (env
+  override `AGENT_ME_RESTART_UNITS` if you want to be explicit;
+  legacy `AGENT_ME_BRIDGE_UNIT` still honoured). New endpoint
+  `POST /api/refresh/_all` fans out 7 single-source jobs in parallel
+  (single-flight per source); overview page got a Refresh-All button
+  with live per-card progress badges. Edge cases: log-tail handles
+  rotation by both inode and size (was size-only); `_ro_connect`
+  sets `busy_timeout=1500ms` so reads don't fail on transient
+  checkpoint locks; broader `sqlite3.Error` catch instead of just
+  `OperationalError`. Mobile: nav is now horizontal-scroll on phones
+  (no hamburger); per-item meta wraps under title on narrow screens.
+  Pytest scaffold: `tests/{conftest,test_state_reader,test_auth,test_app}.py`
+  — 34 tests, covers DB queries (with/without seed), brief cache,
+  log scrape, auth (bearer/cookie/exempt/handshake), full route
+  surface (HTML render + JSON API + refresh-all). All green; ruff
+  zero warnings. Live boot smoke: `/healthz` 200, `/` 401 unauth /
+  200 with bearer, `/api/state` returns 7 snapshots, `/api/refresh/_all`
+  202.
 
 ## Recent decisions
 

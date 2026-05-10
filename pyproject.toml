@@ -29,6 +29,8 @@ dev = [
     "ruff>=0.5",
     "pyright>=1.1",
     "pytest>=8",
+    "pytest-asyncio>=0.23",  # async fixtures + test funcs
+    "httpx>=0.27",            # already a runtime dep — re-list for clarity
 ]
 
 [project.scripts]
@@ -57,3 +59,11 @@ ignore = ["E501"]  # line length is enforced by formatter
 include = ["src", "scripts"]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+]

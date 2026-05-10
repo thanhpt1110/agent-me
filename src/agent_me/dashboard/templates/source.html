@@ -98,28 +98,28 @@
           <ul class="divide-y divide-ink-700">
             <template x-for="i in group.items" :key="i.item_id || i.title">
               <li class="px-4 py-2 hover:bg-ink-800/50">
-                <div class="flex items-baseline justify-between gap-3">
-                  <a :href="i.url" target="_blank" rel="noopener"
-                     class="text-sm text-slate-100 hover:text-accent-400 truncate">
-                    <span class="font-mono text-xs text-slate-500" x-text="i.item_id"></span>
-                    <span class="ml-2" x-text="i.title"></span>
-                  </a>
-                  <div class="flex items-center gap-2 text-xs text-slate-500 shrink-0">
-                    <template x-if="i.priority">
-                      <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300" x-text="i.priority"></span>
-                    </template>
-                    <template x-if="i.status">
-                      <span class="text-slate-400" x-text="i.status"></span>
-                    </template>
-                    <template x-if="i.deadline">
-                      <span class="text-rose-300" x-text="`due ${i.deadline}`"></span>
-                    </template>
-                  </div>
+              <div class="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1 sm:gap-3">
+                <a :href="i.url" target="_blank" rel="noopener"
+                   class="text-sm text-slate-100 hover:text-accent-400 break-words sm:truncate">
+                  <span class="font-mono text-xs text-slate-500" x-text="i.item_id"></span>
+                  <span class="sm:ml-2" x-text="i.title"></span>
+                </a>
+                <div class="flex items-center flex-wrap gap-2 text-xs text-slate-500 sm:shrink-0">
+                  <template x-if="i.priority">
+                    <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300" x-text="i.priority"></span>
+                  </template>
+                  <template x-if="i.status">
+                    <span class="text-slate-400" x-text="i.status"></span>
+                  </template>
+                  <template x-if="i.deadline">
+                    <span class="text-rose-300" x-text="`due ${i.deadline}`"></span>
+                  </template>
                 </div>
-                <template x-if="i.reason">
-                  <div class="mt-1 text-xs text-slate-500" x-text="i.reason"></div>
-                </template>
-              </li>
+              </div>
+              <template x-if="i.reason">
+                <div class="mt-1 text-xs text-slate-500" x-text="i.reason"></div>
+              </template>
+            </li>
             </template>
           </ul>
         </div>

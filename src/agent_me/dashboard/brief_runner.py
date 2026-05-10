@@ -18,6 +18,7 @@ me the latest in the UI" operation.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -51,10 +52,8 @@ class BriefJob:
 
     def emit(self, event: dict[str, Any]) -> None:
         for q in self._subscribers:
-            try:
+            with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=128)
@@ -81,6 +80,9 @@ class BriefRunner:
         self._locks: dict[str, asyncio.Lock] = {s[0]: asyncio.Lock() for s in SOURCES}
         self._active: dict[str, BriefJob] = {}  # source → currently-running job
         self._jobs: dict[str, BriefJob] = {}    # job_id → job (recent history)
+        # Strong refs to fire-and-forget background tasks so the GC doesn't
+        # drop them mid-run. Dropped from the set when the task finishes.
+        self._tasks: set[asyncio.Task[None]] = set()
         self._history_cap = 50
 
     def active_job_for(self, source: str) -> BriefJob | None:
@@ -117,8 +119,12 @@ class BriefRunner:
                                  key=lambda i: self._jobs[i].started_at)[: -self._history_cap]:
                 self._jobs.pop(old_id, None)
 
-        # Fire and forget — the SSE consumer will tail the queue.
-        asyncio.create_task(self._run(job, period_days))
+        # Fire-and-forget — the SSE consumer will tail the queue. We
+        # keep a strong reference in `_tasks` so the GC doesn't drop the
+        # task mid-flight (asyncio holds only weak refs by default).
+        task = asyncio.create_task(self._run(job, period_days))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return job
 
     async def _run(self, job: BriefJob, period_days: int) -> None:
@@ -198,6 +204,6 @@ class BriefRunner:
                 yield evt
                 if evt.get("event") in ("done", "error"):
                     return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             yield {"event": "timeout",
                    "note": "no progress events in 120s; job may be hung"}

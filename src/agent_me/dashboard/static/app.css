@@ -9,3 +9,14 @@ pre, code, .font-mono { font-family: "JetBrains Mono", ui-monospace, "SFMono-Reg
 ::-webkit-scrollbar-track { background: #0b0f17; }
 ::-webkit-scrollbar-thumb { background: #283045; border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: #3a4660; }
+
+/* Slim horizontal scrollbar for the nav strip on phones — Tailwind
+   doesn't ship a `scrollbar-thin` utility by default. */
+.scrollbar-thin::-webkit-scrollbar { height: 4px; }
+.scrollbar-thin { scrollbar-width: thin; }
+
+/* Tailwind-equivalent .sr-only for screen readers without inline class. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}

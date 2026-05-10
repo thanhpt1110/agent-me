@@ -25,6 +25,7 @@ get a single dependency to inject.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -85,13 +86,22 @@ def _ro_connect() -> sqlite3.Connection:
     file doesn't exist yet (bridge never started), we return a
     connection to an in-memory empty DB so callers don't need to
     branch on existence.
+
+    `busy_timeout` is set to 1500 ms so that the rare case of a
+    checkpoint blocking a read returns briefly-blocked instead of
+    immediately raising `database is locked`. WAL readers don't take
+    locks that block writers, but the inverse can briefly bite during
+    a passive checkpoint.
     """
     if not DB_PATH.exists():
         log.warning("state_db_missing", path=str(DB_PATH))
         return sqlite3.connect(":memory:")
     uri = f"file:{DB_PATH}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, check_same_thread=False, isolation_level=None)
+    conn = sqlite3.connect(uri, uri=True, check_same_thread=False,
+                           isolation_level=None, timeout=1.5)
     conn.row_factory = sqlite3.Row
+    with contextlib.suppress(sqlite3.Error):
+        conn.execute("PRAGMA busy_timeout = 1500")
     return conn
 
 
@@ -178,8 +188,9 @@ class StateReader:
                     "SELECT MAX(last_used_at) FROM claude_sessions"
                 ).fetchone()
                 stats.last_session_used_at = row[0] if row and row[0] else None
-            except sqlite3.OperationalError as exc:
-                # Schema drift / fresh DB / table missing — soft fail.
+            except sqlite3.Error as exc:
+                # Schema drift / fresh DB / table missing / DB busy —
+                # all soft fails. Caller gets a zeroed BridgeStats.
                 log.warning("bridge_stats_query_failed", err=str(exc))
             return stats
         finally:
@@ -206,7 +217,7 @@ class StateReader:
                     (limit,),
                 ).fetchall()
                 return [dict(r) for r in rows]
-            except sqlite3.OperationalError as exc:
+            except sqlite3.Error as exc:
                 log.warning("recent_threads_failed", err=str(exc))
                 return []
         finally:
@@ -224,7 +235,7 @@ class StateReader:
                         LIMIT 50"""
                 ).fetchall()
                 return [dict(r) for r in rows]
-            except sqlite3.OperationalError:
+            except sqlite3.Error:
                 return []
         finally:
             conn.close()
@@ -246,8 +257,9 @@ class StateReader:
         2. Most recent successful entry in `brief.log` for that source.
         3. Empty list with `stale=True`.
         """
-        for src_id, label, icon in SOURCES:
+        for src_id, _label, _icon in SOURCES:
             if src_id == source:
+                label, icon = _label, _icon
                 break
         else:
             raise ValueError(f"unknown source: {source!r}")
@@ -308,7 +320,7 @@ class StateReader:
         runs: list[dict[str, Any]] = []
         try:
             # Tail-bias read: just slurp the file (rotating JSON, capped
-            # at 10MB×5). Cheap.
+            # at 10 MB x 5). Cheap.
             for line in BRIEF_LOG.read_text(errors="replace").splitlines():
                 try:
                     obj = json.loads(line)
@@ -327,12 +339,22 @@ class StateReader:
     async def tail_logs(
         sources: tuple[Path, ...] = (BRIDGE_LOG, BRIEF_LOG),
         from_lines: int = 50,
+        poll_interval_s: float = 0.5,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield last `from_lines` of each source, then stream new lines.
 
         Output shape: `{"source": "bridge" | "brief", "line": <raw json
         decoded as dict, or {"raw": <str>} if not JSON>, "ts": <ms>}`.
         Stops only when the consumer cancels.
+
+        Rotation handling: structlog's RotatingFileHandler renames
+        `bridge.log` → `bridge.log.1` and creates a fresh `bridge.log`,
+        which means the path stays valid but points to a new inode.
+        Detection has to handle three rotation flavours:
+          1. Truncate-in-place — new size < tracked offset → reset offset.
+          2. Rename + create new — new inode at same path → reset offset.
+          3. File temporarily missing during rotation → skip iteration,
+             pick up next loop.
         """
         # Replay tail
         for path in sources:
@@ -347,31 +369,59 @@ class StateReader:
                 yield {"source": label, "line": _try_parse_json(raw),
                        "ts": int(time.time() * 1000), "replay": True}
 
-        # Live tail
-        positions = {p: (p.stat().st_size if p.exists() else 0) for p in sources}
+        # Live tail. Track (size, inode) per path so we can detect
+        # rotation even when the new file has grown past the old size
+        # before our next poll.
+        positions: dict[Path, tuple[int, int]] = {}
+        for p in sources:
+            positions[p] = _safe_stat(p)
+
         while True:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(poll_interval_s)
             for path in sources:
                 label = path.stem
                 if not path.exists():
                     continue
+                cur_size, cur_inode = _safe_stat(path)
+                old_size, old_inode = positions[path]
+
+                rotated = (cur_inode != old_inode) or (cur_size < old_size)
+                if rotated:
+                    # New file (or truncation): start from byte 0.
+                    old_size = 0
+                if cur_size == old_size:
+                    positions[path] = (cur_size, cur_inode)
+                    continue
                 try:
-                    size = path.stat().st_size
-                    if size < positions[path]:  # rotated
-                        positions[path] = 0
-                    if size == positions[path]:
-                        continue
                     with path.open("rb") as f:
-                        f.seek(positions[path])
-                        data = f.read(size - positions[path])
-                        positions[path] = size
+                        f.seek(old_size)
+                        data = f.read(cur_size - old_size)
                 except OSError:
                     continue
+                positions[path] = (cur_size, cur_inode)
+                if rotated:
+                    yield {"source": label,
+                           "line": {"event": "log_rotated",
+                                    "note": f"{path.name} rotated; resuming from offset 0"},
+                           "ts": int(time.time() * 1000), "replay": False}
                 for raw in data.decode(errors="replace").splitlines():
                     if not raw.strip():
                         continue
                     yield {"source": label, "line": _try_parse_json(raw),
                            "ts": int(time.time() * 1000), "replay": False}
+
+
+def _safe_stat(path: Path) -> tuple[int, int]:
+    """Return (size, inode) or (0, 0) if the file is missing.
+
+    Both fields are tracked so log rotation that creates a new file
+    (different inode) is distinguishable from in-place writes.
+    """
+    try:
+        st = path.stat()
+        return st.st_size, st.st_ino
+    except OSError:
+        return 0, 0
 
 
 def _try_parse_json(raw: str) -> dict[str, Any]:
@@ -412,7 +462,7 @@ async def check_mcp_health(timeout_s: float = 15.0) -> tuple[list[McpStatus], in
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         return [], int(time.time() * 1000)

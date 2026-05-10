@@ -2,11 +2,28 @@
 {% block title %}Overview · agent-me dashboard{% endblock %}
 
 {% block content %}
-<section class="mb-6">
-  <h1 class="text-2xl font-semibold text-slate-100">Overview</h1>
-  <p class="text-slate-400 text-sm mt-1">
-    Latest cached brief items per source, plus bridge stats. Click a source to drill in or trigger a refresh.
-  </p>
+<div x-data="overviewPage({{ snapshots_json | tojson }})">
+
+<section class="mb-6 flex items-end justify-between flex-wrap gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold text-slate-100">Overview</h1>
+    <p class="text-slate-400 text-sm mt-1">
+      Latest cached brief items per source, plus bridge stats. Click a source to drill in or trigger a refresh.
+    </p>
+  </div>
+  <div class="flex items-center gap-2">
+    <select x-model="period"
+            class="text-sm bg-ink-800 border border-ink-700 rounded px-2 py-1.5 text-slate-200">
+      <option value="day">Day</option>
+      <option value="week">Week</option>
+      <option value="month">Month</option>
+    </select>
+    <button @click="refreshAll()" :disabled="busy"
+            class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed text-white">
+      <span x-show="!busy">⟲ Refresh all</span>
+      <span x-show="busy" x-cloak x-text="`${doneCount}/${totalCount} sources…`"></span>
+    </button>
+  </div>
 </section>
 
 <section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6"
@@ -40,28 +57,35 @@
 
 <section class="mb-3 flex items-center justify-between">
   <h2 class="text-lg font-semibold text-slate-100">Sources</h2>
-  <button class="text-xs text-accent-400 hover:underline"
-          @click="$dispatch('refresh-all')">⟲ refresh all</button>
+  <span x-show="busy" x-cloak class="text-xs text-slate-400" x-text="aggregateLabel()"></span>
 </section>
 
-<section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
   {% for snap in snapshots %}
   <a href="/source/{{ snap.source }}"
-     class="block rounded-lg border border-ink-700 bg-ink-900 p-4 hover:border-accent-600 transition">
+     class="block rounded-lg border border-ink-700 bg-ink-900 p-4 hover:border-accent-600 transition relative">
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-2">
         <span class="text-xl">{{ snap.icon }}</span>
         <span class="font-semibold text-slate-100">{{ snap.label }}</span>
       </div>
-      {% if snap.error %}
-      <span class="text-xs px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800">error</span>
-      {% elif snap.fetched_at == 0 %}
-      <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">no cache</span>
-      {% elif snap.stale %}
-      <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">stale</span>
-      {% else %}
-      <span class="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">fresh</span>
-      {% endif %}
+      <!-- Static (server-rendered) status badge; overridden during refresh by Alpine x-show below -->
+      <span x-show="!jobStatus[{{ snap.source | tojson }}]">
+        {% if snap.error %}
+        <span class="text-xs px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800">error</span>
+        {% elif snap.fetched_at == 0 %}
+        <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">no cache</span>
+        {% elif snap.stale %}
+        <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">stale</span>
+        {% else %}
+        <span class="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">fresh</span>
+        {% endif %}
+      </span>
+      <!-- Live job-status badge during a refresh -->
+      <span x-show="jobStatus[{{ snap.source | tojson }}]" x-cloak
+            class="text-xs px-2 py-0.5 rounded border"
+            :class="badgeClass(jobStatus[{{ snap.source | tojson }}])"
+            x-text="badgeText({{ snap.source | tojson }})"></span>
     </div>
 
     <div class="mt-3 flex items-baseline gap-2">
@@ -85,4 +109,118 @@
   </a>
   {% endfor %}
 </section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function overviewPage(snapshots) {
+    return {
+      period: "day",
+      busy: false,
+      jobStatus: {},   // { source: "running" | "done" | "error" }
+      jobMeta: {},     // { source: { item_count, seconds, error } }
+      _es: {},
+
+      get totalCount() { return Object.keys(this.jobStatus).length; },
+      get doneCount() {
+        return Object.values(this.jobStatus).filter(s => s === "done" || s === "error").length;
+      },
+
+      aggregateLabel() {
+        if (!this.busy) return "";
+        const errs = Object.values(this.jobStatus).filter(s => s === "error").length;
+        const done = Object.values(this.jobStatus).filter(s => s === "done").length;
+        const tot = this.totalCount;
+        return `${done}/${tot} done${errs ? ` (${errs} errors)` : ""}`;
+      },
+
+      badgeClass(state) {
+        return {
+          "bg-accent-600/20 text-accent-400 border-accent-600/40": state === "running",
+          "bg-emerald-900/40 text-emerald-300 border-emerald-800": state === "done",
+          "bg-rose-900/50 text-rose-300 border-rose-800": state === "error",
+        };
+      },
+      badgeText(source) {
+        const state = this.jobStatus[source];
+        const meta = this.jobMeta[source] || {};
+        if (state === "running") return "running…";
+        if (state === "done") return `${meta.item_count ?? "?"} item(s)`;
+        if (state === "error") return "error";
+        return "";
+      },
+
+      async refreshAll() {
+        if (this.busy) return;
+        this.busy = true;
+        this.jobStatus = {};
+        this.jobMeta = {};
+        try {
+          const r = await fetch(`/api/refresh/_all?period=${this.period}`,
+                                { method: "POST", headers: { "Accept": "application/json" } });
+          const data = await r.json();
+          for (const job of (data.jobs || [])) {
+            this.jobStatus[job.source] = "running";
+            this.jobMeta[job.source] = {};
+            this.subscribe(job.source, job.job_id);
+          }
+        } catch (err) {
+          this.busy = false;
+          console.error("refreshAll failed", err);
+        }
+      },
+
+      subscribe(source, jobId) {
+        if (this._es[source]) this._es[source].close();
+        const es = new EventSource(`/api/sse/refresh/${jobId}`);
+        this._es[source] = es;
+        const onMsg = (e) => {
+          let data = {};
+          try { data = JSON.parse(e.data); } catch {}
+          const evt = data.event;
+          if (evt === "running" || evt === "snapshot") {
+            this.jobStatus[source] = "running";
+          } else if (evt === "done") {
+            this.jobStatus[source] = "done";
+            this.jobMeta[source] = {
+              item_count: data.item_count,
+              seconds: data.seconds,
+            };
+            es.close();
+            delete this._es[source];
+            this.checkAllDone();
+          } else if (evt === "error" || evt === "timeout") {
+            this.jobStatus[source] = "error";
+            this.jobMeta[source] = { error: data.error || "timeout" };
+            es.close();
+            delete this._es[source];
+            this.checkAllDone();
+          }
+        };
+        ["message", "snapshot", "running", "done", "error", "timeout"].forEach(
+          name => es.addEventListener(name, onMsg)
+        );
+        es.onerror = () => {
+          if (this._es[source] === es) {
+            this.jobStatus[source] = this.jobStatus[source] || "error";
+            delete this._es[source];
+            es.close();
+            this.checkAllDone();
+          }
+        };
+      },
+
+      checkAllDone() {
+        if (Object.keys(this._es).length === 0) {
+          this.busy = false;
+          // Reload page so server-rendered cards pick up fresh cache.
+          // Wait briefly so the user sees the final state badges flash.
+          setTimeout(() => location.reload(), 1200);
+        }
+      },
+    };
+  }
+</script>
 {% endblock %}

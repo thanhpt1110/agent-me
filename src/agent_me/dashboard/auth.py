@@ -21,7 +21,7 @@ import hmac
 import os
 import secrets
 import time
-from typing import Iterable
+from collections.abc import Iterable
 
 import structlog
 from itsdangerous import BadSignature, URLSafeSerializer

@@ -8,7 +8,6 @@ external ASGI runners.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import logging
 import os
@@ -30,16 +29,16 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from agent_me.dashboard.auth import (
-    AuthMiddleware,
-    auth_required_for_public_bind,
     COOKIE_MAX_AGE_S,
     COOKIE_NAME,
+    AuthMiddleware,
+    auth_required_for_public_bind,
     issue_cookie_value,
 )
 from agent_me.dashboard.brief_runner import BriefRunner
 from agent_me.dashboard.state_reader import (
-    SOURCES,
     SOURCE_IDS,
+    SOURCES,
     StateReader,
     check_mcp_health,
 )
@@ -102,6 +101,8 @@ async def page_index(request: Request):
     bridge_stats = StateReader.bridge_stats()
     return TEMPLATES.TemplateResponse(request, "index.html", {
         "snapshots": snapshots,
+        # Alpine on the client wants a plain JSON-serializable list.
+        "snapshots_json": [s.__dict__ for s in snapshots],
         "bridge_stats": bridge_stats,
         "sources": SOURCES,
         "now_ms": int(time.time() * 1000),
@@ -176,6 +177,31 @@ async def api_refresh(request: Request):
         )
     job = await RUNNER.start(source_id, period_days=period_days)
     return JSONResponse(job.public_dict(), status_code=202)
+
+
+async def api_refresh_all(request: Request):
+    """Fan out a refresh across all 7 sources in parallel.
+
+    Each source goes through the same single-flight lock as a single
+    refresh, so if a source is already running we coalesce onto its
+    existing job. Returns the list of job descriptors so the browser
+    can subscribe to each one.
+    """
+    period = request.query_params.get("period", "day")
+    period_days = {"day": 1, "week": 7, "month": 30}.get(period, 1)
+    jobs: list[dict[str, Any]] = []
+    for src_id, _label, _icon in SOURCES:
+        existing = RUNNER.active_job_for(src_id)
+        if existing and existing.status in ("pending", "running"):
+            jobs.append({**existing.public_dict(), "coalesced": True})
+            continue
+        job = await RUNNER.start(src_id, period_days=period_days)
+        jobs.append(job.public_dict())
+    log.info("refresh_all_started",
+             period_days=period_days,
+             jobs={j["source"]: j["job_id"] for j in jobs})
+    return JSONResponse({"jobs": jobs, "period_days": period_days},
+                        status_code=202)
 
 
 async def api_mcp_refresh(_request: Request):
@@ -266,6 +292,8 @@ def build_app() -> Starlette:
         Route("/api/login", api_login, methods=["POST"], name="api_login"),
         Route("/api/state", api_state, name="api_state"),
         Route("/api/source/{source_id}", api_source, name="api_source"),
+        Route("/api/refresh/_all", api_refresh_all, methods=["POST"],
+              name="api_refresh_all"),
         Route("/api/refresh/{source_id}", api_refresh, methods=["POST"],
               name="api_refresh"),
         Route("/api/mcp/status", api_mcp_status, name="api_mcp_status"),
