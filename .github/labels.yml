@@ -19,185 +19,185 @@
 # ── Type of change (used by release-drafter version-resolver) ─────────
 
 - name: bug
-  color: d73a4a
+  color: "d73a4a"
   description: Something isn't working as documented.
 
 - name: fix
-  color: d73a4a
+  color: "d73a4a"
   description: Alias for `bug` used by some workflows / commit habits.
 
 - name: feature
-  color: 0e8a16
+  color: "0e8a16"
   description: New user-visible capability.
 
 - name: enhancement
-  color: 0e8a16
+  color: "0e8a16"
   description: Improvement to an existing feature.
 
 - name: refactor
-  color: 8957e5
+  color: "8957e5"
   description: Code restructure with no behavioural change.
 
 - name: docs
-  color: 0075ca
+  color: "0075ca"
   description: Documentation-only changes.
 
 - name: documentation
-  color: 0075ca
+  color: "0075ca"
   description: Alias for `docs` used by some templates.
 
 - name: tests
-  color: 1d76db
+  color: "1d76db"
   description: Test-only changes.
 
 - name: test
-  color: 1d76db
+  color: "1d76db"
   description: Alias for `tests`.
 
 - name: chore
-  color: cccccc
+  color: "cccccc"
   description: Maintenance work that doesn't fit elsewhere.
 
 - name: ci
-  color: cccccc
+  color: "cccccc"
   description: GitHub Actions / CI / build pipeline.
 
 - name: dependencies
-  color: ffd33d
+  color: "ffd33d"
   description: Bumps a third-party dependency (Dependabot).
 
 - name: python
-  color: 3572A5
+  color: "3572A5"
   description: Python ecosystem changes (created by Dependabot pip jobs).
 
 - name: github-actions
-  color: 24292e
+  color: "24292e"
   description: GitHub Actions ecosystem changes (Dependabot).
 
 - name: security
-  color: ee0701
+  color: "ee0701"
   description: Security fix or hardening; treat with care.
 
 # ── Version-bump hints for release-drafter ─────────────────────────────
 
 - name: major
-  color: b60205
+  color: "b60205"
   description: Breaking change — release-drafter bumps major.
 
 - name: breaking
-  color: b60205
+  color: "b60205"
   description: Alias for `major`.
 
 - name: minor
-  color: fbca04
+  color: "fbca04"
   description: New feature, backwards-compatible.
 
 - name: patch
-  color: c2e0c6
+  color: "c2e0c6"
   description: Bug fix, backwards-compatible.
 
 # ── Repo surface (path-based labeler) ──────────────────────────────────
 
 - name: slack-bridge
-  color: 4a154b
+  color: "4a154b"
   description: Touches src/agent_me/slack_bridge/.
 
 - name: dashboard
-  color: 0e8a16
+  color: "0e8a16"
   description: Touches src/agent_me/dashboard/.
 
 - name: scripts
-  color: 5319e7
+  color: "5319e7"
   description: Touches scripts/ or src/agent_me/scripts/.
 
 - name: deploy
-  color: 1d76db
+  color: "1d76db"
   description: Touches deploy/ (systemd units, etc.).
 
 - name: design
-  color: bfdadc
+  color: "bfdadc"
   description: Touches design/ ADRs.
 
 - name: discussions
-  color: bfdadc
+  color: "bfdadc"
   description: Touches discussions/ session logs.
 
 # ── PR size (codelytv/pr-size-labeler) ─────────────────────────────────
 
 - name: size/xs
-  color: 3cbf00
+  color: "3cbf00"
   description: Tiny — ≤20 lines changed.
 
 - name: size/s
-  color: 5d9801
+  color: "5d9801"
   description: Small — ≤100 lines changed.
 
 - name: size/m
-  color: 7f7203
+  color: "7f7203"
   description: Medium — ≤500 lines changed.
 
 - name: size/l
-  color: a14c05
+  color: "a14c05"
   description: Large — ≤1000 lines changed.
 
 - name: size/xl
-  color: c32607
+  color: "c32607"
   description: Extra-large — >1000 lines changed; consider splitting.
 
 # ── Workflow / lifecycle states ────────────────────────────────────────
 
 - name: pinned
-  color: 0052cc
+  color: "0052cc"
   description: Exempt from stale-bot. Keeps important issues alive.
 
 - name: stale
-  color: cccccc
+  color: "cccccc"
   description: Auto-applied by stale-bot. Activity reopens.
 
 - name: wip
-  color: ededed
+  color: "ededed"
   description: Work-in-progress. Exempt from stale; not ready for review.
 
 - name: blocked
-  color: e99695
+  color: "e99695"
   description: Waiting on external dependency or decision.
 
 # ── Phase tags (project-specific) ──────────────────────────────────────
 
 - name: phase-2b
-  color: fbca04
+  color: "fbca04"
   description: Approval-gate work (Phase 2b).
 
 - name: phase-3
-  color: fbca04
+  color: "fbca04"
   description: Host-deploy work (Phase 3).
 
 - name: phase-4
-  color: fbca04
+  color: "fbca04"
   description: Dashboard / web UI work (Phase 4).
 
 # ── Misc ───────────────────────────────────────────────────────────────
 
 - name: question
-  color: d876e3
+  color: "d876e3"
   description: General question or "how do I do X".
 
 - name: good first issue
-  color: 7057ff
+  color: "7057ff"
   description: Approachable for first-time contributors.
 
 - name: help wanted
-  color: 008672
+  color: "008672"
   description: Extra attention or expertise welcome.
 
 - name: duplicate
-  color: cfd3d7
+  color: "cfd3d7"
   description: This issue or PR already exists.
 
 - name: invalid
-  color: e4e669
+  color: "e4e669"
   description: This doesn't seem right or isn't reproducible.
 
 - name: wontfix
-  color: ffffff
+  color: "ffffff"
   description: This won't be worked on.

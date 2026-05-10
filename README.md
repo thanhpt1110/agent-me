@@ -4,10 +4,13 @@
 [![CodeQL](https://github.com/thanhpt1110/agent-me/actions/workflows/codeql.yml/badge.svg)](https://github.com/thanhpt1110/agent-me/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
+[![Built at NVIDIA](https://img.shields.io/badge/Built%20at-NVIDIA-76B900?logo=nvidia&logoColor=white)](https://www.nvidia.com)
+[![Repo views](https://hits.sh/github.com/thanhpt1110/agent-me.svg?style=flat-square&label=views&color=4c1)](https://hits.sh/github.com/thanhpt1110/agent-me/)
+[![Stars](https://img.shields.io/github/stars/thanhpt1110/agent-me?style=flat-square&logo=github&label=stars)](https://github.com/thanhpt1110/agent-me/stargazers)
 
 > _myself, but in agent mode._
 
-Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous agent that handles your daily/weekly workload. Fork it, set your own configs, deploy your own `agent-me`. First operator: thaphan@nvidia.com.
+Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous agent that handles your daily/weekly workload. Fork it, set your own configs, deploy your own `agent-me`. **Built at [NVIDIA](https://www.nvidia.com)** by [@thanhpt1110](https://github.com/thanhpt1110); first operator runs on the NVIDIA Colossus internal network.
 
 ## Quickstart for forkers
 
@@ -88,3 +91,13 @@ This framework is under active development. See [STATE.md](STATE.md) for the cur
 ## License
 
 MIT — see [LICENSE](LICENSE). Fork freely, deploy your own, and tell us what you build.
+
+---
+
+<sub>
+  <a href="https://www.nvidia.com"><img alt="NVIDIA" src="https://img.shields.io/badge/-NVIDIA-76B900?logo=nvidia&logoColor=white&style=flat-square" /></a>
+  &nbsp;Built at <a href="https://www.nvidia.com">NVIDIA</a> · maintained by
+  <a href="https://github.com/thanhpt1110">@thanhpt1110</a> · code of conduct via
+  <a href="CODE_OF_CONDUCT.md">Contributor Covenant 2.1</a> · security disclosures
+  in <a href="SECURITY.md">SECURITY.md</a>.
+</sub>

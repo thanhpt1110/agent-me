@@ -3,13 +3,16 @@ name: CI
 # Runs on every PR and on pushes to main. Acts as the merge gate: the `lint`
 # and `test` jobs are required-status candidates (configure in repo settings →
 # Branches → Branch protection rules). The `lint-advisory` and `type` jobs are
-# `continue-on-error: true` so they surface findings without blocking merges.
+# advisory: their underlying tools may flag pre-existing issues, but each step
+# captures the output to the job summary and exits 0, so the jobs stay green
+# in the Checks UI while findings remain visible (click the job → Summary).
 #
 # Why two lint jobs?  The Slack bridge module (`slack_bridge/app.py`) and the
 # `scripts/` helpers carry pre-existing ruff warnings we haven't burned down
 # yet. The strict job runs ruff on a curated, currently-clean subset so green
-# means green; the advisory job runs ruff on the whole repo and is allowed to
-# fail. As modules clean up, move them from advisory to strict scope.
+# means green; the advisory job runs ruff on the whole repo and reports
+# findings without blocking. As modules clean up, move them from advisory
+# to strict scope.
 
 on:
   pull_request:
@@ -85,7 +88,6 @@ jobs:
     name: Lint advisory (whole repo, non-blocking)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
@@ -93,10 +95,54 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --extra dev
+      # Each advisory step captures tool output, writes a markdown summary to
+      # $GITHUB_STEP_SUMMARY (visible under the job's "Summary" panel in the
+      # Checks UI), prints the raw output to the step log, and exits 0. This
+      # keeps the check green while preserving full visibility of findings.
       - name: ruff check (full repo, advisory)
-        run: uv run ruff check src/ tests/
+        shell: bash
+        run: |
+          set +e
+          output="$(uv run ruff check src/ tests/ 2>&1)"
+          exit_code=$?
+          set -e
+          {
+            echo "## ruff check (full repo, advisory)"
+            echo ""
+            if [[ $exit_code -eq 0 ]]; then
+              echo "_All clean._"
+            else
+              echo "Found pre-existing warnings (non-blocking; the strict \`lint\` job gates merges on a curated subset):"
+              echo ""
+              echo '```'
+              echo "$output"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$output"
+          exit 0
       - name: ruff format check (advisory until codebase is fully formatted)
-        run: uv run ruff format --check src/ tests/
+        shell: bash
+        run: |
+          set +e
+          output="$(uv run ruff format --check src/ tests/ 2>&1)"
+          exit_code=$?
+          set -e
+          {
+            echo "## ruff format --check (advisory)"
+            echo ""
+            if [[ $exit_code -eq 0 ]]; then
+              echo "_All formatted._"
+            else
+              echo "Files not yet formatted (non-blocking; will fold into the strict \`lint\` job once the repo is fully formatted):"
+              echo ""
+              echo '```'
+              echo "$output"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$output"
+          exit 0
 
   # ----------------------------------------------------------------------
   # Type check — non-blocking. Pyright in standard mode flags many
@@ -114,7 +160,6 @@ jobs:
     name: Type check (pyright, advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 7
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
@@ -122,8 +167,30 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --extra dev
+      # Advisory: capture pyright output, surface in the job summary, exit 0.
+      # See lint-advisory above for rationale on this pattern.
       - name: pyright
-        run: uv run pyright src/ tests/
+        shell: bash
+        run: |
+          set +e
+          output="$(uv run pyright src/ tests/ 2>&1)"
+          exit_code=$?
+          set -e
+          {
+            echo "## pyright (advisory)"
+            echo ""
+            if [[ $exit_code -eq 0 ]]; then
+              echo "_No type errors._"
+            else
+              echo "Pre-existing type errors (non-blocking; gating would block every PR until the bridge module is fully typed):"
+              echo ""
+              echo '```'
+              echo "$output"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$output"
+          exit 0
 
   # ----------------------------------------------------------------------
   # Tests — REQUIRED to pass before merge.
