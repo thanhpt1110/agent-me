@@ -1,0 +1,32 @@
+[Unit]
+Description=agent-me git-pull-and-restart watcher
+Documentation=https://github.com/thanhpt1110/agent-me
+After=network-online.target agent-me-bridge.service
+Wants=network-online.target
+# The watcher monitors agent-me-bridge — if bridge fails permanently (Restart
+# loop runs out), the watcher is still useful for picking up the next git push
+# that fixes it. So we DON'T BindsTo=agent-me-bridge.service; the watcher should
+# survive bridge failures, not chase them.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-me
+ExecStart=%h/agent-me/scripts/agent-me-watch.sh
+
+# Watcher loop already idempotent under SIGTERM (the `trap` handler in the script).
+# Give it a few seconds to finish a poll cycle.
+TimeoutStopSec=15
+
+Restart=on-failure
+RestartSec=10
+
+# Default 60s polling — overrideable via systemctl edit.
+Environment=AGENT_ME_WATCH_INTERVAL_S=60
+Environment=AGENT_ME_WATCH_BRANCH=main
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-me-watch
+
+[Install]
+WantedBy=default.target

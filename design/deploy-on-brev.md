@@ -1,0 +1,410 @@
+# Deploy on Brev — single-shot playbook
+
+This file is the **single source of truth** for taking a fresh Brev
+(or any systemd-based Linux) host from `git clone` to a 24/7
+auto-updating agent-me deployment.
+
+It's written so a Claude Code session running on the host can follow
+it end-to-end with minimal back-and-forth from the human. Each step
+includes:
+- exact commands
+- a verification line you can run
+- what to do if it fails
+
+The deployer needs **two things from the human**:
+1. The secrets file (`~/agent-me-secrets.md`, scp'd up before starting)
+2. A browser, twice — once for `claude /login`, once for
+   `agent-me-reauth` (NVIDIA SSO tabs)
+
+Everything else is automated.
+
+## Architecture (refresher)
+
+```
+                ┌──────────────┐  push from any machine
+                │  GitHub      │  (Mac, laptop, codespace)
+                │  agent-me    │
+                └──────┬───────┘
+                       │ poll origin/main every 60s
+                       ▼
+       ┌───────────────────────────────────────────┐
+       │  Brev host (this machine)                 │
+       │                                           │
+       │  ┌───────────────────────┐  user systemd  │
+       │  │ agent-me-watch.service│  enable-linger │
+       │  │   git fetch / pull    │                │
+       │  │   uv sync (if needed) │                │
+       │  │   systemctl restart   │                │
+       │  │     agent-me-bridge   │                │
+       │  └──────────┬────────────┘                │
+       │             │ on diff                     │
+       │  ┌──────────▼────────────┐                │
+       │  │ agent-me-bridge.svc   │  Slack         │
+       │  │   uv run agent-me-    │  Socket Mode   │
+       │  │   bridge              │  (outbound     │
+       │  │                       │   WebSocket —  │
+       │  │                       │   NO inbound   │
+       │  │                       │   port needed) │
+       │  └───────────────────────┘                │
+       └───────────────────────────────────────────┘
+```
+
+**Slack does not need a public URL.** Bridge uses Socket Mode: it
+opens a WebSocket *out* to Slack with the `xapp-…` token, and Slack
+delivers events over that. No public endpoint, no firewall holes, no
+Brev port-expose needed for the bridge itself. (Watcher also doesn't
+need inbound — it polls outbound to GitHub.)
+
+## Prerequisites the host should have
+
+Most are pre-installed on Brev's Ubuntu 22.04 image. Run this as a
+checklist:
+
+```bash
+for cmd in git curl python3 jq node; do
+    command -v "$cmd" >/dev/null && echo "  ✓ $cmd" || echo "  ✗ $cmd MISSING"
+done
+```
+
+Missing tools to install (**ask the user before sudo**):
+
+```bash
+# uv (python package manager) — official installer:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env   # adds uv to PATH
+
+# gh (GitHub CLI):
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo dd of=/etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install -y gh
+
+# Claude Code CLI (Anthropic's `claude`):
+sudo npm install -g @anthropic-ai/claude-code
+# verify:  claude --version
+```
+
+If any of those need a non-trivial choice (e.g. apt key conflict,
+Node version mismatch), surface it to the user before sudo'ing.
+
+## Step 1 — clone repo
+
+```bash
+cd ~
+git clone https://github.com/thanhpt1110/agent-me.git
+cd agent-me
+```
+
+**Verify:**
+```bash
+test -f CLAUDE.md && test -f STATE.md && echo "  ✓ repo cloned"
+```
+
+## Step 2 — bootstrap (Python deps + register MCPs)
+
+```bash
+./scripts/bootstrap.sh
+```
+
+This is idempotent. It does:
+1. Pre-flight check (claude, uv, gh, jq) — errors out if anything missing.
+2. `uv sync` — populates `.venv` from `pyproject.toml` + `uv.lock`.
+3. Copies `configs/.env.example` to `configs/.env` if absent (so we
+   know what env vars to expect).
+4. Runs `scripts/setup-mcps.sh` — registers all 17 MaaS MCP servers
+   at user scope (idempotent: skips already-registered).
+
+**Verify:**
+```bash
+claude mcp list 2>&1 | grep -c "^maas-"   # should print 17
+```
+
+## Step 3 — upload + apply secrets
+
+The human will scp `~/agent-me-secrets.md` from their Mac before
+running this step:
+
+```bash
+# Run on the human's Mac (NOT on Brev):
+scp ~/agent-me-secrets.md agent-me-brev:~/agent-me-secrets.md
+```
+
+Once `~/agent-me-secrets.md` is on the Brev host, apply it to
+`configs/.env` and any other places the file says it goes:
+
+```bash
+test -f ~/agent-me-secrets.md && chmod 600 ~/agent-me-secrets.md \
+    && echo "  ✓ vault present" \
+    || echo "  ✗ /home/$USER/agent-me-secrets.md missing — ask user to scp it"
+```
+
+The vault is structured as a markdown file with an inventory table
+and per-key "Where each goes (commands)" sections. The Slack tokens
+section emits the `configs/.env` snippet you need:
+
+```bash
+# Pull just the bridge .env block out of the vault. It looks like:
+#   ## configs/.env (bridge)
+#   ```ini
+#   SLACK_BOT_TOKEN=xoxb-…
+#   …
+#   ```
+# Sed range extracts between the ```ini and closing ``` markers in
+# that section.
+awk '/^## configs\/\.env/,/^```$/' ~/agent-me-secrets.md \
+  | awk '/^```ini/{p=1; next} /^```$/{p=0} p' \
+  > configs/.env
+chmod 600 configs/.env
+echo "  ✓ configs/.env populated"
+```
+
+If the vault layout doesn't have a `## configs/.env` section yet,
+fall back to the older `~/agent-me-secrets.md` format and copy
+`SLACK_*` lines manually — surface this to the user to confirm.
+
+**Verify:**
+```bash
+grep -c "REPLACE-ME" configs/.env   # should print 0
+grep -E "^SLACK_(BOT|APP|SIGNING)_" configs/.env | wc -l   # should print 3
+```
+
+## Step 4 — authenticate Claude Code CLI
+
+Two paths — pick whichever the human has set up locally:
+
+```bash
+# Option A — Anthropic OAuth (browser flow):
+claude /login
+# Will print a URL; open it in a browser, authenticate, paste the
+# callback code back. Token persists in ~/.claude/credentials.json.
+
+# Option B — env var (headless, for ANTHROPIC_API_KEY-based access):
+echo 'export ANTHROPIC_API_KEY=sk-ant-…' >> ~/.bashrc
+source ~/.bashrc
+```
+
+NVIDIA users: the user's local Mac may have NVIDIA-internal Claude
+auth (no `~/.claude/credentials.json`). On Brev, easiest is Option A
+unless the human is using `ANTHROPIC_API_KEY`.
+
+**Verify:**
+```bash
+claude --version   # version line, no auth error
+echo 'say hi' | claude -p --output-format json --model claude-haiku-4-5 \
+  | jq -r '.result // .api_error_status // "no result"'
+# should print a brief greeting, NOT an auth error
+```
+
+## Step 5 — authenticate MCP servers (NVIDIA SSO)
+
+```bash
+uv run agent-me-reauth
+```
+
+This spawns `claude` under a pty and runs
+`mcp__<server>__authenticate` for each MCP showing
+"! Needs authentication" in `claude mcp list`. It auto-opens browser
+tabs (via `xdg-open` on Linux) — but on a headless Brev host there's
+no browser, so the URLs will be printed and need manual handling.
+
+**Two ways to handle this on Brev:**
+
+1. **SSH port-forward to the human's Mac** (simplest if they're
+   already SSH'd in):
+
+   On the human's Mac:
+   ```bash
+   ssh -L 51080:localhost:51080 -L 51081:localhost:51081 \
+       -L 51082:localhost:51082 -L 51083:localhost:51083 \
+       -L 51084:localhost:51084 -L 51085:localhost:51085 \
+       -L 51086:localhost:51086 agent-me-brev
+   ```
+   (Forward ~7 ports — one per stale MCP. Random ports in 51000-65535 range.)
+
+   Then run `agent-me-reauth` on Brev. URLs printed will reference
+   `localhost:5108X` — open them in the Mac's browser; OAuth
+   redirects come back to the SSH-tunneled localhost which reaches
+   the Brev listener.
+
+2. **Copy `~/.claude.json` from Mac to Brev** (one-time after Mac
+   has all MCPs authenticated): the file holds the OAuth tokens
+   that MCP servers grant. Tokens last ~24h. After they expire,
+   path 1 is the only sustainable option — or set up a daily cron
+   on the Mac that scp's `~/.claude.json` to Brev.
+
+The user has chosen path 1 OR has scripts to keep `~/.claude.json`
+synced. Surface a question if it's not already set up.
+
+**Verify:**
+```bash
+claude mcp list 2>&1 | grep -c "✓ Connected"
+# should print 17 (all MCPs healthy) or close to it; nvbugs is
+# historically flaky, that's OK
+```
+
+## Step 6 — install systemd services
+
+```bash
+./scripts/install-systemd.sh
+```
+
+This installs both unit files (`agent-me-bridge.service`,
+`agent-me-watch.service`), enables linger so they survive logout,
+and starts them.
+
+**Verify:**
+```bash
+systemctl --user is-active agent-me-bridge.service   # should print "active"
+systemctl --user is-active agent-me-watch.service    # should print "active"
+journalctl --user -u agent-me-bridge -n 20 --no-pager
+# should show "bridge_running" log line within ~5s of start
+```
+
+## Step 7 — smoke test from Slack
+
+DM the bot from the human's Slack workspace:
+
+```
+mcp
+```
+
+Expected reply: a `claude mcp list` output dump showing all 17
+servers. If you see this, **you're done**.
+
+If the bot doesn't respond:
+- `journalctl --user -u agent-me-bridge -f` → look for the WebSocket
+  connection establishing (`A new session (s_…) has been established`)
+- Slack app config: confirm Socket Mode = ON and the App Token is
+  `xapp-…` not `xoxa-` (different tier)
+- `configs/.env` has `SLACK_ALLOWED_USER_ID` set to the human's
+  Slack user id — without it the bridge ignores all messages
+
+## Step 8 — verify auto-deploy
+
+This proves the watcher works:
+
+```bash
+# On the human's Mac:
+cd ~/agent-me
+echo "# deploy test $(date -u +%FT%TZ)" >> README.md
+git add README.md && git commit -m "deploy test (revert in next commit)"
+git push origin main
+```
+
+Within 60s, on the Brev host:
+```bash
+journalctl --user -u agent-me-watch -f
+# should show "behind by 1 commit" → "pulled <old> → <new>" → "restarted agent-me-bridge"
+```
+
+Then revert the test commit:
+```bash
+git revert --no-edit HEAD && git push origin main
+```
+
+## Day-2 ops cheat sheet
+
+```bash
+# Live tail bridge:
+journalctl --user -u agent-me-bridge -f
+
+# Live tail watcher (see git pulls happen):
+journalctl --user -u agent-me-watch -f
+
+# Force immediate redeploy (skip the 60s wait):
+cd ~/agent-me && git pull && uv sync && systemctl --user restart agent-me-bridge
+
+# Pause auto-deploy (e.g. before a risky commit on main):
+systemctl --user stop agent-me-watch
+
+# Resume:
+systemctl --user start agent-me-watch
+
+# Take bridge down for maintenance:
+systemctl --user stop agent-me-bridge agent-me-watch
+
+# Reauth MCPs (when they go stale, ~daily):
+uv run agent-me-reauth
+
+# Inspect SQLite state:
+sqlite3 ~/.local/state/agent-me/state.db '.tables'
+sqlite3 ~/.local/state/agent-me/state.db 'SELECT * FROM claude_sessions;'
+
+# Tail file logs (alternative to journald):
+tail -F ~/.local/state/agent-me/bridge.log
+
+# Run brief on demand:
+uv run agent-me-brief --period day
+```
+
+## Things that can go wrong
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `bootstrap.sh` says `claude not found` | CLI not installed | `npm install -g @anthropic-ai/claude-code` |
+| `bootstrap.sh` says `uv not found` | uv not on PATH | `source ~/.local/bin/env` |
+| `setup-mcps.sh` registers but reauth fails | `claude /login` not done | Step 4 |
+| Bridge restarts every 5s | `configs/.env` missing or has REPLACE-ME | Step 3 |
+| Bridge restarts every 5s, env looks ok | Wrong `SLACK_APP_TOKEN` (xoxa- not xapp-) | regenerate App Token in Slack app config |
+| Watcher pulls but bridge doesn't restart | `loginctl enable-linger` not run | `sudo loginctl enable-linger $USER && systemctl --user daemon-reload` |
+| `journalctl --user` empty after logout | linger not enabled, services died | same as above |
+| MCPs go to 401 after a day | normal (tokens expire ~24h) | `uv run agent-me-reauth` |
+| `git pull` fails: "would clobber" | local change on Brev (someone edited there) | `git stash` (only if intentional) or hand-resolve |
+| `git pull` fails: "diverged" | local commit on Brev that isn't on origin | `git log origin/main..HEAD` to inspect; either push or reset |
+
+## Why systemd --user (not system-level)
+
+System-level units would need either a dedicated Linux user (over-
+engineered for personal use) or `sudo` rules to let the watcher
+restart the bridge (bigger blast radius if anything goes wrong with
+the watcher). User-level units run under your normal account, write
+state to `$HOME`, and `systemctl --user restart` works without sudo.
+
+The cost: `loginctl enable-linger` is required, otherwise services
+die on logout. That command needs sudo *once* during setup.
+
+## Why polling (not webhooks)
+
+We poll origin/main every 60s. Alternatives:
+
+- **GitHub webhook → Brev port-expose**: instant, but needs a
+  publicly reachable HTTPS endpoint, a webhook secret to manage,
+  and Brev's port-expose URL is fragile (rotates per instance
+  restart). If the bridge needs to handle webhooks too, that's a
+  second listener to keep alive.
+- **GitHub Actions → SSH to Brev**: faster than polling, but needs
+  an SSH deploy key in GitHub Secrets, plus a separate runner
+  setup. Workable if we want sub-30s deploys; overkill for now.
+
+Polling at 60s is simple, no public surface area, and 60s
+latency-to-deploy is fine for personal-scale work. Easy to switch
+to webhooks later if we want — the watcher script is small.
+
+## What lives where (quick reference)
+
+```
+~/agent-me/                            ← repo (git pulls update this)
+├── configs/.env                       ← Slack tokens (NOT in git)
+├── deploy/*.service                   ← systemd unit files (in git)
+├── scripts/agent-me-watch.sh          ← polled by watcher (in git)
+└── scripts/install-systemd.sh         ← idempotent installer (in git)
+
+~/.config/systemd/user/                ← installed unit files (copied from deploy/)
+├── agent-me-bridge.service
+└── agent-me-watch.service
+
+~/.local/state/agent-me/               ← runtime state
+├── state.db                           ← SQLite: threads, sessions, audit
+├── bridge.log                         ← rotating JSON log
+├── brief.log                          ← brief subprocess output
+└── chat-cwd/                          ← cwd for `claude -p` chat invocations
+
+~/.claude/                             ← Claude Code state (per-user, per-machine)
+├── credentials.json                   ← OAuth tokens (claude /login)
+├── projects/<sanitized-cwd>/sessions/ ← per-cwd session jsonl files
+└── ...
+
+~/agent-me-secrets.md                  ← LOCAL-ONLY secrets vault (never push)
+```

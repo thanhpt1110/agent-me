@@ -44,6 +44,7 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` for Brev specifics
+- [x] **Brev deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-brev.md` is the step-by-step playbook another Claude session can follow on Brev with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets).
 - [x] **`design/maas-mcp-catalog.md`** — full MaaS MCP catalog reference
 - [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
 - [x] **Secrets vault** at `~/agent-me-secrets.md` (outside repo, chmod 600)
@@ -92,13 +93,19 @@ tuning → Phase 3 Brev deploy → Phase 2b approval gate.
 
 ## Roadmap (next session priorities)
 
-1. **Prompt tuning** (user-driven). User explicitly said they'll
-   tweak the brief prompt directly. Don't pre-empt this — wait for
-   their direction.
-2. **Phase 3 — Brev deploy** (highest leverage). Always-on host means
-   morning routine, future cron jobs, and MCP auth retention all
-   become reliable. Document Brev provisioning + systemd unit for
-   bridge + timer for brief.
+1. **Phase 3 — Brev deploy** ← **in flight (2026-05-10)**. Deploy
+   artifacts shipped (`deploy/agent-me-bridge.service`,
+   `agent-me-watch.service`, `scripts/agent-me-watch.sh`,
+   `scripts/install-systemd.sh`); `design/deploy-on-brev.md` is the
+   single playbook a Claude session on Brev follows end-to-end. User
+   will SSH to Brev, install Claude Code CLI, then ask local Claude
+   to walk the playbook, scp `~/agent-me-secrets.md` once for tokens.
+   Auto-deploy via 60s polling watcher → git pull → uv sync (if
+   pyproject changed) → `systemctl --user restart agent-me-bridge`.
+   Slack uses Socket Mode (no public endpoint needed). Awaiting user
+   to run the playbook on Brev.
+2. **Prompt tuning** (user-driven). User explicitly said they'll
+   tweak the brief prompt directly. Don't pre-empt — wait.
 3. **Phase 2b — review-before-execute approval gate.** Slack-button
    gating for write tools. Design ready in `design/approval-hook-design.md`
    (file-system semaphore). Open question still: PreToolUse hook stays

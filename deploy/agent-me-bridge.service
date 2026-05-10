@@ -1,0 +1,46 @@
+[Unit]
+Description=agent-me Slack bridge (Socket Mode)
+Documentation=https://github.com/thanhpt1110/agent-me
+After=network-online.target
+Wants=network-online.target
+
+# This is a USER unit (systemd --user). Install via scripts/install-systemd.sh,
+# which copies it into ~/.config/systemd/user/ and runs `loginctl enable-linger`
+# so the unit keeps running after the SSH session that started it disconnects.
+#
+# Why user-level instead of system-level: the bridge owns ~/.local/state/agent-me,
+# ~/.claude/, configs/.env in $HOME, and the SSH-forwarded localhost ports for
+# MCP OAuth callbacks — all user-scope state. System-level would need either a
+# dedicated Linux user or sudoers rules for restart, both more friction than
+# value. The watcher (also user-level) does `systemctl --user restart` cleanly.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-me
+EnvironmentFile=%h/agent-me/configs/.env
+
+# `uv run` resolves the venv and entry point declared in pyproject.toml.
+# We don't pre-source .venv/bin/activate — uv handles it.
+ExecStart=%h/.local/bin/uv run agent-me-bridge
+
+# Bridge already handles SIGTERM gracefully (8s force-exit fallback baked in).
+# Give it a generous TimeoutStopSec so we don't kill it mid-API-call during a
+# clean shutdown.
+TimeoutStopSec=15
+
+# Restart on any failure mode except clean exit. The bridge generally only
+# exits cleanly on SIGTERM/SIGINT, so anything else is a crash we want to
+# recover from.
+Restart=on-failure
+RestartSec=5
+
+# Send stdout/stderr to journald so `journalctl --user -u agent-me-bridge -f`
+# is the canonical "what is the bridge doing right now" command. We keep
+# structlog's JSON file at ~/.local/state/agent-me/bridge.log too — journald
+# is for live tailing, the file is for grep/post-mortem.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agent-me-bridge
+
+[Install]
+WantedBy=default.target
