@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, and the `Model Free 2.0` Outlook reply-all draft standing rule. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md) and [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md). Verified: compile, ruff, 78 tests, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule, and the new agent-me avatar/logo asset set. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 78 tests, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -75,6 +75,16 @@ approval gate.
   `Received. Will start testing today\n\nBest regards\nThanh Phan`.
   Do **not** send. Do **not** trigger this inside daily/weekly/monthly
   brief jobs because those are read-only source fetches.
+- [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
+  vector source is `assets/agent-me-avatar.svg`; the visual is a
+  text-free NVIDIA-green autonomous robot with circuit/web3 styling and
+  a subtle 4-chip `1110` motif, no visible letters or numbers.
+  Workspace/app icon PNGs are `assets/agent-me-avatar-1024.png` and
+  `assets/agent-me-avatar-512.png`; dashboard-served copies live at
+  `src/agent_me/dashboard/static/agent-me-avatar.svg` and
+  `src/agent_me/dashboard/static/agent-me-avatar-512.png`. The dashboard
+  nav and favicon now use this logo instead of the robot emoji. Re-render
+  PNGs with `python scripts/render-agent-me-avatar.py`.
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites

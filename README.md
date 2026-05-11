@@ -1,5 +1,9 @@
 # agent-me
 
+<p align="center">
+  <img alt="agent-me avatar" src="assets/agent-me-avatar.svg" width="164" />
+</p>
+
 [![CI](https://github.com/thanhpt1110/agent-me/actions/workflows/ci.yml/badge.svg)](https://github.com/thanhpt1110/agent-me/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/thanhpt1110/agent-me/actions/workflows/codeql.yml/badge.svg)](https://github.com/thanhpt1110/agent-me/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -93,6 +97,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 - `configs/` — runtime configs (synced to GitHub)
 - `skills/` — custom skills the agent can invoke
 - `scripts/` — bootstrap, deploy, sync scripts
+- `assets/` — project avatar/logo SVG and PNG workspace icons
 
 ## Status
 

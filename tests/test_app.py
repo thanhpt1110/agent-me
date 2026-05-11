@@ -44,6 +44,7 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "text/html" in r.headers.get("content-type", "")
     body = r.text
     assert "agent-me" in body
+    assert "agent-me-avatar.svg" in body
     assert "Overview" in body
     # All brief sources should appear in the nav at minimum
     for label in ("Jira", "GitLab", "Confluence", "NVBugs",
@@ -55,6 +56,13 @@ def test_source_page_known_source_renders(client: TestClient, with_token: str) -
     r = client.get("/source/jira", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Jira" in r.text
+
+
+def test_static_avatar_asset_served(client: TestClient) -> None:
+    r = client.get("/static/agent-me-avatar.svg")
+    assert r.status_code == 200
+    assert "image/svg+xml" in r.headers.get("content-type", "")
+    assert "agent-me avatar" in r.text
 
 
 def test_source_page_unknown_source_404(client: TestClient, with_token: str) -> None:
