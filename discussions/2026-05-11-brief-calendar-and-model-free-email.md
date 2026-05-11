@@ -95,6 +95,23 @@ without a fallback client or reauth.
 These failures are now surfaced as fetch errors instead of being collapsed into
 `nothing pending`.
 
+## Follow-up: Slack Draft Cancellation
+
+Later Slack testing showed that a generic email prompt with
+`Model Free 2.0.4` found the right thread but selected the newest matching
+message, which was already a user-authored reply. The Outlook connector then
+reported `user cancelled MCP tool call` when the bridge tried to draft against
+that self-authored message.
+
+Direct Codex connector testing from this session succeeded when the draft was
+tied to the latest inbound non-self message from Sergei Nikolaev. The bridge
+now routes Model Free email prompts through the dedicated helper instead of the
+generic chat path. The helper extracts the exact requested version, treats
+spaces and hyphens in `Model Free` / `model-free` as equivalent, selects the
+latest inbound non-self message, and avoids duplicate drafts when the thread
+already has the requested user-authored reply unless the user explicitly asks
+for another draft.
+
 ## Verification
 
 - `python -m compileall src scripts tests`

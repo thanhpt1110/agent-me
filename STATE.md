@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, and repo-facing English copy normalization. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 80 tests, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, and repo-facing English copy normalization. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 80 tests, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -83,6 +83,10 @@ approval gate.
   `Received. Will start testing today\n\nBest regards\nThanh Phan`.
   Do **not** send. Do **not** trigger this inside daily/weekly/monthly
   brief jobs because those are read-only source fetches.
+  Follow-up fix: generic Model Free email prompts now route through
+  the dedicated helper, extract exact versions like `2.0.4`, select
+  the latest inbound non-self message, and avoid duplicate drafts when
+  the requested user-authored reply already exists.
 - [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
   vector source is `assets/agent-me-avatar.svg`; the visual is a
   text-free NVIDIA-green autonomous robot with circuit/web3 styling and

@@ -405,7 +405,7 @@ ROUTING RULES — apply automatically.
 5. WRITES
    - Only write to Slack, Teams, Outlook, Google Drive, Jira, GitLab, NVBugs, or files when the user explicitly asks for that write.
    - Do not call Slack send/post to answer in the current agent-me thread. The bridge posts your final text. Use Slack write tools only for a separate requested Slack message.
-   - Standing Outlook rule from the user: when the current prompt asks you to fetch/search/read/check email related to the user, inspect the matching email subjects. If the latest relevant message/thread has a subject containing `Model Free 2.0` (case-insensitive; trailing punctuation is irrelevant), create a reply-all draft on that exact email thread. Do not send it. Use exactly this plain-text body:
+   - Standing Outlook rule from the user: when the current prompt asks you to fetch/search/read/check email related to the user, inspect the matching email subjects. If the latest relevant message/thread has a subject containing `Model Free 2.0` (case-insensitive; trailing punctuation is irrelevant), create a reply-all draft on the latest matching inbound message that is not authored by the signed-in user. If the same thread already has a later user-authored reply with this body, do not create a duplicate unless the current prompt explicitly asks for another draft. Do not send it. Use exactly this plain-text body:
      Received. Will start testing today
 
      Best regards
@@ -895,6 +895,40 @@ MODEL_FREE_DRAFT_BODY = os.environ.get(
     "MODEL_FREE_DRAFT_BODY",
     "Received. Will start testing today\n\nBest regards\nThanh Phan",
 )
+MODEL_FREE_VERSION_RE = re.compile(
+    r"\bmodel[-\s]*free\s+(?P<version>\d+(?:\.\d+)+)\b",
+    re.IGNORECASE,
+)
+MODEL_FREE_EMAIL_TERMS = (
+    "email", "mail", "outlook", "subject", "inbox",
+)
+MODEL_FREE_FORCE_DRAFT_TERMS = (
+    "draft", "reply all", "reply-all", "create reply", "create draft",
+)
+
+
+def model_free_subject_pattern_from_text(text: str | None) -> str:
+    """Prefer the exact Model Free version mentioned by the user."""
+    match = MODEL_FREE_VERSION_RE.search(text or "")
+    if match:
+        return f"Model Free {match.group('version')}"
+    return MODEL_FREE_SUBJECT_PATTERN
+
+
+def looks_like_model_free_email_request(text: str | None) -> bool:
+    """Route Model Free email requests through the deterministic draft helper."""
+    lowered = (text or "").lower()
+    if not re.search(r"\bmodel[-\s]*free\b", lowered):
+        return False
+    return (
+        any(term in lowered for term in MODEL_FREE_EMAIL_TERMS)
+        or model_free_request_forces_draft(lowered)
+    )
+
+
+def model_free_request_forces_draft(text: str | None) -> bool:
+    lowered = (text or "").lower()
+    return any(term in lowered for term in MODEL_FREE_FORCE_DRAFT_TERMS)
 
 
 async def cmd_brief(
@@ -955,14 +989,26 @@ async def cmd_brief(
     )
 
 
-async def cmd_model_free_draft(thread_ts: str | None = None) -> str:
-    prompt = f"""The user explicitly asked you to create an Outlook reply-all draft.
+async def cmd_model_free_draft(
+    thread_ts: str | None = None,
+    *,
+    subject_pattern: str | None = None,
+    user_request: str | None = None,
+    force_draft: bool = True,
+) -> str:
+    subject_pattern = subject_pattern or MODEL_FREE_SUBJECT_PATTERN
+    draft_mode = (
+        "Create the draft even if the thread already has a matching user-authored reply."
+        if force_draft else
+        "If the thread already has a matching user-authored reply after the latest inbound message, report that no new draft is needed instead of creating a duplicate draft."
+    )
+    prompt = f"""The user asked about Outlook email matching the Model Free standing rule.
 
 Use only the Codex Outlook Email connector tools. Do not use shell commands.
 Do not send the email; create a draft only.
 
 Find the latest received email message where:
-- subject contains `{MODEL_FREE_SUBJECT_PATTERN}` case-insensitively
+- subject contains `{subject_pattern}` case-insensitively; treat spaces and hyphens in "Model Free" / "model-free" as equivalent
 - the message was sent to or cc'd to the signed-in user
 - the latest matching message is not authored by the signed-in user
 
@@ -972,9 +1018,13 @@ that exact message with this exact plain-text body:
 
 {MODEL_FREE_DRAFT_BODY}
 
+Current user request: {user_request or "/model-free-draft"}
+Draft mode: {draft_mode}
+
 Return a concise status:
 - if created: draft created, subject, sender, received time, and source link if available
-- if no match: say no matching `{MODEL_FREE_SUBJECT_PATTERN}` email was found
+- if skipped because an equivalent reply already exists: say no new draft was created because the thread already has the requested reply
+- if no match: say no matching `{subject_pattern}` email was found
 - if the connector fails: include the exact failure in one short line
 """
     answer, _sid = await spawn_codex(prompt, progress_cb=None, thread_ts=thread_ts)
@@ -1065,7 +1115,12 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
     if cmd == "/brief":
         return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
     if cmd == "/model-free-draft":
-        return await cmd_model_free_draft(thread_ts=thread_ts)
+        return await cmd_model_free_draft(
+            thread_ts=thread_ts,
+            subject_pattern=model_free_subject_pattern_from_text(args_text),
+            user_request=args_text or "/model-free-draft",
+            force_draft=True,
+        )
     if cmd == "/reset":
         return await cmd_reset(thread_ts)
     if cmd == "/help":
@@ -1185,6 +1240,30 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         cmd = m.group(1)
         args_text = m.group(2)
         await _dispatch(cmd, args_text, "slash")
+        return
+
+    if looks_like_model_free_email_request(cleaned):
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        try:
+            result = await cmd_model_free_draft(
+                thread_ts=thread_ts,
+                subject_pattern=model_free_subject_pattern_from_text(cleaned),
+                user_request=cleaned,
+                force_draft=model_free_request_forces_draft(cleaned),
+            )
+            await update_progress(client, channel, placeholder_ts, result)
+            log.info(
+                "model_free_email_handled",
+                thread_ts=thread_ts,
+                subject_pattern=model_free_subject_pattern_from_text(cleaned),
+                force_draft=model_free_request_forces_draft(cleaned),
+            )
+        except Exception as exc:
+            log.error("model_free_email_failed", err=str(exc), thread_ts=thread_ts)
+            await update_progress(
+                client, channel, placeholder_ts,
+                f"⚠️ Model Free draft check failed: `{str(exc)[:600]}`",
+            )
         return
 
     await upsert_thread(thread_ts, channel, user_id)
