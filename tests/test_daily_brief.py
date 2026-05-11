@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent_me.scripts import daily_brief
 
 
@@ -43,3 +45,18 @@ def test_slack_destination_replies_to_existing_thread_when_present() -> None:
 
     assert threaded.reply_thread_ts == "111.1"
     assert top_level.reply_thread_ts == "333.3"
+
+
+def test_resolve_cli_bin_finds_local_bin(monkeypatch, tmp_path: Path) -> None:
+    fake_home = tmp_path
+    fake_bin = fake_home / ".local" / "bin"
+    fake_bin.mkdir(parents=True)
+    codex = fake_bin / "codex"
+    codex.write_text("#!/bin/sh\n")
+    codex.chmod(0o755)
+
+    monkeypatch.delenv("CODEX_BIN", raising=False)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("PATH", "")
+
+    assert daily_brief.resolve_cli_bin("CODEX_BIN", "codex") == str(codex)

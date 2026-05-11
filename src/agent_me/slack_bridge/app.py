@@ -104,6 +104,18 @@ def resolve_uv_bin() -> str:
     return "uv"
 
 
+def resolve_cli_bin(env_var: str, name: str) -> str:
+    if env := os.environ.get(env_var):
+        p = Path(env).expanduser()
+        if p.exists():
+            return str(p)
+    local_bin = Path.home() / ".local" / "bin"
+    aug_path = f"{local_bin}:/usr/local/bin:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
+    if found := shutil.which(name, path=aug_path):
+        return found
+    return name
+
+
 _UV_BIN = resolve_uv_bin()
 
 # ── Logger: structlog → stdlib logging → console + rotating file ────────
@@ -422,7 +434,7 @@ AGENT_TIMEOUT_S = float(
 MAX_SLACK_TEXT = 39000
 MAX_LOG_TEXT = 4000
 
-CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
 MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 
 # Chat-only working directory for headless Codex invocations from Slack.

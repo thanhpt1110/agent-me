@@ -44,6 +44,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -76,9 +77,8 @@ structlog.configure(
 log = structlog.get_logger("daily-brief")
 
 USER = os.environ.get("AGENT_ME_USER", "thaphan")  # NVIDIA shortname
-DEFAULT_MIRROR_EMAIL = os.environ.get("BRIEF_MIRROR_EMAIL", "")
+DEFAULT_MIRROR_EMAIL = os.environ.get("BRIEF_MIRROR_EMAIL", "thaphan@nvidia.com")
 AGENT_TIMEOUT_S = float(os.environ.get("AGENT_TIMEOUT_S", os.environ.get("CODEX_TIMEOUT_S", 240.0)))
-CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
 MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 PRIORITY_WINDOW_DAYS = 7
 ITEMS_PER_GROUP = 5
@@ -89,6 +89,21 @@ PERIOD_PRESETS = {
     "week":  {"days": 7,  "label": "Weekly",  "title": "Weekly Brief"},
     "month": {"days": 30, "label": "Monthly", "title": "Monthly Brief"},
 }
+
+
+def resolve_cli_bin(env_var: str, name: str) -> str:
+    if env := os.environ.get(env_var):
+        p = Path(env).expanduser()
+        if p.exists():
+            return str(p)
+    local_bin = Path.home() / ".local" / "bin"
+    aug_path = f"{local_bin}:/usr/local/bin:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
+    if found := shutil.which(name, path=aug_path):
+        return found
+    return name
+
+
+CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
 
 
 # ── Data model ──────────────────────────────────────────────────────────
@@ -959,6 +974,7 @@ async def main_async(
         mirror = mirror_email or DEFAULT_MIRROR_EMAIL
         if mirror:
             try:
+                log.info("mirror_resolve_start", email=mirror)
                 mirror_channel = resolve_user_dm_by_email(client, mirror)
                 if mirror_channel != root_channel:
                     mirror_dest = post_root_message(
@@ -974,6 +990,8 @@ async def main_async(
                     log.info("mirror_skipped_same_channel", email=mirror, channel=mirror_channel)
             except Exception as exc:
                 log.warning("mirror_open_or_post_failed", email=mirror, err=str(exc)[:300])
+        else:
+            log.info("mirror_disabled")
 
     # ── Fan out subagents in parallel ───────────────────────────────────
     # Each post is serialized through this lock so we don't hit Slack with
