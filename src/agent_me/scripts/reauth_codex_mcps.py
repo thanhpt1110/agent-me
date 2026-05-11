@@ -25,6 +25,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler
 
+CONNECTOR_COVERED_MAAS = (
+    "maas-gdrive",
+    "maas-outlook",
+    "maas-slack",
+)
+
 URL_RE = re.compile(r"https://[^\s)\\]\"'`<>]+")
 STALE_PATTERNS = (
     "Needs authentication",
@@ -205,6 +211,12 @@ def main() -> int:
     print("[codex-reauth] Codex native OAuth is unsupported for MaaS HTTP MCP servers.")
     print("[codex-reauth] Refreshing the existing MaaS credential store instead.")
     print("[codex-reauth] Ensure Codex MCPs have bearer env vars: ./scripts/setup-codex-mcps.sh")
+    if not os.environ.get("AGENT_ME_REAUTH_SERVERS") and not os.environ.get("AGENT_ME_REAUTH_EXCLUDE"):
+        os.environ["AGENT_ME_REAUTH_EXCLUDE"] = ",".join(CONNECTOR_COVERED_MAAS)
+        print(
+            "[codex-reauth] Skipping connector-covered MaaS duplicates by default: "
+            + ", ".join(CONNECTOR_COVERED_MAAS)
+        )
 
     from agent_me.scripts import reauth_mcps
 

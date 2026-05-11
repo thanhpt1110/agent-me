@@ -239,7 +239,10 @@ approval gate.
   OAuth helper to refresh that token store. Verified
   `codex mcp list` shows 16 HTTP MaaS servers configured as
   `Auth: Bearer token` plus the stdio Playwright server, and setup is
-  idempotent. Current local token store has 15 usable access tokens:
+  idempotent. Reauth skips connector-covered duplicates
+  (`maas-gdrive`, `maas-outlook`, `maas-slack`) by default because
+  Codex uses the richer Google Drive, Outlook, and Slack connectors
+  first. Current local token store has 15 usable access tokens:
   `maas-nvbugs` has no access/refresh token in the copied credentials,
   and `claude mcp list` also flags `maas-gitlab` + `maas-nvbugs` for
   reauth before full MaaS coverage is healthy.

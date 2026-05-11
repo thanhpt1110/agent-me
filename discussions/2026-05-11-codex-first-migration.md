@@ -62,6 +62,10 @@ New auth design:
 - `uv run agent-me-codex-reauth` delegates to the proven MaaS OAuth
   helper to refresh that token store. Claude remains an auth bootstrap
   implementation detail, not the agent backend.
+- Reauth skips connector-covered MaaS duplicates by default:
+  `maas-gdrive`, `maas-outlook`, and `maas-slack`. Those remain
+  registered as fallback MCPs, but Codex uses the richer Google Drive,
+  Outlook, and Slack connectors first.
 
 Verified after setup:
 

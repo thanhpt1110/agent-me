@@ -98,6 +98,16 @@ def detect_stale() -> list[str]:
     """
     import fnmatch
     pattern = os.environ.get("AGENT_ME_REAUTH_PATTERN", "maas-*")
+    include = {
+        item.strip()
+        for item in os.environ.get("AGENT_ME_REAUTH_SERVERS", "").split(",")
+        if item.strip()
+    }
+    exclude = {
+        item.strip()
+        for item in os.environ.get("AGENT_ME_REAUTH_EXCLUDE", "").split(",")
+        if item.strip()
+    }
     res = subprocess.run(
         ["claude", "mcp", "list"],
         capture_output=True,
@@ -112,7 +122,11 @@ def detect_stale() -> list[str]:
         name = line.split(":", 1)[0].strip()
         if not name:
             continue
+        if include and name not in include:
+            continue
         if not fnmatch.fnmatch(name, pattern):
+            continue
+        if name in exclude:
             continue
         stale.append(name)
     return stale

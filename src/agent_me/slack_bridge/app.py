@@ -52,6 +52,11 @@ from agent_me.slack_bridge import approvals
 # ── Repo dir resolution ──────────────────────────────────────────────────
 
 MCP_TOKEN_ENV_RE = re.compile(r"\bAGENT_ME_MCP_TOKEN_[A-Z0-9_]+\b")
+CONNECTOR_COVERED_MAAS = {
+    "maas-gdrive",   # Codex Google Drive connector has richer Drive/Docs/Sheets/Slides access.
+    "maas-outlook",  # Codex Outlook Email/Calendar connectors cover the operator workflows.
+    "maas-slack",    # Codex Slack connector is the primary Slack read/write path.
+}
 
 def resolve_repo_dir() -> Path:
     env = os.environ.get("AGENT_ME_REPO_DIR")
@@ -827,7 +832,7 @@ def _missing_codex_mcp_token_envs(mcp_list_output: str) -> list[str]:
         if env_name in available:
             continue
         server = line.split(None, 1)[0].strip()
-        if server and server != "Name":
+        if server and server != "Name" and server not in CONNECTOR_COVERED_MAAS:
             missing.add(server)
     return sorted(missing)
 
