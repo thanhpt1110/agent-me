@@ -17,11 +17,22 @@ Type=simple
 WorkingDirectory=%h/agent-me
 EnvironmentFile=%h/agent-me/configs/.env
 
-# Bind to 127.0.0.1 only — Tailscale Funnel (the public URL) talks to
-# localhost. If you ever need to expose without Tailscale, change to
-# `--host 0.0.0.0` and ensure DASHBOARD_TOKEN is set (the entry point
-# refuses to bind a public host without a token).
-ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 127.0.0.1 --port 8765
+# Bind to 0.0.0.0:8765 — exposed to the NVIDIA-internal reverse proxy
+# (`https://agent-me.nvidia.com`, VPN-gated; see
+# `design/reverse-proxy-config.md`). The proxy terminates TLS and forwards
+# X-Forwarded-* headers; we accept them via `--forwarded-allow-ips=*`
+# because the network itself is the trust boundary (only NVIDIA VPN
+# clients can reach the proxy in the first place).
+#
+# Auth model with VPN-gated access: set DASHBOARD_TRUST_NETWORK=1 in
+# configs/.env. The entry point will then permit a non-loopback bind
+# without DASHBOARD_TOKEN. Optional defense-in-depth: also set
+# DASHBOARD_TOKEN to require a per-operator bearer / cookie on top of
+# VPN; the middleware handles both transparently.
+#
+# To run loopback-only (e.g. dev / SSH-tunnel access), drop --host and
+# --forwarded-allow-ips to get the safer default.
+ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 0.0.0.0 --port 8765 --forwarded-allow-ips=*
 
 # Read-only over the bridge's SQLite, no writes to bridge state. A
 # graceful stop just kills the uvicorn worker; nothing to flush.

@@ -89,7 +89,14 @@ def test_bootstrap_writes_executable_hook_and_settings(state: Path, tmp_path: Pa
     settings = json.loads((chat_cwd / ".claude" / "settings.json").read_text())
     assert "PreToolUse" in settings["hooks"]
     matchers = [h["matcher"] for h in settings["hooks"]["PreToolUse"]]
-    assert any("Write|Edit" in m for m in matchers)
+    # The matcher pattern shape may vary (anchored `^Write$` vs unanchored
+    # `Write`); we only care that the high-impact write tools the design
+    # doc lists are matched. Check tool-name presence rather than exact
+    # alternation syntax.
+    matcher_blob = " ".join(matchers)
+    assert "Write" in matcher_blob
+    assert "Edit" in matcher_blob
+    assert "mcp__maas-jira__jira_create_issue" in matcher_blob
     cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert cmd == str(hook_path)
 

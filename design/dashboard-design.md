@@ -37,31 +37,40 @@ A single web page that lets the operator see, at a glance:
 ## Architecture
 
 ```
-                ┌────────────────────────────────────┐
-                │  Browser (operator's Mac)          │
-                │  https://<host>.<tailnet>.ts.net   │
-                │   ↑ Tailscale Funnel public URL    │
-                └─────────────────┬──────────────────┘
-                                  │ HTTPS (Tailscale relay)
+                ┌─────────────────────────────────────┐
+                │  Browser (NVIDIA-VPN'd)             │
+                │  https://agent-me.nvidia.com        │
+                └─────────────────┬───────────────────┘
+                                  │ HTTPS
+                                  ▼
+                ┌─────────────────────────────────────┐
+                │  NVIDIA-internal reverse proxy      │
+                │  (operated externally to this repo) │
+                │  - terminates TLS                   │
+                │  - sets X-Forwarded-Proto, -For,    │
+                │    -Host                            │
+                │  - SSE pass-through (no buffering)  │
+                │  See design/reverse-proxy-config.md │
+                └─────────────────┬───────────────────┘
+                                  │ HTTP, plain
+                                  │ (private network)
                                   ▼
        ┌────────────────────────────────────────────┐
        │  Colossus host (24/7)                      │
        │                                            │
-       │  ┌──────────────────┐                      │
-       │  │ tailscaled       │  (system daemon)     │
-       │  │ funnel→ :8765    │                      │
-       │  └────────┬─────────┘                      │
-       │           ▼ 127.0.0.1:8765                 │
        │  ┌──────────────────────────────────┐      │
        │  │ agent-me-dashboard.service       │      │
        │  │  uvicorn + Starlette ASGI app    │      │
-       │  │   - Bearer auth middleware       │      │
+       │  │  bind 0.0.0.0:8765               │      │
+       │  │  --forwarded-allow-ips='*'       │      │
        │  │   - GET  /          (overview)   │      │
        │  │   - GET  /source/<id>            │      │
        │  │   - GET  /ops                    │      │
+       │  │   - GET  /logs                   │      │
        │  │   - POST /api/refresh/<id>       │      │
-       │  │   - GET  /api/sse/logs           │      │
+       │  │   - GET  /api/sse/logs/{w,s,sn}  │      │
        │  │   - GET  /api/sse/refresh/<job>  │      │
+       │  │   - GET  /healthz (unauth)       │      │
        │  └──────┬────────────┬──────────────┘      │
        │         │ READ-ONLY  │ spawn               │
        │         ▼            ▼                     │
@@ -82,92 +91,116 @@ A single web page that lets the operator see, at a glance:
        └────────────────────────────────────────────┘
 ```
 
-**Two new systemd units, both `--user` like the bridge:**
+**One new systemd unit (always):**
 
 - `agent-me-dashboard.service` — runs `uvicorn agent_me.dashboard.app:app
-  --host 127.0.0.1 --port 8765`. Bound to localhost only; Tailscale is
-  the only thing that can talk to it.
-- `agent-me-funnel.service` — runs `tailscale funnel 8765` (foreground).
-  Optional — if you `tailscale funnel --bg 8765` once, the config
-  persists and you don't need a unit. Keeping a unit makes the public
-  URL part inspectable (`systemctl --user status agent-me-funnel`).
+  --host 0.0.0.0 --port 8765 --forwarded-allow-ips=*`. Listens on every
+  interface so the upstream reverse proxy on the NVIDIA private network
+  can reach it. Trusts X-Forwarded-* headers — the proxy is the source
+  of those, and only NVIDIA-VPN traffic reaches the proxy.
+
+**One opt-in unit:**
+
+- `agent-me-funnel.service` — runs `tailscale funnel` for a backup
+  Tailscale Funnel URL (`*.<tailnet>.ts.net`). Disabled by default;
+  enable with `./scripts/install-dashboard.sh --tailscale` if you also
+  want to reach the dashboard from outside the NVIDIA VPN (e.g. when
+  travelling without VPN).
 
 **The bridge service is not modified.** Bridge keeps its own SQLite
 connection (WAL mode), keeps its own `claude -p` invocations, keeps
 its Socket Mode WebSocket. The dashboard is a strict additive.
 
-## Why Tailscale Funnel (locked decision)
+## Why a reverse proxy on `agent-me.nvidia.com` (locked decision, 2026-05-11)
 
-We considered four options for "public URL without owning a DNS name":
+The original design (commit `b567b3f`) chose **Tailscale Funnel** as
+the public URL because the brief was "no own DNS, no bandwidth cap, no
+interstitial". That worked but introduced extra moving parts (tailscaled
+daemon, Tailscale account, funnel admin console). On 2026-05-11 the
+operator stood up an **NVIDIA-internal reverse proxy** at
+`agent-me.nvidia.com` that already does:
 
-| Option | Stable URL | Bandwidth | Interstitial | Setup | Verdict |
-|---|---|---|---|---|---|
-| Cloudflare Quick Tunnel (`*.trycloudflare.com`) | ❌ rotates per restart | unlimited | none | 1 cmd, no account | dev-only, no SSE |
-| ngrok free static (`*.ngrok-free.app`) | ✅ | 1 GB/month, 20k req/month | **yes, every 7d** | account + token | sát cap với chat use case |
-| **Tailscale Funnel** (`*.<tailnet>.ts.net`) | **✅** | **no cap (fair use)** | **none** | apt + login + 1 cmd | **WINNER** |
-| Cloudflare Named Tunnel | ✅ | unlimited | none | requires owned domain on CF | violates "no DNS" req |
+- TLS termination with NVIDIA-internal CA certs.
+- Access control via NVIDIA VPN — only employees can reach the
+  hostname; non-VPN clients fail at the network layer.
+- DNS via the standard `*.nvidia.com` zone — already trusted by every
+  NVIDIA browser.
 
-**Tailscale Funnel wins** because:
+That removes every reason Tailscale was picked. We keep the Tailscale
+unit + install flag because it's still useful for the "check
+dashboard from a phone without VPN" case.
 
-1. No bandwidth cap on the free Personal plan — chat traffic
-   (SSE-streamed Claude responses) won't push us into a paid tier.
-2. No interstitial page — the operator just clicks the bookmark and
-   sees the dashboard.
-3. URL is stable and human-readable: `agent-me-host.<tailnet>.ts.net`.
-4. The funnel daemon is already enterprise-grade infrastructure;
-   uptime is not a concern.
-5. Outbound-only from Colossus (port 41641 UDP + DERP relays) — no
-   inbound holes punched, same security posture as the bridge.
+| Option | Status | Notes |
+|---|---|---|
+| **NVIDIA reverse proxy + VPN** | **Default since 2026-05-11** | TLS, DNS, access control all handled upstream. Most operator-friendly. |
+| Tailscale Funnel | Opt-in via `--tailscale` | Backup public URL when off-VPN. |
+| Cloudflare / ngrok / SSH tunnel | Not configured | Old options, kept in design history (commit `b567b3f`). |
 
-**Trade-offs accepted:**
-
-- Need to install `tailscale` package on Colossus (one `apt install`,
-  documented in `scripts/install-dashboard.sh`).
-- Need a free Tailscale account (sign-in via Google/GitHub OAuth,
-  takes 1 minute).
-- One-time `sudo tailscale up` (auth via browser).
-- One-time `sudo tailscale funnel --bg 8765` (saves config).
-
-**Verification before deployment to Colossus:**
-
-```bash
-# On Colossus, after Phase 3 stabilises:
-curl -fsSL --connect-timeout 5 https://login.tailscale.com -o /dev/null \
-  && echo "✓ tailscale.com reachable" || echo "✗ blocked"
-curl -fsSL --connect-timeout 5 https://controlplane.tailscale.com -o /dev/null \
-  && echo "✓ controlplane reachable" || echo "✗ blocked"
-```
-
-If either is blocked, fall back to ngrok (script will detect and
-prompt). If both blocked, dashboard remains local-only on Colossus
-and operator opens via SSH port-forward.
+**Pre-deploy verification:** see `design/reverse-proxy-config.md`
+("Sanity checklist for the proxy admin"). After the proxy is live and
+this dashboard is running, hit `curl -sSL https://agent-me.nvidia.com/healthz`
+from a VPN'd machine — should return `{"ok": true, ...}`.
 
 ## Auth
 
-Single shared bearer token, mandatory on every non-static request.
-The token comes from `DASHBOARD_TOKEN` in `configs/.env`; if unset
-at startup the service refuses to bind a public port (only
-`127.0.0.1` allowed).
+Two layered options the operator picks at install time. Both honour
+the `X-Forwarded-Proto` header so cookies set `Secure=true` correctly
+when the proxy terminates TLS.
 
-**Browser flow:**
+### Option A — VPN-only (default since 2026-05-11)
 
-1. Operator opens `https://<host>.<tailnet>.ts.net/?t=<token>` once.
-2. Server sets a long-lived signed cookie (`itsdangerous` URLSafeSerializer).
-3. Subsequent requests authenticated via cookie; no `?t=` needed.
-4. Cookie scope: HttpOnly, SameSite=Lax, Secure (Tailscale terminates TLS).
-5. Logout clears cookie.
+Set `DASHBOARD_TRUST_NETWORK=1` in `configs/.env`. The dashboard entry
+point will permit a non-loopback bind without `DASHBOARD_TOKEN`. The
+trust boundary is the NVIDIA VPN: anyone who can reach
+`agent-me.nvidia.com` is, by network policy, an NVIDIA employee.
 
-**API flow (CLI / curl):**
+Trade-off: every NVIDIA-VPN'd employee can see the dashboard. There's
+no per-user filtering inside the app. This is acceptable because:
 
-- Header: `Authorization: Bearer <token>`.
+- The Slack flow is independent and still gated by `SLACK_ALLOWED_USER_ID`
+  — no one else can DM the bot or trigger writes.
+- The dashboard is read-only over the bridge state + brief output; the
+  on-demand "Refresh" button kicks one query that doesn't post to Slack.
+- Approval-gate buttons (Phase 2b) are Slack-side, not dashboard-side.
 
-**Why not OAuth / Cloudflare Access / etc.:** single user, single
-device, single token = not worth the operational complexity.
+A response header `X-Dashboard-Auth: trust-network` confirms the model
+is active so the proxy admin can sanity-check.
 
-The token lives in `~/agent-me-secrets.md` (vault file) once
-generated — `scripts/install-dashboard.sh` generates a 32-byte
-URL-safe base64 token if `DASHBOARD_TOKEN` isn't set, prints it
-once, and reminds the operator to add it to the vault.
+### Option B — VPN + bearer/cookie (defense-in-depth)
+
+Run `./scripts/install-dashboard.sh --token` to generate
+`DASHBOARD_TOKEN`. The middleware then requires:
+
+- **Browser flow**: visit `https://agent-me.nvidia.com/?t=<token>`
+  once; server sets a 30-day signed cookie. Subsequent requests
+  authenticated via cookie alone.
+- **API flow**: `Authorization: Bearer <token>` header.
+
+Use this when multiple NVIDIA employees can VPN but only one operator
+should see the dashboard, or when you want belt-and-suspenders for
+rotating production credentials.
+
+The token lives in `~/agent-me-secrets.md` (the per-operator vault file
+outside the repo). The middleware also adds `X-Dashboard-Auth: cookie`
+or `bearer` so you can trace which path authenticated each request.
+
+### Exempt paths (no auth in either option)
+
+- `GET /healthz` — used by the proxy upstream-liveness probe.
+- `GET /static/*` — assets, not sensitive.
+- `GET /favicon.ico`.
+- `GET /login` and `POST /api/login` — needed to set the cookie when
+  Option B is in use.
+
+### Why not full SSO?
+
+Operationally, the proxy already enforces VPN; that's effectively SSO
+at the network layer. Adding OAuth at the app layer would mean
+plumbing tokens, refresh, and identity for a single-operator app.
+Not worth it. If an NVIDIA SSO header gateway is ever standardised
+(`X-Auth-User` etc.), we can add a lightweight middleware that reads
+it; until then VPN + optional shared-secret is the simplest model
+that fits.
 
 ## Isolation from the Slack bridge
 
@@ -278,11 +311,12 @@ src/agent_me/dashboard/
     └── app.js          # Alpine stores + SSE wiring
 
 design/dashboard-design.md         # this file
+design/reverse-proxy-config.md     # nginx/caddy/traefik snippets for the proxy admin
 
-deploy/agent-me-dashboard.service  # systemd unit
-deploy/agent-me-funnel.service     # systemd unit (Tailscale)
+deploy/agent-me-dashboard.service  # systemd unit (always installed)
+deploy/agent-me-funnel.service     # systemd unit (opt-in via --tailscale)
 
-scripts/install-dashboard.sh       # idempotent setup
+scripts/install-dashboard.sh       # idempotent setup; default = reverse-proxy mode
 ```
 
 ## Brief parser changes (additive)
@@ -305,8 +339,11 @@ dashboard can ingest it without re-implementing parser logic.
   the 6am brief which writes to brief.log; dashboard reads from
   there. Manual refresh is the dashboard's superpower; automated
   refresh on a separate schedule is unnecessary.
-- **Auth: token vs OAuth?** Sticking with token. If we ever want
-  team usage, swap to Cloudflare Access or Tailscale Identity.
+- **Auth: token vs OAuth?** Sticking with VPN + optional token.
+  If team usage ever lands, the cleanest path is to add a tiny
+  middleware that reads an `X-Auth-User` (or similar) header set by
+  the reverse proxy after upstream SSO; until that header exists in
+  the NVIDIA proxy stack, VPN is the auth boundary.
 - **Persistent jobs:** if the dashboard restarts mid-refresh, the
   spawned brief subprocess gets killed (PR_SET_PDEATHSIG inherited
   through systemd). Acceptable for draft; jobs are 30–40s.
@@ -336,12 +373,21 @@ dashboard can ingest it without re-implementing parser logic.
 ## Pre-deploy checklist (when Colossus is ready)
 
 1. `claude mcp list` → all 17 ✓ Connected (Phase 3 prerequisite).
-2. `curl https://login.tailscale.com` from Colossus → 200/302.
-3. `apt install tailscale` (or upstream installer).
-4. `sudo tailscale up` (browser auth via SSH port-forward).
-5. `sudo tailscale funnel --bg 8765`.
-6. Generate `DASHBOARD_TOKEN`, add to `configs/.env`.
-7. `./scripts/install-dashboard.sh` → installs both systemd units.
-8. `systemctl --user start agent-me-dashboard agent-me-funnel`.
-9. Open `https://<host>.<tailnet>.ts.net/?t=<token>` in browser.
-10. Verify: source tabs render, refresh works, log SSE streams.
+2. Reverse proxy at `agent-me.nvidia.com` is configured to forward to
+   `<colossus-host>:8765` over plain HTTP. See
+   `design/reverse-proxy-config.md` for nginx / caddy / traefik
+   snippets to send the proxy admin.
+3. From an NVIDIA-VPN'd machine: `curl -sSL https://agent-me.nvidia.com/healthz`
+   eventually returns `{"ok": true, ...}` once the dashboard service
+   is up. (Until then it 502s — that's normal.)
+4. `./scripts/install-dashboard.sh` from the repo root. The script:
+   - `uv sync` to pull dashboard deps,
+   - appends `DASHBOARD_TRUST_NETWORK=1` to `configs/.env`,
+   - installs and starts `agent-me-dashboard.service`,
+   - waits ~2s and curls `127.0.0.1:8765/healthz`.
+   - Add `--token` for defense-in-depth (Option B); add `--tailscale`
+     for the optional VPN-less backup URL.
+5. Open `https://agent-me.nvidia.com/` in a VPN'd browser.
+6. Verify: overview page renders 7 source cards, ⚙ Ops panel opens, 📜
+   Logs page streams the watcher journal + bridge events + a session
+   trace once you've picked a session from the dropdown.

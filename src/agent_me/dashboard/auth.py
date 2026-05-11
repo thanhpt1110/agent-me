@@ -84,12 +84,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         expected = _expected_token()
+        trust_network = os.environ.get("DASHBOARD_TRUST_NETWORK", "0") == "1"
         if not expected:
-            # No token configured → assume bind is 127.0.0.1 only and
-            # let traffic through with a soft warning header. The public
-            # bind path checks this and refuses to start.
+            # No token configured. Two cases:
+            #  - DASHBOARD_TRUST_NETWORK=1: the network gates access (e.g.
+            #    NVIDIA-internal reverse proxy + VPN). Let traffic through
+            #    with a clear `trust-network` header so the proxy admin
+            #    can see the model is intentional.
+            #  - Otherwise: dev / loopback mode. `disabled` header tells
+            #    the operator they should configure auth before exposing.
             response = await call_next(request)
-            response.headers["X-Dashboard-Auth"] = "disabled"
+            response.headers["X-Dashboard-Auth"] = (
+                "trust-network" if trust_network else "disabled"
+            )
             return response
 
         # Path 1: API clients via Authorization header.
@@ -140,11 +147,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 def auth_required_for_public_bind() -> None:
-    """Raise if the operator forgot to set DASHBOARD_TOKEN on a non-loopback bind."""
+    """Raise if the operator forgot to set DASHBOARD_TOKEN on a non-loopback bind.
+
+    Bypassed when `DASHBOARD_TRUST_NETWORK=1` is set in the environment —
+    appropriate when the dashboard sits behind a network-level access
+    control such as the NVIDIA-internal reverse proxy at
+    `agent-me.nvidia.com` (VPN-gated). In that mode the network is the
+    auth boundary and `DASHBOARD_TOKEN` is optional defense-in-depth
+    rather than a hard requirement. See `design/reverse-proxy-config.md`.
+    """
+    if os.environ.get("DASHBOARD_TRUST_NETWORK", "0") == "1":
+        log.info("auth_trust_network",
+                 note="DASHBOARD_TRUST_NETWORK=1; VPN/proxy gates access; "
+                      "DASHBOARD_TOKEN " + ("set" if _expected_token() else "unset"))
+        return
     if not _expected_token():
         raise SystemExit(
-            "DASHBOARD_TOKEN is unset. Refusing to bind a public host "
-            "without auth. Either:\n"
+            "DASHBOARD_TOKEN is unset and DASHBOARD_TRUST_NETWORK is not '1'. "
+            "Refusing to bind a public host without auth. Choose one:\n"
             "  • set DASHBOARD_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(24))') in configs/.env, or\n"
+            "  • set DASHBOARD_TRUST_NETWORK=1 in configs/.env (only if upstream gates access — e.g. NVIDIA-internal reverse proxy + VPN), or\n"
             "  • bind to 127.0.0.1 only with `--host 127.0.0.1`."
         )

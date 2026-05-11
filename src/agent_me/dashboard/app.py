@@ -374,22 +374,44 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="agent-me dashboard — read-only web view (Phase 4 draft)",
     )
-    parser.add_argument("--host", default="127.0.0.1",
-                        help="bind host (default 127.0.0.1; use 0.0.0.0 only "
-                             "if you trust your network or have set DASHBOARD_TOKEN)")
+    parser.add_argument(
+        "--host", default="127.0.0.1",
+        help=(
+            "bind host. Default 127.0.0.1 (loopback only). Use 0.0.0.0 when "
+            "fronted by a reverse proxy that gates access (e.g. NVIDIA-internal "
+            "agent-me.nvidia.com behind VPN — see design/reverse-proxy-config.md). "
+            "When binding non-loopback the entry point requires either "
+            "DASHBOARD_TOKEN or DASHBOARD_TRUST_NETWORK=1."
+        ),
+    )
     parser.add_argument("--port", type=int, default=8765,
                         help="bind port (default 8765)")
+    parser.add_argument(
+        "--forwarded-allow-ips", default=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+        help=(
+            "Trust X-Forwarded-* headers from these client IPs. Use '*' when "
+            "behind a trusted reverse proxy on a private network (e.g. NVIDIA "
+            "internal). Defaults to 127.0.0.1, or env FORWARDED_ALLOW_IPS."
+        ),
+    )
     parser.add_argument("--reload", action="store_true",
                         help="hot-reload on source change (dev only)")
     args = parser.parse_args()
 
-    # Refuse to expose without a token.
+    # Non-loopback bind requires either a token or explicit network-level
+    # trust (e.g. behind a VPN-gated reverse proxy).
     if args.host != "127.0.0.1":
         auth_required_for_public_bind()
 
-    log.info("dashboard_start", host=args.host, port=args.port,
-             repo=str(REPO_DIR),
-             auth=("on" if os.environ.get("DASHBOARD_TOKEN") else "off"))
+    log.info(
+        "dashboard_start",
+        host=args.host, port=args.port,
+        forwarded_allow_ips=args.forwarded_allow_ips,
+        repo=str(REPO_DIR),
+        auth=("token" if os.environ.get("DASHBOARD_TOKEN")
+              else ("trust-network" if os.environ.get("DASHBOARD_TRUST_NETWORK") == "1"
+                    else "off")),
+    )
 
     uvicorn.run(
         "agent_me.dashboard.app:app",
@@ -398,6 +420,11 @@ def main() -> int:
         reload=args.reload,
         log_config=None,  # let structlog own stderr
         access_log=False,
+        # Honor X-Forwarded-Proto / -For / -Host so request.url.scheme is
+        # 'https' when the reverse proxy terminates TLS (matters for cookie
+        # `secure=True`, redirect targets, and SSE link generation).
+        proxy_headers=True,
+        forwarded_allow_ips=args.forwarded_allow_ips,
     )
     return 0
 

@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-10 by Claude (Opus 4.7) — Phase 4 dashboard drafted; Phase 3 Colossus deploy steps 1–5 done (16/17 MCPs ✓ via Keychain transfer); steps 6–8 (systemd / smoke test / auto-deploy verify) on the user._
+_Last updated: 2026-05-11 by Claude (Opus 4.7) — Phase 4 dashboard pivoted to NVIDIA-internal reverse proxy at `agent-me.nvidia.com` (VPN-gated); Tailscale Funnel now opt-in. Phase 3 Colossus deploy: steps 1–5 done (16/17 MCPs ✓ via Keychain transfer); steps 6–8 (systemd / smoke test / auto-deploy verify) on the user._
 
 ## Phase
 
@@ -179,6 +179,32 @@ approval gate.
 
 ## Recent decisions (continued, 2026-05-10 evening)
 
+- **2026-05-11 — PA hybrid retry: MCP route DEAD, headless route
+  ALIVE.** Tried registering `pa mcp` as Claude Code stdio MCP server
+  via the bridge (allowlist + workspace trust + setting-sources flag
+  + various `--permission-mode` permutations). All failed at runtime
+  with the SAME root cause: **`pa mcp` violates the single-server
+  stdio contract**. Debug log (`--debug-file`) shows pa-cli's stdio
+  emits multiple `initialize` responses — one per internal
+  sub-server (outlook-emails, slack-messages, teams-chat,
+  eci-search) — which Claude Code treats as "unknown message ID"
+  errors and drops the connection after ~0s. So zero PA tools
+  visible from any `claude -p` headless invocation. Yesterday's
+  401-retention issue was a red herring; the real blocker was the
+  protocol violation. New direction: **invoke `pa -p "<prompt>"` via
+  Bash from chat_cwd** instead of MCP. Bridge already has Bash in
+  PHASE_2B allow-list; no further bridge changes needed for PA reads.
+  Bridge whitelist additions kept: `mcp__claude_ai_Slack__*`,
+  `mcp__claude_ai_Microsoft_365__*`, `mcp__claude_ai_Atlassian_Rovo__*`
+  (these are write/action tools that DO work). `mcp__pa-cli__*`
+  removed from allow-list. `pa-cli` MCP unregistered
+  (`claude mcp remove pa-cli -s user`). The pre-existing `pa` MCP
+  entry left in place (same binary, same bug; nothing uses it).
+  Decision row in this table still reads "Claude Code only" — that
+  remains the working state for MCP. PA participation is now a
+  Bash-shellout pattern documented in user memory
+  (`hybrid_pa_claude_workflow.md`).
+
 - **2026-05-10 — Phase 4 tunnel: Tailscale Funnel (locked).** Compared
   Cloudflare Quick Tunnel (random URL, no SSE), ngrok free static
   (1GB/20K req cap + interstitial every 7d), Cloudflare Named Tunnel
@@ -238,16 +264,19 @@ approval gate.
    in design doc + verified empirically**; `defer` mode also explored
    in research notes but not used in v1 (file-system semaphore is
    simpler + portable). 18 unit tests cover the module.
-4. **Phase 4 — web dashboard** ← **DRAFTED (2026-05-10)**, not yet
-   deployed. Code at `src/agent_me/dashboard/`; design at
-   `design/dashboard-design.md`. **Public URL via Tailscale Funnel**
-   (locked), supersedes the earlier "Brev port-expose" plan since
-   Brev was abandoned same day. Once Phase 3 Colossus is stable, run
-   `scripts/install-dashboard.sh` on Colossus → installs tailscale
-   if missing, generates `DASHBOARD_TOKEN`, registers two systemd
-   `--user` units (dashboard + funnel). Public URL after install:
-   `https://<host>.<tailnet>.ts.net`. The bridge service is not
-   modified or restarted.
+4. **Phase 4 — web dashboard** ← **DRAFTED (2026-05-10), reverse-proxy
+   pivot 2026-05-11**, not yet deployed. Code at `src/agent_me/dashboard/`;
+   design at `design/dashboard-design.md`; reverse-proxy snippets at
+   `design/reverse-proxy-config.md`. Public URL is now
+   `https://agent-me.nvidia.com` via an NVIDIA-internal reverse proxy
+   on the operator's VPN-gated network — supersedes the earlier
+   Tailscale Funnel plan (now opt-in only). Once Phase 3 Colossus is
+   stable, run `scripts/install-dashboard.sh` (default reverse-proxy
+   mode) on Colossus → registers `agent-me-dashboard.service` (binds
+   `0.0.0.0:8765`, accepts X-Forwarded-* from any upstream), appends
+   `DASHBOARD_TRUST_NETWORK=1` to `configs/.env`. Operator hands the
+   nginx/caddy/traefik snippet from `design/reverse-proxy-config.md`
+   to whoever runs `agent-me.nvidia.com`. Bridge service unchanged.
 
 ## Open research / unresolved
 
@@ -264,25 +293,33 @@ approval gate.
 - Web UI dashboard at `src/agent_me/dashboard/` — **drafted
   2026-05-10**. Stack: Starlette + Jinja2 + Alpine.js + Tailwind
   CDN + sse-starlette. No Node, no bundler.
-- **Public URL via Tailscale Funnel** (`<host>.<tailnet>.ts.net`).
-  Free Personal tier, no bandwidth/request cap, no interstitial, no
-  DNS to manage. Outbound-only from host. Supersedes earlier
-  Brev-port-expose idea (Brev abandoned 2026-05-10 due to
-  MaaS-MCP unreachability from external networks).
+- **Public URL via NVIDIA-internal reverse proxy** at
+  `https://agent-me.nvidia.com` (VPN-gated; access controlled at
+  the network layer). The proxy terminates TLS and forwards plain
+  HTTP to `<colossus-host>:8765` with X-Forwarded-* headers. Snippets
+  for the proxy admin (nginx / caddy / traefik) live in
+  `design/reverse-proxy-config.md`. **Pivoted from Tailscale Funnel
+  on 2026-05-11** — proxy + VPN handles TLS, DNS, and access control
+  upstream of the app, so the Tailscale-specific code path is now
+  opt-in (`./scripts/install-dashboard.sh --tailscale`).
 - Reads the bridge's SQLite (URI `mode=ro`) + tails
   `bridge.log`/`brief.log` over SSE. Never writes to bridge state.
 - On-demand refresh per source: reuses `agent_me.scripts.daily_brief`
   fetcher/parser via in-process import (single `claude -p`
   subprocess per source, single-flight lock); does **not** post to
   Slack — bridge's 6am cron remains the only Slack-posting path.
-- Auth: shared bearer token (`DASHBOARD_TOKEN` in `configs/.env`),
-  signed-cookie session for browsers. Refuses to bind to non-loopback
-  if token unset.
+- Auth model is layered: **VPN at the network layer** is default
+  (`DASHBOARD_TRUST_NETWORK=1` in `configs/.env`), with optional
+  `DASHBOARD_TOKEN` defense-in-depth for per-operator gating. The
+  middleware honours both and reports which path authenticated each
+  request via `X-Dashboard-Auth` (`trust-network` | `cookie` |
+  `bearer` | `disabled`).
 - The Slack bridge is **not modified** by Phase 4 — bridge keeps its
   SQLite write connection, its `claude -p` cwd
   (`~/.local/state/agent-me/chat-cwd`), its Socket Mode WebSocket.
-  Dashboard is purely additive. Two new systemd `--user` units; the
-  bridge unit is unchanged.
+  Dashboard is purely additive. One systemd `--user` unit always
+  installed (dashboard) + one opt-in (Tailscale funnel); bridge unit
+  is unchanged.
 
 ## Open questions / parking lot
 
