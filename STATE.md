@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, and repo-facing English copy normalization. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 80 tests, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, and a generalized permissioned connector/MCP write route. Runtime decision: reads/chat use `codex exec --json`; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 92 tests, Codex app-server helper smoke, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -27,7 +27,7 @@ approval gate.
 | Runtime host | Brev cloud CPU instance (24/7) — Phase 3 |
 | Primary interface | Personal Slack workspace (Socket Mode bridge) |
 | Config repo | Personal GitHub, **public template** (`thanhpt1110/agent-me`) |
-| Default model | Codex via `codex exec` (`CODEX_MODEL`, default `gpt-5.5`) |
+| Default model | Codex via `codex exec` for reads/chat and `codex debug app-server` for permissioned connector/MCP writes (`CODEX_MODEL`, default `gpt-5.5`) |
 | MCP backend | **Codex app/MCP tools**; PA/Claude runtime hybrid retired |
 | Git identity | User requested primary commits as `Thanh Phan <thaphan@nvidia.com>` with `Co-authored-by: Codex <codex@openai.com>` when Codex contributes |
 | Repo language | User-facing chat may be Vietnamese; repo-facing docs/source/comments/discussions and commit messages stay English |
@@ -56,8 +56,10 @@ approval gate.
   `tests/test_slack_bridge_codex_args.py`.
 - [x] **MCPs registered (17 total)** — Slack + Outlook added 2026-05-10 at user scope (project-local scope confused the OAuth helper; learnt the hard way).
 - [x] **Codex-first runtime migration (2026-05-11)** — Slack bridge and
-  daily brief now call `codex exec --json` instead of `claude -p` or
-  PA shellouts. Bridge parses Codex JSONL events, resumes Codex
+  daily brief reads now call `codex exec --json` instead of `claude -p` or
+  PA shellouts. Permissioned connector/MCP writes route through Codex
+  app-server auto-review (`codex debug app-server send-message-v2`) because
+  headless `codex exec` can cancel app write tools. Bridge parses Codex JSONL events, resumes Codex
   sessions per Slack thread, streams tool progress, and injects MaaS
   bearer-token env vars at spawn time. Daily brief uses the same
   Codex JSONL path for each source. `scripts/setup-codex-mcps.sh`
@@ -70,7 +72,9 @@ approval gate.
   channel/thread into `agent-me-brief`; each platform posts as its own
   message in that thread and a concise digest mirrors to
   `thaphan@nvidia.com` via the Codex Slack connector (not the
-  personal-workspace bot token). NVBugs fetch prompt now asks for
+  personal-workspace bot token). The mirror send uses the shared Codex
+  app-server auto-review helper because it is an explicit connector write.
+  NVBugs fetch prompt now asks for
   the full open set where QA Eng/QA owner is `thaphan`, `Thanh Phan`,
   or any open ARB-related bug involving those identities, with a
   clickable NVBugs link on every item.
@@ -89,6 +93,13 @@ approval gate.
   the requested user-authored reply already exists. That route now
   forwards the standard Codex progress callback so Slack shows live
   `N/M tool calls done` updates instead of staying at `thinking...`.
+- [x] **Permissioned connector/MCP writes use app-server auto-review (2026-05-11)** —
+  bridge routing now detects explicit external write requests for Slack,
+  Teams, Outlook Email, Google Drive/Docs/Sheets/Slides, Jira, GitLab,
+  Confluence, NVBugs, and Calendar, then sends them through the shared
+  app-server helper. The generic `codex exec` chat prompt is read-first and
+  refuses connector/MCP writes that escape the router, avoiding
+  hallucinated `user cancelled MCP tool call` outcomes.
 - [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
   vector source is `assets/agent-me-avatar.svg`; the visual is a
   text-free NVIDIA-green autonomous robot with circuit/web3 styling and
@@ -270,6 +281,16 @@ approval gate.
   tell Codex to use app/MCP tools directly and avoid shell/PA/Claude
   for enterprise reads. `claude_sessions` remains the DB table name
   only for migration compatibility; values are Codex thread IDs now.
+- **2026-05-11 — Permissioned connector/MCP writes use app-server auto-review.**
+  Case study: Slack-triggered Outlook reply-all drafts failed in
+  headless `codex exec` with `user cancelled MCP tool call`, while the
+  same operation succeeded through `codex debug app-server send-message-v2`
+  because Codex app-server runs the auto-review approval flow. The new
+  default is strict: reads/chat stay on `codex exec --json`, and any
+  feature that writes through a connector or MCP must call the shared
+  `agent_me.codex_app_server.run_codex_app_server()` helper. Existing
+  write paths were aligned: Model Free drafts, explicit Slack-chat
+  connector writes, and the daily brief mirror to `thaphan@nvidia.com`.
 - **2026-05-11 — Codex MaaS auth bridge.** `codex mcp login
   maas-nvbugs` returned "No authorization support detected", so
   native Codex OAuth is not available for NVIDIA MaaS HTTP MCPs in
@@ -531,19 +552,17 @@ approval gate.
   keep targeting the same subject instead of letting generic chat pick a
   different email. For Slack threads that existed before this table was
   added, the bridge can recover the subject from recent Slack thread
-  history before routing the follow-up. Headless `codex exec` may still report
-  `user cancelled MCP tool call` for Outlook write calls when the app
-  connector confirmation layer blocks the draft creation; that is a
-  connector execution limit, not subject selection.
-- **Outlook writes use Codex app-server (2026-05-11)** — direct
+  history before routing the follow-up. The draft action uses the shared
+  Codex app-server write path.
+- **Permissioned connector/MCP writes use Codex app-server (2026-05-11)** — direct
   testing showed `codex exec` still returns `user cancelled MCP tool call`
   for Outlook app writes even with per-tool `approval_mode="approve"`.
   The same draft request succeeds through
-  `codex debug app-server send-message-v2`, where guardian auto-review
+  `codex debug app-server send-message-v2`, where app-server auto-review
   approves the connector write and the Outlook draft is saved. The Slack
-  bridge now routes Model Free drafts and other explicit Outlook draft/write
-  requests through the app-server path, while normal reads and chat keep using
-  `codex exec --json`. Direct MaaS Outlook fallback is not available for
+  bridge now routes Model Free drafts, explicit external connector/MCP writes,
+  and daily brief Slack-connector mirrors through the app-server path, while
+  normal reads and chat keep using `codex exec --json`. Direct MaaS Outlook fallback is not available for
   draft creation: the local MaaS Outlook bearer token returned HTTP 401 on
   `tools/list`, and the historical MaaS Outlook tool surface only included
   read tools. End-to-end smoke of `cmd_model_free_draft("Model Free 2.0.4")`

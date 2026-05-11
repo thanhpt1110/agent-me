@@ -23,6 +23,7 @@ Architecture (2026-05-10 refactor):
           Each subagent posts ONE threaded reply when done.
       └── final priority synthesis posted as last threaded reply.
       └── root header updated with item-count summary + actions buttons.
+      └── optional Slack-connector mirror via Codex app-server auto-review.
 
 Why fan-out: previously a single 1700-token prompt asked claude to call
 all MCPs serially in one turn. Wall-clock ~60-230s, single ~3-4kB JSON
@@ -60,6 +61,7 @@ import structlog
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 
+from agent_me.codex_app_server import run_codex_app_server
 from agent_me.mcp_tokens import codex_mcp_token_env
 
 # ── Setup ────────────────────────────────────────────────────────────────
@@ -723,6 +725,16 @@ async def _run_codex(prompt: str, timeout_s: float) -> str:
     return ""
 
 
+async def _run_codex_app_server(prompt: str, timeout_s: float) -> str:
+    """Run a permissioned connector/MCP write through Codex app-server."""
+    return await run_codex_app_server(
+        prompt,
+        codex_bin=CODEX_BIN,
+        cwd=REPO_DIR,
+        timeout_s=timeout_s,
+    )
+
+
 def _strip_to_json(text: str) -> dict:
     """Strip ``` fences and any leading prose, then json.loads. Raises on failure."""
     t = re.sub(r"^```(?:json)?\s*", "", text)
@@ -1081,7 +1093,9 @@ async def send_connector_slack_mirror(email: str, message: str) -> ConnectorMirr
     prompt = f"""Return ONLY a JSON object. No prose, no markdown fences.
 
 The user explicitly requested this Slack send. Use the Codex Slack connector
-app tools only. Do not use shell commands. Do not use SLACK_BOT_TOKEN.
+app tools only. Do not use shell commands. Do not use SLACK_BOT_TOKEN. This
+turn is running through Codex app-server auto-review because it is a
+permissioned connector write.
 
 Destination: Slack DM for exact email `{email}`.
 
@@ -1099,7 +1113,7 @@ Message JSON string:
 {json.dumps(message, ensure_ascii=False)}
 """
     try:
-        raw = await _run_codex(prompt, AGENT_TIMEOUT_S)
+        raw = await _run_codex_app_server(prompt, AGENT_TIMEOUT_S)
     except Exception as exc:
         return ConnectorMirrorResult(ok=False, error=str(exc))
     try:

@@ -139,9 +139,9 @@ nearby but different Model Free-related email.
 Manual headless testing also confirmed a separate connector limit: even with a
 strict prompt and the correct Sergei Nikolaev source message, `codex exec`
 Outlook write calls can return `user cancelled MCP tool call`. The route fix
-removes the hallucinated target selection and duplicate-skip behavior; a direct
-non-headless connector path or Graph-backed draft fallback is still needed if
-Slack-driven Outlook draft creation must bypass that confirmation layer.
+removes the hallucinated target selection and duplicate-skip behavior. The
+later app-server route below is the non-headless connector path that bypasses
+that confirmation layer.
 
 ## Follow-up: App-Server Write Path
 
@@ -154,10 +154,10 @@ direct Codex connector, and `codex debug app-server send-message-v2` also
 created a saved Outlook draft successfully.
 
 The working path is Codex app-server. It starts a normal app-server thread with
-`approvalPolicy=on-request`, runs guardian auto-review for the Outlook connector
+`approvalPolicy=on-request`, runs app-server auto-review for the Outlook connector
 write, approves the low-risk draft action, and then the connector saves the
-draft. The bridge now routes Model Free draft requests and explicit Outlook
-draft/write Slack prompts through that app-server path. Normal chat and read
+draft. The bridge now routes Model Free draft requests and explicit external
+connector/MCP write prompts through that app-server path. Normal chat and read
 flows stay on `codex exec --json`.
 
 MaaS Outlook is not a viable write fallback right now. Direct HTTP
@@ -175,12 +175,34 @@ Result: draft created, not sent, against Sergei Nikolaev's inbound
 `SWQA post-deployment review request for model-free 2.0.4` message received
 `2026-05-08T01:23:18Z`.
 
+## Follow-up: Generalized Permissioned Write Policy
+
+The Outlook draft case study became the policy for all future connector/MCP
+writes. Headless `codex exec --json` remains the default for reads, synthesis,
+and normal Slack chat. Any request that sends, posts, drafts, replies,
+comments, updates, assigns, closes, shares, schedules, or otherwise writes
+through a connector/MCP must use `codex debug app-server send-message-v2`
+through `agent_me.codex_app_server.run_codex_app_server()`.
+
+Existing write paths were aligned with that rule:
+
+- Model Free Outlook reply-all drafts still use the dedicated helper, backed by
+  app-server auto-review.
+- Explicit Slack-chat write requests for Slack, Teams, Outlook, Google Drive,
+  Jira, GitLab, Confluence, NVBugs, and Calendar now route to the generalized
+  app-server write helper instead of generic chat.
+- Daily/weekly/monthly brief mirrors to `thaphan@nvidia.com` now send via the
+  Codex Slack connector through app-server auto-review. The primary brief
+  thread posts still use the bridge's own Slack bot token because those are
+  deterministic service messages in the personal workspace.
+
 ## Verification
 
 - `python -m compileall src scripts tests`
 - `uv run ruff check`
-- `uv run pytest` → 78 passed
-- `uv run agent-me-brief --period day --dry-run`
+- `uv run pytest` → 92 passed
+- Shared app-server helper smoke → returned `OK`
+- `uv run agent-me-brief --period day --dry-run` → exit 0, 6 items, 4 known MaaS/auth source errors surfaced explicitly
 
 ## Commit Convention
 

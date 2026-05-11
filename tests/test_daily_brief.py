@@ -128,6 +128,31 @@ def test_readonly_mcp_approval_configs_cover_core_brief_tools() -> None:
     assert "approval_mode=\"approve\"" in joined
 
 
+def test_connector_mirror_uses_app_server_auto_review(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_run_codex_app_server(prompt: str, timeout_s: float) -> str:
+        captured["prompt"] = prompt
+        captured["timeout_s"] = str(timeout_s)
+        return '{"ok": true, "user_id": "U123", "link": "https://slack.example/m"}'
+
+    monkeypatch.setattr(daily_brief, "_run_codex_app_server", fake_run_codex_app_server)
+
+    import asyncio
+
+    result = asyncio.run(
+        daily_brief.send_connector_slack_mirror(
+            "thaphan@nvidia.com",
+            "Daily Brief\n- item",
+        )
+    )
+
+    assert result.ok is True
+    assert "Codex app-server auto-review" in captured["prompt"]
+    assert "Do not use SLACK_BOT_TOKEN" in captured["prompt"]
+    assert "_run_codex(" not in captured["prompt"]
+
+
 def test_nvbugs_prompt_includes_full_name_alias() -> None:
     prompt = daily_brief.NVBUGS_PROMPT.format(
         user="thaphan",

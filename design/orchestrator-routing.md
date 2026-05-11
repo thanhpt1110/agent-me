@@ -1,8 +1,26 @@
-# Orchestrator routing — 2-tier MCP/PA architecture
+# Orchestrator routing — Codex connector/MCP routing
 
 _Authored 2026-05-11 by Claude (Opus 4.7) after a marathon debugging session with the operator. Captures the empirical findings that shaped the current bridge spawn behavior._
 
-The bridge spawns `claude -p` per Slack message. The orchestrator inside that spawn picks which tools to call to satisfy the user's request. This doc describes the rules and the constraints that forced them.
+_Updated 2026-05-11 by Codex after the Codex-first migration and app-server write case study._
+
+Current runtime:
+
+- Routine Slack chat and enterprise-source reads run through `codex exec --json`.
+- Permissioned connector/MCP writes run through `codex debug app-server send-message-v2` with `approval_policy="on-request"` and `approvals_reviewer="auto_review"`.
+- Claude Code and PA are historical fallback/auth context only; they are not the bridge's chat or brief reasoning backend.
+
+Best practice for new features: if a feature sends, drafts, posts, comments,
+updates, assigns, closes, shares, schedules, or otherwise writes through a Codex
+connector or MCP tool, implement it with
+`agent_me.codex_app_server.run_codex_app_server()`. Use `codex exec --json` only
+for reads, synthesis, and local read-only refreshes. This rule came from the
+Outlook draft case study: headless `codex exec` returned
+`user cancelled MCP tool call`, while the same connector write succeeded via
+app-server auto-review.
+
+The legacy Claude/PA routing notes below are retained as historical context for
+why the project moved away from the old hybrid runtime.
 
 ## Two tiers of read access
 
@@ -154,9 +172,9 @@ MCP server "pa-cli": STDIO connection dropped after 0s uptime
 
 ## Operator-facing summary
 
-1. Routine reads (email, Slack mentions, meetings, Jira lookups, etc.) require zero approval prompts.
-2. Asking for PA explicitly (any prompt with `pa` or `bash`) unlocks `pa -p` but each call surfaces one Slack approval button — that's NVIDIA policy, not a bridge bug.
-3. Write actions (Slack send, Jira create/update, file edits) still gate through Slack; click 🔓 once per thread to auto-approve the rest of that thread.
+1. Routine reads (email, Slack mentions, meetings, Jira lookups, etc.) use Codex app/MCP tools through `codex exec --json`.
+2. Permissioned connector/MCP writes use Codex app-server auto-review, not generic headless exec.
+3. Important brief mirrors to `thaphan@nvidia.com` count as connector writes and use the app-server path.
 4. Long replies are split into 2.5 KB parts, posted as numbered thread replies.
-5. Progress shows live in the placeholder: `🔄 3/4 tool calls done`.
-6. Teams chat coverage is the known weak spot — `claude_ai_Microsoft_365__chat_message_search` lags a few hours behind real-time. If you need recent Teams content, ask for `pa` explicitly.
+5. Progress shows live in the placeholder for `codex exec` read/chat turns: `🔄 3/4 tool calls done`.
+6. PA/Claude hybrid routing above is historical context, not the default runtime.

@@ -43,7 +43,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
    uv run agent-me-bridge
    ```
    From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`, `/brief`.
-   Briefs invoked from a thread post each platform as a separate message in that thread and mirror a concise digest to `thaphan@nvidia.com` through the Codex Slack connector, not the personal-workspace bot token.
+   Briefs invoked from a thread post each platform as a separate message in that thread and mirror a concise digest to `thaphan@nvidia.com` through the Codex Slack connector, not the personal-workspace bot token. Reads use `codex exec`; permissioned connector/MCP writes use Codex app-server auto-review.
 6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief`, `/model-free-draft` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
 7. **(Optional) Deploy on a 24/7 host**: `design/deploy-on-host.md` is the end-to-end playbook (Colossus / any internal-NVIDIA systemd Linux box). Auto-deploys on every git push (60s polling watcher → systemctl restart bridge + dashboard).
 8. **(Optional) Web dashboard at [`https://agent-me.nvidia.com`](https://agent-me.nvidia.com)**: Phase 4 dashboard, **NVIDIA-themed (black + `#76b900` brand green)**, reads bridge state, surfaces pending tasks across 9 platform groups, runs on-demand brief refreshes, and streams live logs.
@@ -64,7 +64,9 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 └───────────────────────────────┬───────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────┐
-│  Orchestrator (Codex, headless `codex exec`)              │
+│  Orchestrator (Codex)                                     │
+│  - Reads/chat → headless `codex exec --json`              │
+│  - Connector/MCP writes → app-server auto-review          │
 │  - Route request → correct sub-agent                      │
 │  - Schedule daily/weekly cron jobs                        │
 │  - Memory & state (file-based, sync GitHub)               │

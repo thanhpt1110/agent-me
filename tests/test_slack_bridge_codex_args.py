@@ -20,6 +20,26 @@ def test_codex_args_skip_git_check_for_chat_cwd(monkeypatch, tmp_path) -> None:
     assert resumed_args.index("--skip-git-repo-check") < resumed_args.index("-m")
 
 
+def test_app_server_args_enable_auto_review(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    args = app._codex_app_server_args("send a test Slack DM")
+
+    assert args[:5] == [
+        app.CODEX_BIN,
+        "-c",
+        'approval_policy="on-request"',
+        "-c",
+        'approvals_reviewer="auto_review"',
+    ]
+    assert args[-4:] == ["debug", "app-server", "send-message-v2", "send a test Slack DM"]
+
+
 def test_model_free_email_request_detection(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
@@ -87,6 +107,40 @@ def test_outlook_write_request_detection(monkeypatch, tmp_path) -> None:
     assert app.looks_like_outlook_write_request("so" + "\u1ea1" + "n 1 email draft test codex")
     assert app.looks_like_outlook_write_request("create reply all draft for this email")
     assert not app.looks_like_outlook_write_request("read email about Model Free 2.0.4")
+
+
+def test_permissioned_connector_write_detection(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert app.looks_like_permissioned_connector_write_request(
+        "send a slack message to thaphan@nvidia.com"
+    )
+    assert app.looks_like_permissioned_connector_write_request(
+        "create Jira issue for the failing daily brief"
+    )
+    assert app.looks_like_permissioned_connector_write_request(
+        "comment on NVBugs 6156776 that testing started"
+    )
+    assert app.looks_like_permissioned_connector_write_request(
+        "share this Google Drive doc with Thanh"
+    )
+    assert app.looks_like_permissioned_connector_write_request(
+        "so" + "\u1ea1" + "n reply all email cho toi"
+    )
+    assert not app.looks_like_permissioned_connector_write_request(
+        "read Slack messages mentioning me"
+    )
+    assert not app.looks_like_permissioned_connector_write_request(
+        "fetch email related to Model Free 2.0.4"
+    )
+    assert not app.looks_like_permissioned_connector_write_request(
+        "update me about today's meetings"
+    )
 
 
 def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:
