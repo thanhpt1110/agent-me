@@ -125,7 +125,7 @@ def test_refresh_all_returns_seven_jobs(client: TestClient, monkeypatch,
     """The `/api/refresh/_all` endpoint should kick off one job per source.
 
     We patch `BriefRunner.start` so it returns immediately without
-    spawning a real `claude -p` subprocess; the test only verifies the
+    spawning a real `codex exec` subprocess; the test only verifies the
     endpoint shape + that all 7 sources are scheduled.
     """
     import uuid

@@ -1,14 +1,15 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Claude (Opus 4.7) — **Dashboard re-themed to NVIDIA palette** (`#76b900` brand green on pure black, sourced from `api.nth.nvidia.com/static/color-swatches.html`) + **new "Pending across platforms" expandable panel** on the Overview page with 9 platform groups (7 brief sources + Slack threads + Claude sessions, 30 mock items total, ready for Phase 5 real-source wiring). Live on `https://agent-me.nvidia.com`. Design doc: [`design/dashboard-pending-panel.md`](design/dashboard-pending-panel.md). Earlier in this session: **Orchestrator routing overhauled** (2-tier MCP/PA, streaming, anchor-reset prepend — see [`design/orchestrator-routing.md`](design/orchestrator-routing.md)). Phase 3 Colossus deploy: steps 1–5 done (16/17 MCPs ✓); steps 6–8 on the user._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete**. Benchmarked Codex app/MCP tools against PA CLI for Teams, Slack, Outlook Email, Google Drive, and NVBugs. Codex app tools can read Teams Graph chats/messages/search, Outlook Graph mail, Slack, and Google Drive directly; PA headless could read Teams/Outlook/GDrive but Slack was unauthenticated and NVBugs was not configured. Runtime decision: retire the PA/Claude hybrid path and run bridge + daily brief through `codex exec --json`. MaaS MCP auth uses Codex bearer-token env vars populated from the existing MaaS token store because `codex mcp login` reports native OAuth unsupported for MaaS HTTP servers. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md). Verified: compile, ruff, 71 tests, and idempotent Codex MCP setup._
 
 ## Phase
 
 **Phase 2a + brief fan-out + Slack session persistence live + Phase 4
-dashboard drafted (not deployed).** Bridge is Python+uv; daily-brief
-uses 7-subagent fan-out, ~39s wall-clock. Slack DM ↔ Claude Code
-session persistence shipped. Morning routine fires daily at 6am
-Vietnam time. **Phase 4 dashboard scaffold landed today (2026-05-10):**
+dashboard live + Codex-first runtime.** Bridge is Python+uv; daily-brief
+uses Codex CLI per-source fan-out. Slack DM ↔ Codex session
+persistence shipped (DB table name remains `claude_sessions` for
+compatibility). Morning routine fires daily at 6am Vietnam time.
+**Phase 4 dashboard scaffold landed 2026-05-10:**
 Starlette + Jinja2 + Alpine.js + Tailwind CDN; reads bridge SQLite
 read-only; on-demand brief refresh per source with single-flight
 locks; SSE log tail; bearer-token auth; **Tailscale Funnel chosen for
@@ -26,8 +27,8 @@ approval gate.
 | Runtime host | Brev cloud CPU instance (24/7) — Phase 3 |
 | Primary interface | Personal Slack workspace (Socket Mode bridge) |
 | Config repo | Personal GitHub, **public template** (`thanhpt1110/agent-me`) |
-| Default model | Claude Opus 4.7 (1M ctx) |
-| MCP backend | **Claude Code only** (PA hybrid tried and reverted) |
+| Default model | Codex via `codex exec` (`CODEX_MODEL`, default `gpt-5.5`) |
+| MCP backend | **Codex app/MCP tools**; PA/Claude runtime hybrid retired |
 | Git identity | `includeIf` per-host: github.com → personal, default → NVIDIA |
 | License | MIT |
 | Slack sandboxing | Review-by-default + per-thread auto-approve toggle (Phase 2b) |
@@ -42,10 +43,20 @@ approval gate.
 - [x] Project + scaffold + bypassPermissions
 - [x] **GitHub repo public template:** https://github.com/thanhpt1110/agent-me
 - [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, native slash commands (`/brief /mcp /reauth /version /whoami /help`), text-intercept slash, plain-text shortcuts (incl. `reset` / `clear` / `new`), Block Kit interactive buttons
-- [x] **MCP re-auth helper** (`uv run agent-me-reauth`) — pty + auto-open browser tabs, NVIDIA-SSO + ECI-OAuth flows
+- [x] **MCP re-auth helpers** — `uv run agent-me-reauth` refreshes the MaaS OAuth token store via the legacy pty + auto-open flow; `uv run agent-me-codex-reauth` is the Codex-facing wrapper for the same token store.
 - [x] **Daily-brief — fan-out v2 (2026-05-10)** — `uv run agent-me-brief --period day|week|month`. 7 subagents in parallel (jira / gitlab / confluence / nvbugs / slack / outlook / github), one root header + threaded reply per source, priority synthesis posted last. ~39s wall-clock vs prev ~60–230s.
-- [x] **Slack session persistence (2026-05-10)** — `claude_sessions` table maps `thread_ts → session_id`; bridge runs `claude -p --output-format json --resume <id>`. Cache hits compound across turns. `/reset` (+ plain shortcuts) clears a thread's session. `SessionExpired` exception falls back to fresh session if id is stale. See `design/session-persistence.md`.
+- [x] **Slack session persistence (2026-05-10; Codex-backed 2026-05-11)** — `claude_sessions` table maps `thread_ts → session_id` for historical compatibility; bridge now runs `codex exec --json` / `codex exec resume --json <id>`. Cache hits compound across turns. `/reset` (+ plain shortcuts) clears a thread's session.
 - [x] **MCPs registered (17 total)** — Slack + Outlook added 2026-05-10 at user scope (project-local scope confused the OAuth helper; learnt the hard way).
+- [x] **Codex-first runtime migration (2026-05-11)** — Slack bridge and
+  daily brief now call `codex exec --json` instead of `claude -p` or
+  PA shellouts. Bridge parses Codex JSONL events, resumes Codex
+  sessions per Slack thread, streams tool progress, and injects MaaS
+  bearer-token env vars at spawn time. Daily brief uses the same
+  Codex JSONL path for each source. `scripts/setup-codex-mcps.sh`
+  registers all 17 MaaS MCPs in Codex, with HTTP servers configured
+  as bearer-token env-var MCPs. `uv run agent-me-codex-reauth`
+  refreshes the existing MaaS OAuth token store; Codex consumes those
+  tokens through `agent_me.mcp_tokens`.
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites
@@ -121,9 +132,9 @@ approval gate.
   column). Phase 2b allow-list adds Bash/Write/Edit/NotebookEdit + all
   MCP writes; the hook gates each call individually so they never
   reach the tool runtime without operator consent. **Off by default**
-  — set `APPROVAL_GATE=1` in `configs/.env` to enable; `CLAUDE_TIMEOUT_S`
-  auto-bumps from 5 → 12 min when gate on so the subprocess doesn't
-  die mid-approval. 18 unit tests in `tests/test_approvals.py` (DB
+  — set `APPROVAL_GATE=1` in `configs/.env` to enable; runtime
+  timeout is now `AGENT_TIMEOUT_S` / `CODEX_TIMEOUT_S`. 18 unit
+  tests in `tests/test_approvals.py` (DB
   CRUD + file-system semaphore + Slack-block rendering + approval
   loop dispatch). Bridge unit unaffected when `APPROVAL_GATE=0`.
 - [x] **Dashboard 3-log viewer (2026-05-10 night)** —
@@ -136,9 +147,8 @@ approval gate.
   2. **Slack** — wraps `StateReader.tail_logs(BRIDGE_LOG)` and
      filters to a `SLACK_INTERACTION_EVENTS` allowlist (incl. the
      new `approval_*` events). Streams to `/api/sse/logs/slack`.
-  3. **Session** — `~/.claude/projects/<sanitized-cwd>/<sid>.jsonl`
-     resolved via glob fallback (handles Claude Code sanitizer
-     drift across versions). Partial-line-safe tail (accumulates
+  3. **Session** — Codex JSONL traces under `~/.codex/sessions/**/*.jsonl`
+     resolved by session id. Partial-line-safe tail (accumulates
      bytes, only emits on `\n` boundaries). Streams to
      `/api/sse/logs/session?session_id=<id>`. UI has a session
      dropdown populated from `recent_threads()`.
@@ -152,7 +162,7 @@ approval gate.
   expandable platform-group cards — the 7 brief sources (jira,
   gitlab, confluence, nvbugs, slack, outlook, github) **plus two
   new groups**: `threads` (operator-handled Slack threads, linking
-  into `/logs?thread_ts=...`) and `sessions` (Claude Code sessions
+  into `/logs?thread_ts=...`) and `sessions` (Codex sessions
   the orchestrator has resumed, linking into `/logs?session_id=...`).
   Each card has icon + label + pending-count badge + ↗ (open
   upstream) + ± expand toggle; expanded body lists subtask items
@@ -206,6 +216,33 @@ approval gate.
 
 ## Recent decisions
 
+- **2026-05-11 — Codex-first migration; PA/Claude hybrid retired.**
+  Benchmarked current Codex connector/app tools against `pa` on this
+  host. Codex successfully read Teams Graph profile/chats/messages
+  and search, Outlook Graph profile/mail, Slack DM history, and
+  Google Drive recent/fetch. PA headless also reached Teams,
+  Outlook, and GDrive, but Slack was not connected and NVBugs/ECI
+  credentials were not configured. Codex has no first-party NVBugs
+  app tool, so NVBugs stays on the MaaS MCP path. Runtime decision:
+  bridge + daily brief run on `codex exec --json`; prompts explicitly
+  tell Codex to use app/MCP tools directly and avoid shell/PA/Claude
+  for enterprise reads. `claude_sessions` remains the DB table name
+  only for migration compatibility; values are Codex thread IDs now.
+- **2026-05-11 — Codex MaaS auth bridge.** `codex mcp login
+  maas-nvbugs` returned "No authorization support detected", so
+  native Codex OAuth is not available for NVIDIA MaaS HTTP MCPs in
+  `codex-cli 0.130.0`. New approach: register every MaaS HTTP server
+  with `--bearer-token-env-var AGENT_ME_MCP_TOKEN_<SERVER>` and load
+  access tokens from `~/.claude/.credentials.json` / `.mcpOAuth` at
+  runtime via `agent_me.mcp_tokens.codex_mcp_token_env()`. The
+  `agent-me-codex-reauth` command now delegates to the proven MaaS
+  OAuth helper to refresh that token store. Verified
+  `codex mcp list` shows 16 HTTP MaaS servers configured as
+  `Auth: Bearer token` plus the stdio Playwright server, and setup is
+  idempotent. Current local token store has 15 usable access tokens:
+  `maas-nvbugs` has no access/refresh token in the copied credentials,
+  and `claude mcp list` also flags `maas-gitlab` + `maas-nvbugs` for
+  reauth before full MaaS coverage is healthy.
 - **2026-05-10 — Brief fan-out.** Single-prompt → 7-subagent fan-out
   in `daily_brief.py`. Each subagent scoped to one MCP server's
   tool wildcard, posts one threaded reply when done. Cuts wall-clock
@@ -275,10 +312,8 @@ approval gate.
   removed from allow-list. `pa-cli` MCP unregistered
   (`claude mcp remove pa-cli -s user`). The pre-existing `pa` MCP
   entry left in place (same binary, same bug; nothing uses it).
-  Decision row in this table still reads "Claude Code only" — that
-  remains the working state for MCP. PA participation is now a
-  Bash-shellout pattern documented in user memory
-  (`hybrid_pa_claude_workflow.md`).
+  This was superseded later on 2026-05-11 by the Codex-first
+  migration. PA is no longer a runtime fallback.
 
 - **2026-05-11 evening — Orchestrator routing overhaul.** End-to-end
   rewrite of how the bridge invokes `claude -p` to make the Slack
@@ -423,9 +458,10 @@ approval gate.
   (cleanest) vs stream-parse (invasive). Investigate hook-blocking
   semantics first.
 - **Brev region** — default us-west-2 unless user prefers otherwise.
-- **NVBugs MCP auth** — periodically goes 401; requires manual
-  `claude mcp` reauth. Not blocking briefs (other sources keep
-  working) but nags morning routine.
+- **NVBugs MCP auth** — no Codex first-party app exists, so NVBugs
+  remains MaaS MCP-backed. If the copied token store goes stale,
+  run `uv run agent-me-codex-reauth` on a machine with browser
+  access, then verify `maas-nvbugs` through Codex.
 
 ## Phase 4 — locked decisions
 
@@ -444,7 +480,7 @@ approval gate.
 - Reads the bridge's SQLite (URI `mode=ro`) + tails
   `bridge.log`/`brief.log` over SSE. Never writes to bridge state.
 - On-demand refresh per source: reuses `agent_me.scripts.daily_brief`
-  fetcher/parser via in-process import (single `claude -p`
+  fetcher/parser via in-process import (single `codex exec --json`
   subprocess per source, single-flight lock); does **not** post to
   Slack — bridge's 6am cron remains the only Slack-posting path.
 - Auth model is layered: **VPN at the network layer** is default
@@ -454,7 +490,7 @@ approval gate.
   request via `X-Dashboard-Auth` (`trust-network` | `cookie` |
   `bearer` | `disabled`).
 - The Slack bridge is **not modified** by Phase 4 — bridge keeps its
-  SQLite write connection, its `claude -p` cwd
+  SQLite write connection, its Codex working directory
   (`~/.local/state/agent-me/chat-cwd`), its Socket Mode WebSocket.
   Dashboard is purely additive. One systemd `--user` unit always
   installed (dashboard) + one opt-in (Tailscale funnel); bridge unit

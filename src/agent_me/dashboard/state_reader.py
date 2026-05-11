@@ -4,8 +4,8 @@ Three responsibilities:
 
 1. **SQLite RO**: open `state.db` in read-only mode (URI form
    `file:...?mode=ro`) and expose snapshot queries for the
-   `threads`, `messages`, `pending_approvals`, `claude_sessions`
-   tables. Each call uses a fresh connection — no long-running
+   `threads`, `messages`, `pending_approvals`, and legacy-named
+   `claude_sessions` tables. Each call uses a fresh connection — no long-running
    transactions, no shared writers.
 
 2. **Brief cache**: parse the on-disk dashboard cache files at
@@ -442,7 +442,7 @@ def _scrape_brief_log_for_source(source: str) -> list[dict[str, Any]]:
     return []
 
 
-# ── MCP health (synchronous shell-out to `claude mcp list`) ─────────────
+# ── MCP health (synchronous shell-out to `codex mcp list`) ──────────────
 
 
 _MCP_LINE_RE = re.compile(
@@ -451,12 +451,14 @@ _MCP_LINE_RE = re.compile(
 
 
 async def check_mcp_health(timeout_s: float = 15.0) -> tuple[list[McpStatus], int]:
-    """Run `claude mcp list` and parse it. Returns (servers, checked_at_ms).
+    """Run `codex mcp list` and parse it. Returns (servers, checked_at_ms).
 
     Cached at the call site; this function is the raw probe.
     """
+    codex_bin = os.environ.get("CODEX_BIN", "codex")
     proc = await asyncio.create_subprocess_exec(
-        "claude", "mcp", "list",
+        codex_bin, "mcp", "list",
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )

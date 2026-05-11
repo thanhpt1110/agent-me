@@ -33,6 +33,7 @@ here — just `mcp__<server>__authenticate`, which returns auth URLs.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
 import platform
@@ -236,7 +237,7 @@ def main() -> int:
     CLIENT_ID_RE = re.compile(r"client_id=([A-Za-z0-9._\-]+)")
     buffer = b""
     shutting_down = False
-    debug_fp = open(debug_bytes_path, "wb") if debug_bytes_path else None
+    debug_fp = open(debug_bytes_path, "wb") if debug_bytes_path else None  # noqa: SIM115
     if debug_fp:
         print(f"[helper] dumping raw pty bytes to {debug_bytes_path}")
 
@@ -246,15 +247,11 @@ def main() -> int:
             return
         shutting_down = True
         print(f"\n[helper] signal {signum} — sending /exit...")
-        try:
+        with contextlib.suppress(OSError):
             os.write(fd, b"/exit\r")
-        except OSError:
-            pass
         time.sleep(1.5)
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

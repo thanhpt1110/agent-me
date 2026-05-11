@@ -1,4 +1,4 @@
-"""agent-me brief — fan-out subagents per source, post root + threaded replies.
+"""agent-me brief — fan-out Codex turns per source, post root + threaded replies.
 
 Run with:
     uv run agent-me-brief                # daily (today's outlook)
@@ -12,12 +12,12 @@ Architecture (2026-05-10 refactor):
     Python orchestrator
       ├── post root header DM ("📅 Daily Brief — running…")
       └── asyncio.gather (7 subagents in parallel):
-            ├── jira       → claude -p (only mcp__maas-jira__*)
-            ├── gitlab     → claude -p (only mcp__maas-gitlab__*)
-            ├── confluence → claude -p (only mcp__maas-confluence__*)
-            ├── nvbugs     → claude -p (only mcp__maas-nvbugs__*)
-            ├── slack      → claude -p (only mcp__maas-slack__*)
-            ├── outlook    → claude -p (only mcp__maas-outlook__*)
+            ├── jira       → codex exec (maas-jira)
+            ├── gitlab     → codex exec (maas-gitlab)
+            ├── confluence → codex exec (maas-confluence)
+            ├── nvbugs     → codex exec (maas-nvbugs)
+            ├── slack      → codex exec (Slack app tools)
+            ├── outlook    → codex exec (Outlook Email app tools)
             └── github     → `gh` CLI directly
           Each subagent posts ONE threaded reply when done.
       └── final priority synthesis posted as last threaded reply.
@@ -56,6 +56,8 @@ import structlog
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 
+from agent_me.mcp_tokens import codex_mcp_token_env
+
 # ── Setup ────────────────────────────────────────────────────────────────
 
 REPO_DIR = Path(os.environ.get("AGENT_ME_REPO_DIR") or Path(__file__).resolve().parents[3])
@@ -74,7 +76,9 @@ structlog.configure(
 log = structlog.get_logger("daily-brief")
 
 USER = os.environ.get("AGENT_ME_USER", "thaphan")  # NVIDIA shortname
-CLAUDE_TIMEOUT_S = 240.0
+AGENT_TIMEOUT_S = float(os.environ.get("AGENT_TIMEOUT_S", os.environ.get("CODEX_TIMEOUT_S", 240.0)))
+CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 PRIORITY_WINDOW_DAYS = 7
 ITEMS_PER_GROUP = 5
 SLACK_SECTION_MAX_CHARS = 2900   # Slack hard limit is 3000; keep buffer.
@@ -159,7 +163,7 @@ def fmt_age(s: str | None) -> str:
 
 def md_link(text: str, url: str) -> str:
     if url:
-        safe_text = text.replace("|", "·").replace(">", "›")[:120]
+        safe_text = text.replace("|", "·").replace(">", "-")[:120]
         return f"<{url}|{safe_text}>"
     return text[:120]
 
@@ -296,9 +300,9 @@ class SourceSpec:
     id: str             # "jira"
     label: str          # "Jira"
     icon: str           # "📋"
-    fetcher: Callable[["SourceSpec", int], Awaitable[dict]]
-    parser: Callable[[dict, "SourceSpec"], list[BriefItem]]
-    allowed_tools: str = ""   # for claude_fetcher (server-level wildcard ok)
+    fetcher: Callable[[SourceSpec, int], Awaitable[dict]]
+    parser: Callable[[dict, SourceSpec], list[BriefItem]]
+    allowed_tools: str = ""   # legacy hint retained for source logging
     prompt_template: str = ""  # f-string with {user} and {period_days}
 
 
@@ -307,7 +311,7 @@ JIRA_PROMPT = """Return ONLY a JSON object: {{"items": [...]}}. No prose, no mar
 User: `{user}` (NVIDIA). Find every Jira issue where this user is involved
 (assignee, reporter, watcher, mentioned in text) AND statusCategory != Done.
 
-Tool: mcp__maas-jira__jira_search with JQL:
+Use the registered Codex MCP server `maas-jira`; call its Jira search tool with JQL:
   (assignee = currentUser() OR reporter = currentUser() OR
    watcher = currentUser() OR text ~ "{user}")
   AND statusCategory != Done
@@ -331,7 +335,7 @@ GITLAB_PROMPT = """Return ONLY a JSON object: {{"mrs": [...], "issues": [...]}}.
 
 User: `{user}` (NVIDIA). Find GitLab MRs + issues where I'm involved AND state=opened.
 
-Tools (only call these):
+Use the registered Codex MCP server `maas-gitlab`. Tools to call:
 
 1. mcp__maas-gitlab__gitlab_list_merge_requests — call THREE TIMES, merge results
    deduping by (project_id, iid):
@@ -361,7 +365,7 @@ CONFLUENCE_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 User: `{user}` (NVIDIA). Find Confluence pages updated in the last
 {period_days} day(s) where I'm mentioned.
 
-Tool: mcp__maas-confluence__confluence_search.
+Use the registered Codex MCP server `maas-confluence`; call its Confluence search tool.
 
 Try query: `"{user}" updated >= -{period_days}d` (or the closest equivalent
 the tool accepts), top 15.
@@ -376,7 +380,8 @@ If errors, items: []. JSON ONLY."""
 NVBUGS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 User: `{user}`. Find NVBugs assigned to me, status NOT in (Closed, Resolved,
-WontFix, Duplicate). Tool: mcp__maas-nvbugs__nvbugs_search_v2, top 30.
+WontFix, Duplicate). Use the registered Codex MCP server `maas-nvbugs`;
+call its NVBugs search v2 tool, top 30.
 
 Each item:
   {{"id": "...", "title": "...", "priority": "P0|P1|P2|P3",
@@ -391,8 +396,9 @@ If the tool errors (auth or otherwise), items: []. JSON ONLY."""
 SLACK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 You are READ-ONLY. Do NOT call any tool that posts, sends, replies,
-deletes, or modifies messages. Use ONLY search/list/get tools on the
-maas-slack MCP server.
+deletes, or modifies messages. Use Codex Slack app read tools directly:
+`slack_slack_search_public_and_private`, `slack_slack_read_channel`, and
+`slack_slack_read_thread`.
 
 User: `{user}` (NVIDIA). Find recent Slack messages in the last
 {period_days} day(s) where someone needs my attention:
@@ -415,8 +421,9 @@ Top 25. If errors, items: []. JSON ONLY."""
 OUTLOOK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 You are READ-ONLY. Do NOT call any tool that sends, replies, drafts,
-deletes, or modifies emails or calendar events. Use ONLY search/list/get
-tools on the maas-outlook MCP server.
+deletes, or modifies emails or calendar events. Use Codex Outlook Email
+app read tools directly: `microsoft outlook email_list_messages`,
+`microsoft outlook email_search_messages`, and fetch only if needed.
 
 User: `{user}@nvidia.com`. Find unread emails in the last {period_days}
 day(s) where I'm in to/cc OR sender expects a reply (not a noreply / list /
@@ -437,29 +444,62 @@ Top 20. If errors, items: []. JSON ONLY."""
 
 # ── Fetchers (one per source kind) ────────────────────────────────────
 
-async def _run_claude(prompt: str, allowed_tools: str, timeout_s: float) -> str:
+BRIEF_SYSTEM_PROMPT = """\
+Return only the JSON object requested by the source prompt. Use Codex app tools
+and registered MaaS MCP servers directly. Do not run shell commands, do not
+read local skill files, and do not call PA or Claude CLI for enterprise-source
+reads. If a source is unavailable, return the requested empty JSON shape.
+"""
+
+
+async def _run_codex(prompt: str, timeout_s: float) -> str:
     args = [
-        "claude", "-p", prompt,
-        "--model", os.environ.get("CLAUDE_MODEL", "claude-opus-4-7"),
-        "--dangerously-skip-permissions",
-        "--allowedTools", allowed_tools,
+        CODEX_BIN, "exec",
+        "--json",
+        "--ephemeral",
+        "--sandbox", "read-only",
+        "--cd", str(REPO_DIR),
+        "-m", MODEL,
+        f"{BRIEF_SYSTEM_PROMPT}\n\n{prompt}",
     ]
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=str(REPO_DIR),
+        env={**os.environ, **codex_mcp_token_env()},
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
+    except TimeoutError as exc:
         proc.kill()
         await proc.wait()
-        raise RuntimeError(f"claude timed out after {timeout_s}s")
+        raise RuntimeError(f"codex timed out after {timeout_s}s") from exc
     if proc.returncode != 0:
         raise RuntimeError(
-            f"claude exited {proc.returncode}: {stderr.decode(errors='replace')[:400]}"
+            f"codex exited {proc.returncode}: {stderr.decode(errors='replace')[:400]}"
         )
-    return stdout.decode(errors="replace").strip()
+    final_text = ""
+    nonfatal_errors: list[str] = []
+    for line in stdout.decode(errors="replace").splitlines():
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if evt.get("type") != "item.completed":
+            continue
+        item = evt.get("item") or {}
+        if item.get("type") == "agent_message":
+            final_text = item.get("text") or final_text
+        elif item.get("type") == "error":
+            msg = str(item.get("message") or "")
+            if "approval_policy" not in msg:
+                nonfatal_errors.append(msg[:200])
+    if final_text:
+        return final_text.strip()
+    if nonfatal_errors:
+        raise RuntimeError("; ".join(nonfatal_errors))
+    return ""
 
 
 def _strip_to_json(text: str) -> dict:
@@ -473,16 +513,16 @@ def _strip_to_json(text: str) -> dict:
     return json.loads(t)
 
 
-async def claude_fetcher(spec: SourceSpec, period_days: int) -> dict:
+async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
     """Generic fetcher for an MCP-backed SourceSpec.
 
-    Spawns one `claude -p` subprocess scoped to the source's allowed_tools,
-    rendering the prompt with {user, period_days}, returning the parsed JSON.
+    Spawns one `codex exec` subprocess, rendering the prompt with
+    {user, period_days}, returning the parsed JSON.
     """
     prompt = spec.prompt_template.format(user=USER, period_days=period_days)
     started = time.time()
-    log.info("subagent_start", source=spec.id, allowed=spec.allowed_tools)
-    raw = await _run_claude(prompt, spec.allowed_tools, CLAUDE_TIMEOUT_S)
+    log.info("subagent_start", source=spec.id, backend="codex", hint=spec.allowed_tools)
+    raw = await _run_codex(prompt, AGENT_TIMEOUT_S)
     elapsed = int(time.time() - started)
     try:
         data = _strip_to_json(raw)
@@ -580,28 +620,28 @@ def parse_github(data: dict, _spec: SourceSpec) -> list[BriefItem]:
 
 SOURCES: list[SourceSpec] = [
     SourceSpec(id="jira", label="Jira", icon="📋",
-               fetcher=claude_fetcher, parser=parse_jira,
-               allowed_tools="mcp__maas-jira__*",
+               fetcher=codex_fetcher, parser=parse_jira,
+               allowed_tools="maas-jira",
                prompt_template=JIRA_PROMPT),
     SourceSpec(id="gitlab", label="GitLab", icon="🦊",
-               fetcher=claude_fetcher, parser=parse_gitlab,
-               allowed_tools="mcp__maas-gitlab__*",
+               fetcher=codex_fetcher, parser=parse_gitlab,
+               allowed_tools="maas-gitlab",
                prompt_template=GITLAB_PROMPT),
     SourceSpec(id="confluence", label="Confluence", icon="📚",
-               fetcher=claude_fetcher, parser=parse_confluence,
-               allowed_tools="mcp__maas-confluence__*",
+               fetcher=codex_fetcher, parser=parse_confluence,
+               allowed_tools="maas-confluence",
                prompt_template=CONFLUENCE_PROMPT),
     SourceSpec(id="nvbugs", label="NVBugs", icon="🐛",
-               fetcher=claude_fetcher, parser=parse_nvbugs,
-               allowed_tools="mcp__maas-nvbugs__*",
+               fetcher=codex_fetcher, parser=parse_nvbugs,
+               allowed_tools="maas-nvbugs",
                prompt_template=NVBUGS_PROMPT),
     SourceSpec(id="slack", label="Slack", icon="💬",
-               fetcher=claude_fetcher, parser=parse_slack,
-               allowed_tools="mcp__maas-slack__*",
+               fetcher=codex_fetcher, parser=parse_slack,
+               allowed_tools="codex-slack-app",
                prompt_template=SLACK_PROMPT),
     SourceSpec(id="outlook", label="Outlook", icon="📧",
-               fetcher=claude_fetcher, parser=parse_outlook,
-               allowed_tools="mcp__maas-outlook__*",
+               fetcher=codex_fetcher, parser=parse_outlook,
+               allowed_tools="codex-outlook-email-app",
                prompt_template=OUTLOOK_PROMPT),
     SourceSpec(id="github", label="GitHub", icon="🐱",
                fetcher=github_fetcher, parser=parse_github),
@@ -706,7 +746,7 @@ def build_source_blocks(result: SubagentResult) -> list[dict]:
         proposed = "\n".join(rows + block)
         if len(proposed) > SLACK_SECTION_MAX_CHARS and len(rows) > 2:
             flush()
-            rows = [f"{spec.icon} *{spec.label}* (cont.)", ""] + block
+            rows = [f"{spec.icon} *{spec.label}* (cont.)", "", *block]
         else:
             rows.extend(block)
 

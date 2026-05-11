@@ -122,9 +122,11 @@ def seeded_db(temp_state_dir: Path) -> Path:
 def with_token(monkeypatch: pytest.MonkeyPatch) -> str:
     token = "test-token-abc123"
     monkeypatch.setenv("DASHBOARD_TOKEN", token)
+    monkeypatch.delenv("DASHBOARD_TRUST_NETWORK", raising=False)
     return token
 
 
 @pytest.fixture
 def without_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("DASHBOARD_TRUST_NETWORK", raising=False)

@@ -14,7 +14,7 @@ Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous 
 
 ## Quickstart for forkers
 
-Prerequisites: `claude` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Python 3.12+, Node (`claude` itself + the playwright MCP).
+Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Python 3.12+, Node (for the Playwright MCP).
 
 1. **Use this template** on GitHub → create your own copy.
 2. **Clone & bootstrap**:
@@ -23,14 +23,14 @@ Prerequisites: `claude` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, P
    cd agent-me
    ./scripts/bootstrap.sh
    ```
-   Runs `uv sync`, prepares `configs/.env`, and registers all 17 MaaS MCP servers idempotently (Jira, GitLab, Confluence, NVBugs, Slack, Outlook, GDrive, OneDrive, SharePoint, Glean, Jama, IPPSEC, MySQL, Nsight-CUDA, NVKS-Prometheus, PagerDuty, Playwright). See `design/setup-on-fresh-host.md` for the long version (incl. Brev specifics).
+   Runs `uv sync`, prepares `configs/.env`, and registers all 17 MaaS MCP servers with Codex idempotently (Jira, GitLab, Confluence, NVBugs, Slack, Outlook, GDrive, OneDrive, SharePoint, Glean, Jama, IPPSEC, MySQL, Nsight-CUDA, NVKS-Prometheus, PagerDuty, Playwright). See `design/setup-on-fresh-host.md` for the long version (incl. Brev specifics).
 3. **Three interactive steps** the bootstrap script reminds you to do (browser required):
-   - `claude /login` — one-time per machine. (Or `export ANTHROPIC_API_KEY=...` for headless deploys.)
-   - `uv run agent-me-reauth` — opens NVIDIA-SSO tabs for each MCP. Tokens last ~24h.
+   - `codex login` — one-time per machine.
+   - `uv run agent-me-codex-reauth` — refreshes the MaaS OAuth token store used by Codex bearer-token MCPs and opens/prints NVIDIA-SSO URLs where needed.
    - Fill `configs/.env` with Slack tokens (template = `configs/.env.example`). Slack app walkthrough: `design/slack-app-setup.md`.
 4. **Verify**:
    ```bash
-   claude mcp list                            # all 17 should be ✓ Connected
+   codex mcp list                             # all 17 MaaS MCPs should be registered
    uv run agent-me-brief --period day --dry-run
    ```
 5. **Run the bridge**:
@@ -41,10 +41,10 @@ Prerequisites: `claude` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, P
 6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
 7. **(Optional) Deploy on a 24/7 host**: `design/deploy-on-host.md` is the end-to-end playbook (Colossus / any internal-NVIDIA systemd Linux box). Auto-deploys on every git push (60s polling watcher → systemctl restart bridge + dashboard).
 8. **(Optional) Web dashboard at [`https://agent-me.nvidia.com`](https://agent-me.nvidia.com)**: Phase 4 dashboard, **NVIDIA-themed (black + `#76b900` brand green)**, reads bridge state, surfaces pending tasks across 9 platform groups, runs on-demand brief refreshes, and streams live logs.
-   - **Overview**: stats row (Threads 24h · Claude sessions · Pending approvals · **Pending across all platforms**), then an expandable card per platform group (Jira / GitLab / Confluence / NVBugs / Slack / Outlook / GitHub + Slack threads + Claude sessions). Each card shows pending count, expand to see deep-linked subtasks with priority / due / age. Pending items are **mock data** today (clearly labelled "mock — Phase 5 real data"); design at `design/dashboard-pending-panel.md`.
+   - **Overview**: stats row (Threads 24h · Codex sessions · Pending approvals · **Pending across all platforms**), then an expandable card per platform group (Jira / GitLab / Confluence / NVBugs / Slack / Outlook / GitHub + Slack threads + Codex sessions). Each card shows pending count, expand to see deep-linked subtasks with priority / due / age. Pending items are **mock data** today (clearly labelled "mock — Phase 5 real data"); design at `design/dashboard-pending-panel.md`.
    - **Briefs by source**: 7 source cards, click-through to drill in or trigger a single-source brief refresh; SSE-streamed progress badges; "Refresh all" fan-out.
-   - **Ops**: bridge stats, MCP health probe (`claude mcp list` parsed), recent brief runs, recent Slack threads, live `bridge.log` + `brief.log` tail.
-   - **Logs**: 3-tab live SSE viewer — watcher journal / filtered Slack-interaction events / per-session Claude trace.
+   - **Ops**: bridge stats, MCP health probe (`codex mcp list` parsed), recent brief runs, recent Slack threads, live `bridge.log` + `brief.log` tail.
+   - **Logs**: 3-tab live SSE viewer — watcher journal / filtered Slack-interaction events / per-session Codex trace.
    - **Two-host setup**:
      - **Backend** runs alongside the bridge on the same host as step 7 — `./scripts/install-dashboard.sh` from the repo root. See `design/deploy-on-host.md` § Step 9.
      - **Reverse proxy** (`https://agent-me.nvidia.com`, NVIDIA-VPN-gated) — handed to whoever operates the proxy server. Self-contained playbook in `design/deploy-proxy-on-host.md`; nginx/caddy/traefik snippets in `design/reverse-proxy-config.md`.
@@ -58,7 +58,7 @@ Prerequisites: `claude` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, P
 └───────────────────────────────┬───────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────┐
-│  Orchestrator (Claude Opus 4.7, headless `claude -p`)     │
+│  Orchestrator (Codex, headless `codex exec`)              │
 │  - Route request → đúng sub-agent                         │
 │  - Schedule jobs (cron) cho daily/weekly                  │
 │  - Memory & state (file-based, sync GitHub)               │

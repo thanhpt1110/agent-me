@@ -37,8 +37,10 @@ dev = [
 # Console scripts — run via `uv run <name>` after `uv sync`.
 agent-me-bridge    = "agent_me.slack_bridge.app:main"
 agent-me-reauth    = "agent_me.scripts.reauth_mcps:main"
+agent-me-codex-reauth = "agent_me.scripts.reauth_codex_mcps:main"
 agent-me-brief     = "agent_me.scripts.daily_brief:main"
 agent-me-dashboard = "agent_me.dashboard.app:main"
+agent-me-parallel-queue = "agent_me.parallel_queue:main"
 
 [build-system]
 requires = ["hatchling"]

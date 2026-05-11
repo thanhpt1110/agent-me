@@ -86,7 +86,7 @@ def _jira_group() -> PendingGroup:
         ),
         PendingItem(
             item_id="IPP-4498",
-            title="RFC: hybrid PA + Claude routing — sign-off",
+            title="RFC: Codex-first routing — sign-off",
             url="https://jirasw.nvidia.com/browse/IPP-4498",
             kind="issue",
             priority="P0",
@@ -184,7 +184,7 @@ def _confluence_group() -> PendingGroup:
         ),
         PendingItem(
             item_id="EC-9870",
-            title="Add hybrid PA/Claude routing diagram",
+            title="Add Codex app/MCP routing diagram",
             url="https://confluence.nvidia.com/x/EC9870",
             kind="page",
             priority="P2",
@@ -205,7 +205,7 @@ def _nvbugs_group() -> PendingGroup:
     items = [
         PendingItem(
             item_id="5104883",
-            title="claude-cli OAuth refresh races on slow disks",
+            title="Codex MCP OAuth refresh races on slow disks",
             url="https://nvbugs.nvidia.com/Bug/5104883",
             kind="bug",
             priority="P1",
@@ -417,7 +417,7 @@ def _sessions_group() -> PendingGroup:
     ]
     return PendingGroup(
         group_id="sessions",
-        label="Claude sessions",
+        label="Codex sessions",
         icon="🧠",
         pending_count=len(items),
         home_url="/logs",

@@ -10,19 +10,20 @@ What this owns:
 - Event handlers: DM messages and channel @mentions
 - Native slash commands: /mcp /version /whoami /help /reauth
 - Text-prefix slash commands (same set, intercepted from message body)
-- Spawning headless `claude` per query with read-only tool restrictions
+- Spawning headless `codex exec` per query with app/MCP read access
 - Hybrid streaming UX (placeholder → final via chat.update)
 - 6h periodic MCP-auth health probe + DM notification
 - Graceful shutdown on SIGINT/SIGTERM
 
-Phase 2b (deferred):
-- Real PreToolUse approval hook with Slack button gating
-- Token-by-token chat.update progress (currently single-shot at end)
+Phase 2b legacy:
+- Claude Code PreToolUse approval hook support remains in the repo, but the
+  default chat orchestrator is now Codex and does not use PA-via-Bash.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -33,10 +34,11 @@ import sqlite3
 import sys
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -44,9 +46,12 @@ from dotenv import load_dotenv
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
+from agent_me.mcp_tokens import codex_mcp_token_env
 from agent_me.slack_bridge import approvals
 
 # ── Repo dir resolution ──────────────────────────────────────────────────
+
+MCP_TOKEN_ENV_RE = re.compile(r"\bAGENT_ME_MCP_TOKEN_[A-Z0-9_]+\b")
 
 def resolve_repo_dir() -> Path:
     env = os.environ.get("AGENT_ME_REPO_DIR")
@@ -124,7 +129,8 @@ _shared_processors: list = [
 ]
 
 structlog.configure(
-    processors=_shared_processors + [
+    processors=[
+        *_shared_processors,
         structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ],
     logger_factory=structlog.stdlib.LoggerFactory(),
@@ -149,7 +155,7 @@ _file_fmt = structlog.stdlib.ProcessorFormatter(
 
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_console_fmt)
-# 10 MB × 5 files = ~50 MB cap; ~weeks of data at typical chat volume.
+# 10 MB x 5 files = ~50 MB cap; ~weeks of data at typical chat volume.
 _file_handler = RotatingFileHandler(_LOG_FILE, maxBytes=10_000_000, backupCount=5)
 _file_handler.setFormatter(_file_fmt)
 
@@ -298,13 +304,16 @@ async def insert_message(thread_ts: str, role: str, content: str, slack_ts: str 
         )
 
 
-# ── Claude Code session map (thread_ts → session_id) ───────────────────
+# ── Agent session map (thread_ts → session_id) ─────────────────────────
 #
-# Each Slack thread gets its own Claude Code session. First message in a
-# thread spawns a fresh session; subsequent messages resume it via
-# `claude -p --resume <session_id>`, so claude itself handles all
-# context/cache management. Session IDs persist in SQLite, so a bridge
-# restart doesn't drop conversational continuity.
+# Historical note: the SQLite table is still named `claude_sessions` for
+# backwards compatibility with deployed DBs and dashboard queries. New rows
+# store Codex thread IDs when the Codex backend is active.
+#
+# Each Slack thread gets its own agent session. First message in a thread
+# spawns a fresh session; subsequent messages resume it, so the CLI handles
+# context/cache management. Session IDs persist in SQLite, so a bridge restart
+# doesn't drop conversational continuity.
 
 async def get_session_id(thread_ts: str) -> str | None:
     async with DB_LOCK:
@@ -332,8 +341,8 @@ async def upsert_session(thread_ts: str, session_id: str) -> None:
 async def clear_session(thread_ts: str) -> str | None:
     """Forget the stored session for this thread. Returns the old id (or None)
     so the caller can log it. Does NOT touch the messages table — those are
-    just an audit trail; the actual conversational state lives on disk in
-    claude's own session store."""
+    just an audit trail; the actual conversational state lives in the
+    backend's session store."""
     async with DB_LOCK:
         row = db.execute(
             "SELECT session_id FROM claude_sessions WHERE thread_ts=?",
@@ -348,129 +357,43 @@ async def clear_session(thread_ts: str) -> str | None:
     return old_id
 
 
-# ── Tool restrictions: Phase 2a vs Phase 2b ─────────────────────────────
-#
-# Phase 2a (default until APPROVAL_GATE=1): blanket disallow of all
-# write / side-effect tools. Safe but the bot can't actually do anything
-# beyond reading.
-#
-# Phase 2b (APPROVAL_GATE=1): write tools are *allowed* but each call
-# triggers a PreToolUse hook that posts to Slack and waits for
-# approval before letting Claude execute. The hook matcher lives in
-# approvals.HOOK_MATCHER; Claude Code's CLI flags here just need to
-# stop pre-blocking those tools so the hook gets a chance to fire.
-
-PHASE_2A_ALLOWED_TOOLS = " ".join((
-    "Read", "Grep", "Glob", "WebFetch", "WebSearch",
-    "mcp__maas-confluence__*",
-    "mcp__maas-gdrive__*",
-    "mcp__maas-gitlab__*",
-    "mcp__maas-glean__*",
-    "mcp__maas-ippsec__*",
-    "mcp__maas-jama__*",
-    "mcp__maas-jira__*",
-    "mcp__maas-mysql__*",
-    "mcp__maas-nsight-cuda__*",
-    "mcp__maas-nvbugs__*",
-    "mcp__maas-onedrive__*",
-    "mcp__maas-sharepoint__*",
-))
-
-PHASE_2A_DISALLOWED_TOOLS = " ".join((
-    "Bash", "Write", "Edit", "NotebookEdit",
-    "mcp__maas-jira__jira_create_issue",
-    "mcp__maas-jira__jira_clone_issue",
-    "mcp__maas-jira__jira_update_issue",
-    "mcp__maas-jira__jira_transition_issue",
-    "mcp__maas-nvbugs__nvbugs_update_bug_v2",
-    "mcp__maas-nvbugs__nvbugs_update_bug",
-    "mcp__maas-ippsec__register_repo",
-    "mcp__maas-mysql__execute_sql",
-    "mcp__maas-gitlab__gitlab_coderabbit_ai_prompt",
-    "mcp__maas-gitlab__gitlab_greptile_ai_suggestions",
-))
-
-# Phase 2b allow-list = read tools + every MCP wildcard, including the
-# write actions that 2a blocked. The PreToolUse hook (approvals.py)
-# matches the same write tools and gates them via Slack buttons.
-PHASE_2B_ALLOWED_TOOLS = " ".join((
-    "Read", "Grep", "Glob", "WebFetch", "WebSearch",
-    "Write", "Edit", "NotebookEdit", "Bash",
-    "mcp__maas-confluence__*",
-    "mcp__maas-gdrive__*",
-    "mcp__maas-gitlab__*",
-    "mcp__maas-glean__*",
-    "mcp__maas-ippsec__*",
-    "mcp__maas-jama__*",
-    "mcp__maas-jira__*",
-    "mcp__maas-mysql__*",
-    "mcp__maas-nsight-cuda__*",
-    "mcp__maas-nvbugs__*",
-    "mcp__maas-onedrive__*",
-    "mcp__maas-sharepoint__*",
-    "mcp__claude_ai_Slack__*",
-    "mcp__claude_ai_Microsoft_365__*",
-    "mcp__claude_ai_Atlassian_Rovo__*",
-    "Agent",
-))
-
-# Tools never allowed in chat regardless of approval (truly dangerous /
-# operationally unsuitable for chat surface). Empty for v1 — the hook
-# is the gate. Move things here only after a real incident.
-PHASE_2B_DISALLOWED_TOOLS = ""
-
-# Routing rules baked into every spawn so the orchestrator knows how to
-# combine PA-CLI (aggregation) with Claude's MCP set (writes) and how to
-# fan out across sources. Interpolated per-spawn with today's date and
-# the current Slack thread context so subagents post back into the same
-# thread instead of starting new top-level DMs.
+# Routing rules baked into every spawn so the Codex orchestrator knows how to
+# use app plugins and MaaS MCP directly. No PA CLI fallback remains in the
+# Slack bridge path.
 SYSTEM_PROMPT_TEMPLATE = """\
-You are agent-me, the user's autonomous personal assistant. The bridge spawning you is responsible for posting your final text to the user's Slack thread — you do NOT call any Slack tool to post a reply. Today: {today}. Timezone: Asia/Ho_Chi_Minh.
+You are agent-me, the user's autonomous personal assistant. The bridge spawning you is responsible for posting your final text to the user's Slack thread — do NOT call a Slack send/post tool for your ordinary reply. Today: {today}. Timezone: Asia/Ho_Chi_Minh.
 
-ROUTING RULES — apply automatically. Do not ask the user for permission.
+ROUTING RULES — apply automatically.
 
-1. **MCP IS THE DEFAULT. BASH IS OPT-IN ONLY.**
-   - All `mcp__*` tools are pre-authenticated and frictionless. Use them for EVERY read by default.
-   - Bash (`pa -p ...`) is gated by NVIDIA org policy and surfaces a Slack approval prompt PER CALL. The user does not want those prompts on routine requests.
+1. CODEX APP TOOLS ARE THE DEFAULT READ PATH.
+   - Use the available Codex app/MCP tools directly. Do not use shell commands to call PA, Claude, browser automation, or local CLIs for enterprise-source reads.
+   - Do not read local skill files during Slack-chat turns. The bridge prompt below gives the tool routing you need; shell approvals are not available in headless exec mode.
 
-2. WHEN TO CALL BASH — STRICT GATE
-   - Call Bash ONLY if BOTH of these are true:
-     a. The user's current prompt **contains the literal token `pa` or `bash`**, OR has already approved a Bash-based plan in this turn.
-     b. AND (an MCP tool has already returned empty/insufficient data for this question this turn, OR the user is explicitly asking for PA's `read_chat` / richer Teams data).
-   - **Otherwise: USE MCP.** This is non-negotiable.
-     - Multi-source aggregation requests are routine MCP work. Do not interpret "fan-out" as a license to call Bash — fan-out means multiple MCP tool_use blocks in parallel.
-     - "Tóm tắt email + Slack + meetings" → parallel MCP calls (outlook + slack + calendar), NEVER `pa -p`.
-   - If you're unsure whether to use Bash, DON'T. Use MCP and let the user explicitly upgrade you to PA if they want more.
+2. SOURCE → TOOL MAPPING
+   - Microsoft Teams chats/channels → `microsoft teams_list_chats`, `microsoft teams_list_chat_messages`, `microsoft teams_list_channel_messages`, `microsoft teams_search`, then `microsoft teams_fetch` for exact paths.
+   - Outlook email → `microsoft outlook email_list_messages`, `microsoft outlook email_search_messages`, then `microsoft outlook email_fetch_message` only when details are needed.
+   - Outlook calendar / meetings → use the Outlook Calendar app tools if available.
+   - Slack → `slack_slack_search_public_and_private`, `slack_slack_read_channel`, `slack_slack_read_thread`, `slack_slack_search_users`, `slack_slack_read_user_profile`.
+   - Google Drive / Docs / Sheets / Slides → `google drive_search`, `google drive_recent_documents`, `google drive_fetch`, and the narrower Google file tools when needed.
+   - GitHub → GitHub app tools or `gh` only for explicit repo/PR work that truly requires the local CLI.
+   - Jira / GitLab / Confluence / Glean / OneDrive / SharePoint / NVBugs / IPPSEC / Jama / MySQL / Nsight-CUDA / NVKS / PagerDuty → use the registered `maas-*` Codex MCP servers when present.
 
-3. SOURCE → MCP TOOL MAPPING (frictionless tier)
-   - **Outlook email** → `mcp__maas-outlook__outlook_list_messages` (filter via `query` param), then `outlook_get_message` or `outlook_get_conversation` for detail.
-   - **Outlook calendar / meetings** → `mcp__maas-outlook__outlook_list_calendar_view` for occurrences in a date range, `outlook_list_events` for recurring masters, `outlook_get_event` for one event.
-   - **Microsoft Teams chats** → `mcp__claude_ai_Microsoft_365__chat_message_search` (note: M365 search index lags a few hours behind; if results look incomplete you may suggest `pa -p` as an opt-in upgrade, but do NOT call PA without acknowledgement).
-   - **Slack** → `mcp__claude_ai_Slack__slack_search_messages` (primary) or `mcp__maas-slack__slack_search_messages` (ECI-scoped fallback); `mcp__maas-slack__slack_get_conversation_history` for a known channel.
-   - **Confluence / GitLab / Jira reads / GDrive / OneDrive / ServiceNow / NVBugs / GitHub** → corresponding `mcp__maas-*` or `mcp__claude_ai_*` tool.
+3. PARALLEL FAN-OUT
+   - For requests spanning multiple sources, call the independent app/MCP tools in parallel when the runtime allows it. Keep each query narrow enough to summarize.
 
-4. PARALLEL FAN-OUT — multiple MCP calls in ONE assistant turn
-   - For requests spanning multiple sources, emit one tool_use per source in a SINGLE assistant message. Claude Code runs them in parallel.
-   - Example for "Teams + Slack mentions + email mentions + meetings today": one assistant turn with 4 MCP tool_use blocks (`mcp__claude_ai_Microsoft_365__chat_message_search` + `mcp__claude_ai_Slack__slack_search_messages` + `mcp__maas-outlook__outlook_list_messages` + `mcp__maas-outlook__outlook_list_calendar_view`).
-   - Do NOT use the Agent/Task tool for fan-out — it adds startup overhead without unlocking any tool the orchestrator doesn't already have.
+4. GRACEFUL FALLBACK
+   - On a resumed session, ignore prior-turn claims that tools were disconnected. Try the relevant app/MCP tool fresh for the current turn before claiming inability.
+   - If one source is unavailable, say which source failed and continue with the sources that worked.
 
-5. GRACEFUL FALLBACK — never break the user's thread
-   - If a Bash/`pa -p` call is denied or fails for any reason, IMMEDIATELY retry the same data need via the equivalent MCP tool from §3. Do NOT tell the user "Bash was denied" or "MCP disconnected" or ask them to switch threads.
-   - On a resumed session, ignore any prior-turn evidence that "Bash is broken" or "MCP is disconnected". The bridge re-initializes MCP on every spawn — those statements are stale. Try the MCP tool for the current question FIRST before reporting any inability.
-   - If you genuinely have no path to the data, say so concisely with one sentence and offer the user the PA opt-in (e.g. "M365 chat search returned no Teams messages from the last 2 hours — index lag. I can try `pa -p` instead if you approve it.").
+5. WRITES
+   - Only write to Slack, Teams, Outlook, Google Drive, Jira, GitLab, NVBugs, or files when the user explicitly asks for that write.
+   - Do not call Slack send/post to answer in the current agent-me thread. The bridge posts your final text. Use Slack write tools only for a separate requested Slack message.
 
-3. REPLY — synthesize, do NOT dump
+6. REPLY — synthesize, do NOT dump
    - When all parallel calls return, SYNTHESIZE results into ONE concise final-text reply. The bridge posts it to Slack automatically — you do NOT call any Slack tool.
    - **Hard size budget: keep the final reply under ~6000 characters total.** Slack rejects long messages even when chunked; staying under 6k means the bridge can post the digest as a single clean message rather than fragmenting it across thread replies. Treat 6000 as a ceiling, not a target.
-   - Do NOT paste raw PA tool output. PA returns 50–200 KB of formatted text per source; that's ingestion material, not your reply. Extract the items that matter (~5–15 per source) and rewrite them in your own compact format.
-   - Format guideline: short header per section (📅 Meetings / 💬 Teams / 🟪 Slack / ✉️ Email). 3–8 bullets each, each bullet on one line: `HH:MM · who · subject · one-line note · link`. Drop noise (auto-bug emails, mailing-list traffic without a direct mention to you or your teams).
-   - Do NOT call `mcp__claude_ai_Slack__slack_send_message` for your reply — the claude_ai Slack integration is a different Slack app and cannot post into the agent-me bot's DM thread (channel_not_found).
-
-4. WRITES to other systems (only if explicitly asked)
-   - Jira/Confluence/GitLab writes → `mcp__maas-*` or `mcp__claude_ai_Atlassian_Rovo__*`. These ARE approval-gated; one Slack button per write.
-   - File edits → Edit / Write.
-
-5. NEVER say "I don't have access to X" without first attempting `pa -p` via Bash. PA almost certainly has the data.
+   - Do NOT paste raw tool output. Extract the items that matter and rewrite them in your own compact format.
+   - Format guideline: short header per section (📅 Meetings / 💬 Teams / 🟪 Slack / ✉️ Email). 3-8 bullets each, each bullet on one line: `HH:MM · who · subject · one-line note · link`. Drop noise (auto-bug emails, mailing-list traffic without a direct mention to you or your teams).
 """
 
 
@@ -478,39 +401,38 @@ def build_system_prompt() -> str:
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     return SYSTEM_PROMPT_TEMPLATE.format(today=today)
 
-# Toggle. Default 0 (Phase 2a behaviour, no behavioural change for
-# already-deployed bridges). Setting `APPROVAL_GATE=1` in configs/.env
-# turns on the hook + Slack flow.
+# Legacy Claude approval-gate toggle. Codex is now the default chat
+# orchestrator, so this path only matters if a future operator explicitly
+# revives Claude Code hooks.
 APPROVAL_GATE_ON = os.environ.get("APPROVAL_GATE", "0") == "1"
 
-# Default 5 min for Phase 2a (no human in loop). With Phase 2b approval
-# gate on, bump it to 12 min so a hook waiting on a Slack button click
-# doesn't kill the subprocess. Operator can override via env.
-CLAUDE_TIMEOUT_S = float(
+# Default 5 min for routine app/MCP reads. Operator can override via
+# AGENT_TIMEOUT_S or CODEX_TIMEOUT_S.
+AGENT_TIMEOUT_S = float(
     os.environ.get(
-        "CLAUDE_TIMEOUT_S",
-        12 * 60 if os.environ.get("APPROVAL_GATE", "0") == "1" else 5 * 60,
+        "AGENT_TIMEOUT_S",
+        os.environ.get("CODEX_TIMEOUT_S", 5 * 60),
     )
 )
 MAX_SLACK_TEXT = 39000
 MAX_LOG_TEXT = 4000
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-4-7")
+CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 
-# Chat-only working directory for `claude -p` invocations from Slack.
+# Chat-only working directory for headless Codex invocations from Slack.
 #
 # Why not REPO_DIR: REPO_DIR holds the agent-me project's CLAUDE.md,
 # which contains the "auto memory" protocol meant for development
-# sessions. When a Slack user said "ghi nhớ" (remember), claude faithfully
+# sessions. When a Slack user said "ghi nhớ" (remember), a prior Claude
+# backend faithfully
 # followed the protocol — read MEMORY.md, wrote a new memory file, and
 # updated the index. 10 turns, 78s, $1.09 for one chat message. Bridge
 # users want a chat assistant, not a memory-management agent.
 #
 # A purpose-built empty cwd has no CLAUDE.md, no auto-memory directives,
-# and no project-specific tooling instructions. Claude responds
-# conversationally. Sessions persist in ~/.claude/projects/<sanitized
-# CHAT_CWD>/ so --resume across this dir works exactly the same as it
-# would from REPO_DIR — different on-disk location, same behavior.
+# and no project-specific tooling instructions. Codex session ids are
+# persisted in SQLite and resumed with `codex exec resume`.
 #
 # MCP tools are user-scope, so they're available from any cwd.
 CHAT_CWD = STATE_DIR / "chat-cwd"
@@ -647,15 +569,16 @@ async def run_command(cmd: list[str], cwd: str, timeout: float = 30.0) -> str:
     """Run an arbitrary command, capture stdout, raise on non-zero exit."""
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=cwd,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
+    except TimeoutError as exc:
         proc.kill()
         await proc.wait()
-        raise RuntimeError(f"{cmd[0]} timed out after {timeout}s")
+        raise RuntimeError(f"{cmd[0]} timed out after {timeout}s") from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"{cmd[0]} exited {proc.returncode}: {stderr.decode(errors='replace')[:500]}"
@@ -669,41 +592,56 @@ class SessionExpired(RuntimeError):
     Caller should retry without --resume to start a fresh conversation."""
 
 
-# Words that, when present in the current user prompt, unlock Bash for
-# that spawn. PA CLI via `pa -p` is the only sanctioned reason to call
-# Bash from the bridge, and the model has been observed to drift toward
-# Bash on resumed sessions even when the system prompt forbids it. The
-# cleanest enforcement is at the --allowedTools layer: if the user
-# didn't ask for `pa` or `bash`, the tool is removed from the spawn's
-# tool list entirely so the model literally cannot pick it.
-_BASH_OPT_IN_PATTERN = re.compile(r"\b(pa|bash)\b", re.IGNORECASE)
+def _codex_args(prompt: str, resume_session_id: str | None) -> list[str]:
+    if resume_session_id:
+        return [
+            CODEX_BIN, "exec", "resume",
+            "--json",
+            "-m", MODEL,
+            resume_session_id,
+            prompt,
+        ]
+    return [
+        CODEX_BIN, "exec",
+        "--json",
+        "--sandbox", "read-only",
+        "--cd", str(CHAT_CWD),
+        "-m", MODEL,
+        prompt,
+    ]
 
 
-def _prompt_unlocks_bash(prompt: str) -> bool:
-    return bool(_BASH_OPT_IN_PATTERN.search(prompt))
+def _codex_item_name(item: dict[str, Any]) -> str:
+    if item.get("type") == "mcp_tool_call":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "tool"
+        return f"{server}:{tool}"
+    if item.get("type") == "command_execution":
+        return "shell"
+    return str(item.get("type") or "item")
 
 
-async def spawn_claude(
+async def spawn_codex(
     prompt: str,
     *,
     resume_session_id: str | None = None,
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     thread_ts: str | None = None,
 ) -> tuple[str, str | None]:
-    """Spawn `claude -p --output-format stream-json` and stream events.
+    """Spawn `codex exec --json` and stream events.
 
-    Parses each stream-json event as it arrives so the wrapper can track
-    tool-use start/complete and surface live progress through
+    Parses each JSONL event as it arrives so the wrapper can track
+    MCP/command start/complete and surface live progress through
     `progress_cb` (the bridge passes a callback that writes a throttled
     Slack chat.update on the placeholder message).
 
     `progress_cb` receives a snapshot dict with:
       - tools_started: int
       - tools_done: int
-      - in_flight: dict[tool_use_id -> tool_name] (currently running)
+      - in_flight: dict[item_id -> tool_name] (currently running)
       - completed: list[tool_name] (in completion order)
       - session_id: str | None
-      - final_text: str | None (set on the result event)
+      - final_text: str | None (latest agent_message)
       - is_error: bool / error_message: str | None
 
     Returns (final_response_text, session_id_or_None).
@@ -711,66 +649,18 @@ async def spawn_claude(
     Raises SessionExpired if --resume hit a missing session — caller can
     retry without --resume to recover.
     """
-    if APPROVAL_GATE_ON:
-        allowed_tools = PHASE_2B_ALLOWED_TOOLS
-        disallowed_tools = PHASE_2B_DISALLOWED_TOOLS
-    else:
-        allowed_tools = PHASE_2A_ALLOWED_TOOLS
-        disallowed_tools = PHASE_2A_DISALLOWED_TOOLS
-
-    # Strip Bash from the allow-list unless the user prompt explicitly
-    # opts in with the word `pa` or `bash`. This prevents the model
-    # from drifting onto pa-via-Bash on routine MCP requests (observed
-    # repeatedly with resumed sessions, where the prior turn's Bash
-    # usage anchors the next turn's tool choice even when system prompt
-    # says otherwise).
-    if not _prompt_unlocks_bash(prompt):
-        allowed_tools = " ".join(
-            tok for tok in allowed_tools.split() if tok != "Bash"
-        )
-
-    args = [
-        "claude", "-p", prompt,
-        "--model", MODEL,
-        # stream-json + --verbose required when -p emits per-event JSON
-        # lines (otherwise claude collapses to a single result message).
-        "--output-format", "stream-json",
-        "--verbose",
-        "--allowedTools", allowed_tools,
-        "--append-system-prompt", build_system_prompt(),
-    ]
-    # Phase 2A historically relied on `--permission-mode dontAsk` to enforce
-    # --disallowedTools (Write/Edit/Bash) and to suppress CLAUDE.md auto-memory
-    # loading from REPO_DIR. With cwd=CHAT_CWD (no CLAUDE.md) and Phase 2B
-    # making disallowedTools empty (the PreToolUse hook gates writes instead),
-    # dontAsk became actively harmful: it overrides the hook's "allow"
-    # decision and refuses Bash even though Bash is in --allowedTools.
-    # Phase 2B uses --dangerously-skip-permissions, which passes CLI-level
-    # permission checks but does NOT bypass --allowedTools or hooks.
-    if APPROVAL_GATE_ON:
-        args += ["--dangerously-skip-permissions"]
-    else:
-        args += ["--permission-mode", "dontAsk"]
-    if disallowed_tools:
-        args += ["--disallowedTools", disallowed_tools]
-    if resume_session_id:
-        args += ["--resume", resume_session_id]
-    log.info("claude_spawn", cwd=str(CHAT_CWD), model=MODEL,
+    prompt_with_system = f"{build_system_prompt()}\n\nUSER REQUEST:\n{prompt}"
+    args = _codex_args(prompt_with_system, resume_session_id)
+    log.info("codex_spawn", cwd=str(CHAT_CWD), model=MODEL,
              prompt_len=len(prompt), resume=resume_session_id)
-    # Default StreamReader buffer is 64KB. stream-json emits one event
-    # per line; a single tool_result line carrying a PA digest can easily
-    # exceed that. Bump to 16MB so we never trip "chunk is longer than
-    # limit" on legitimate output.
-    # AGENT_ME_THREAD_TS propagates to the PreToolUse hook script via
-    # inherited env, so the hook can stamp the originating thread_ts on
-    # every approval request. That lets the bridge resolve the
-    # per-thread auto-approve toggle without waiting on the
-    # `claude_sessions` row, which is only written after the spawn ends.
+
     spawn_env = os.environ.copy()
+    spawn_env.update(codex_mcp_token_env())
     if thread_ts:
         spawn_env["AGENT_ME_THREAD_TS"] = thread_ts
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=str(CHAT_CWD), env=spawn_env,
+        stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         limit=16 * 1024 * 1024,
@@ -808,7 +698,7 @@ async def spawn_claude(
 
     try:
         try:
-            async with asyncio.timeout(CLAUDE_TIMEOUT_S):
+            async with asyncio.timeout(AGENT_TIMEOUT_S):
                 async for raw in proc.stdout:
                     line = raw.decode(errors="replace").strip()
                     if not line:
@@ -816,56 +706,49 @@ async def spawn_claude(
                     try:
                         evt = json.loads(line)
                     except json.JSONDecodeError:
-                        # stream-json may interleave non-JSON warnings on
-                        # the same fd in older claude builds — skip.
+                        # The CLI may interleave non-JSON warnings on stdout.
                         continue
                     etype = evt.get("type")
                     changed = False
-                    if etype == "system" and evt.get("subtype") == "init":
-                        sid = evt.get("session_id")
+                    if etype == "thread.started":
+                        sid = evt.get("thread_id")
                         if sid:
                             state["session_id"] = sid
-                    elif etype == "assistant":
-                        msg = evt.get("message") or {}
-                        for blk in msg.get("content") or []:
-                            if blk.get("type") == "tool_use":
-                                tid = blk.get("id")
-                                tname = blk.get("name", "?")
-                                if tid and tid not in state["in_flight"]:
-                                    state["in_flight"][tid] = tname
-                                    state["tools_started"] += 1
-                                    changed = True
-                    elif etype == "user":
-                        msg = evt.get("message") or {}
-                        for blk in msg.get("content") or []:
-                            if blk.get("type") == "tool_result":
-                                tid = blk.get("tool_use_id")
-                                if tid in state["in_flight"]:
-                                    state["completed"].append(
-                                        state["in_flight"].pop(tid)
-                                    )
-                                    state["tools_done"] += 1
-                                    changed = True
-                    elif etype == "result":
-                        sid = evt.get("session_id")
-                        if sid:
-                            state["session_id"] = sid
-                        if evt.get("is_error"):
-                            state["is_error"] = True
-                            state["error_message"] = (
-                                evt.get("result")
-                                or evt.get("error")
-                                or "unknown"
-                            )
-                        else:
-                            state["final_text"] = evt.get("result")
+                        changed = True
+                    elif etype == "item.started":
+                        item = evt.get("item") or {}
+                        iid = item.get("id")
+                        if iid and item.get("type") in {"mcp_tool_call", "command_execution"}:
+                            state["in_flight"][iid] = _codex_item_name(item)
+                            state["tools_started"] += 1
+                            changed = True
+                    elif etype == "item.completed":
+                        item = evt.get("item") or {}
+                        iid = item.get("id")
+                        itype = item.get("type")
+                        if iid in state["in_flight"]:
+                            state["completed"].append(state["in_flight"].pop(iid))
+                            state["tools_done"] += 1
+                            changed = True
+                        if itype == "agent_message":
+                            state["final_text"] = item.get("text") or ""
+                            changed = True
+                        elif itype == "error":
+                            msg = str(item.get("message") or "")
+                            # Codex Cloud requirements currently emit this
+                            # warning in every exec; it is not turn-fatal.
+                            if "approval_policy" not in msg:
+                                state["is_error"] = True
+                                state["error_message"] = msg or "unknown Codex error"
+                                changed = True
+                    elif etype == "turn.completed":
                         changed = True
                     if changed:
                         await _emit()
-        except TimeoutError:
+        except TimeoutError as exc:
             proc.kill()
             await proc.wait()
-            raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
+            raise RuntimeError(f"codex timed out after {AGENT_TIMEOUT_S}s") from exc
     finally:
         try:
             await asyncio.wait_for(stderr_task, timeout=2.0)
@@ -877,29 +760,24 @@ async def spawn_claude(
 
     if return_code != 0:
         err = stderr_text[:500]
-        # Cover the actual phrases the CLI uses when --resume <id> can't
-        # find the session. Confirmed empirically with claude 2.1.x; defensive
-        # matches added for closely related variants we might see in future.
         err_l = err.lower()
         if resume_session_id and (
-            "no conversation found" in err_l
-            or "conversation not found" in err_l
-            or "session not found" in err_l
-            or "session does not exist" in err_l
+            "session not found" in err_l
+            or "thread not found" in err_l
             or "no such session" in err_l
             or "invalid session" in err_l
-            or "session expired" in err_l
+            or "not found" in err_l
         ):
             raise SessionExpired(
                 f"resume failed for {resume_session_id[:8]}…: {err}"
             )
-        raise RuntimeError(f"claude exited {return_code}: {err}")
+        raise RuntimeError(f"codex exited {return_code}: {err}")
 
     if state["is_error"]:
-        raise RuntimeError(f"claude API error: {state['error_message']}")
+        raise RuntimeError(f"codex error: {state['error_message']}")
 
     final = (state["final_text"] or "").strip()
-    log.info("claude_done",
+    log.info("codex_done",
              session_id=state["session_id"],
              tools_started=state["tools_started"],
              tools_done=state["tools_done"])
@@ -925,31 +803,58 @@ HELP_TEXT = "\n".join((
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
-    "• `reauth` / `/reauth` — trigger MCP re-auth helper (auto-opens auth URLs on bridge host)",
-    "• `reset` / `clear` / `new` — start a fresh Claude session for this thread (drops prior context)",
+    "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
+    "• `reset` / `clear` / `new` — start a fresh Codex session for this thread (drops prior context)",
     "• `whoami` / `/whoami` — show your Slack user id",
-    "• `version` / `/version` — bridge + claude versions and pinned model",
+    "• `version` / `/version` — bridge + Codex versions and pinned model",
     "• `help` / `/help` — this message",
     "",
-    "_Anything else is sent to Claude — context is preserved per Slack thread (reply-in-thread to keep the conversation going; new top-level message = fresh session)._",
+    "_Anything else is sent to Codex — context is preserved per Slack thread (reply-in-thread to keep the conversation going; new top-level message = fresh session)._",
     "_The bridge auto-checks MCP auth health every 6h and DMs you when re-auth is needed._",
     "_Daily morning routine fires at 6am Vietnam time when the bridge is running._",
 ))
 
 
+def _missing_codex_mcp_token_envs(mcp_list_output: str) -> list[str]:
+    """Return Codex MCP server names whose bearer env var has no local token."""
+    available = codex_mcp_token_env()
+    missing: set[str] = set()
+    for line in mcp_list_output.splitlines():
+        match = MCP_TOKEN_ENV_RE.search(line)
+        if not match:
+            continue
+        env_name = match.group(0)
+        if env_name in available:
+            continue
+        server = line.split(None, 1)[0].strip()
+        if server and server != "Name":
+            missing.add(server)
+    return sorted(missing)
+
+
 async def cmd_mcp() -> str:
-    out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+    out = await run_command([CODEX_BIN, "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+    missing_tokens = _missing_codex_mcp_token_envs(out)
+    token_note = ""
+    if missing_tokens:
+        token_note = (
+            "\n\n⚠️ Missing bearer token(s) in the local MaaS credential store: "
+            + ", ".join(f"`{name}`" for name in missing_tokens)
+            + "\nRun `/reauth`, then `/mcp` again."
+        )
     return (
-        "`claude mcp list`:\n```\n" + out.strip() + "\n```\n"
-        "_Run `/reauth` (or `uv run agent-me-reauth` on the host) for any servers that need authentication._"
+        "`codex mcp list`:\n```\n" + out.strip() + "\n```\n"
+        "_Codex app plugins for Teams/Slack/Outlook/GDrive are enabled separately; "
+        "this list shows extra Codex MCP servers such as MaaS/NVBugs._"
+        + token_note
     )
 
 
 async def cmd_version() -> str:
-    ver = (await run_command(["claude", "--version"], cwd=str(REPO_DIR))).strip()
+    ver = (await run_command([CODEX_BIN, "--version"], cwd=str(REPO_DIR))).strip()
     return (
-        f"*Bridge:* python · *Phase:* 2a · *Model:* `{MODEL}`\n"
-        f"*Claude CLI:* `{ver}`\n"
+        f"*Bridge:* python · *Agent:* Codex · *Model:* `{MODEL}`\n"
+        f"*Codex CLI:* `{ver}`\n"
         f"*Repo:* `{REPO_DIR}`"
     )
 
@@ -982,7 +887,7 @@ async def cmd_brief(args_text: str = "") -> str:
     # Open the brief log in append mode and pass its fd to the subprocess.
     # Parent closes its fd after spawn; the child keeps its dup'd copy.
     BRIEF_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    log_fp = open(BRIEF_LOG_FILE, "ab")
+    log_fp = open(BRIEF_LOG_FILE, "ab")  # noqa: SIM115 - child process keeps this fd
     log_fp.write(
         f"\n=== {datetime.now().isoformat()} brief --period {period} (pid {os.getpid()} parent) ===\n".encode()
     )
@@ -1009,7 +914,7 @@ async def cmd_brief(args_text: str = "") -> str:
 
 
 async def cmd_reset(thread_ts: str | None) -> str:
-    """Drop the Claude Code session for this thread so the next message
+    """Drop the Codex session for this thread so the next message
     starts a fresh conversation. The audit `messages` table is left
     intact — only the session pointer is cleared."""
     if not thread_ts:
@@ -1020,7 +925,7 @@ async def cmd_reset(thread_ts: str | None) -> str:
     old = await clear_session(thread_ts)
     if not old:
         return (
-            "ℹ️ This thread has no active Claude session yet — your next "
+            "Info: This thread has no active Codex session yet — your next "
             "message starts a new one automatically."
         )
     return (
@@ -1030,25 +935,22 @@ async def cmd_reset(thread_ts: str | None) -> str:
 
 
 async def cmd_reauth() -> str:
-    """Trigger the reauth helper as a detached background process.
-
-    The helper will open auth URLs in the bridge host's default browser.
-    User signs in to NVIDIA SSO in each tab on the host.
-    """
-    # Spawn detached so we don't block. stdout/stderr go to /dev/null;
-    # the user sees results by checking `claude mcp list` after signing in.
-    await asyncio.create_subprocess_exec(
-        _UV_BIN, "run", "agent-me-reauth",
-        cwd=str(REPO_DIR),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    """Trigger the Codex MCP reauth helper as a detached background process."""
+    reauth_log = STATE_DIR / "codex-reauth.log"
+    with reauth_log.open("ab") as out:
+        await asyncio.create_subprocess_exec(
+            _UV_BIN, "run", "agent-me-codex-reauth",
+            cwd=str(REPO_DIR),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=out,
+            stderr=out,
+            start_new_session=True,
+        )
     return (
-        "🚀 *Re-auth helper started* on the bridge host.\n\n"
-        "Browser tabs will open shortly — sign in to NVIDIA SSO in each.\n"
-        "When done, run `/mcp` here to verify everything is `✓ Connected`."
+        "🚀 *Codex MCP re-auth helper started* on the bridge host.\n\n"
+        "It will refresh the MaaS token store used by Codex bearer-token MCPs "
+        "and print/open auth URLs where possible. Output is written to "
+        f"`{reauth_log}`. When done, run `/mcp` here to verify."
     )
 
 
@@ -1201,7 +1103,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         await _dispatch(cmd, args_text, "plain")
         return
 
-    # Slash-prefix intercept: route /mcp etc. without spawning claude.
+    # Slash-prefix intercept: route /mcp etc. without spawning the agent.
     m = re.match(r"^(/[a-z][a-z0-9_-]*)\b\s*(.*)$", cleaned, re.IGNORECASE)
     if m:
         cmd = m.group(1)
@@ -1218,21 +1120,17 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         log.error("post_thinking_failed", err=str(exc), thread_ts=thread_ts)
         return
 
-    # Anchor reset: claude has been observed to hallucinate "MCP
-    # disconnected" on resumed sessions based on prior-turn failures
-    # (denied Bash calls, etc.). The bridge re-initializes MCP servers
-    # on every spawn, so prior-turn unavailability beliefs are stale.
-    # System prompts alone don't break the bias; injecting the
-    # assertion inline with the user's message (right before claude
-    # responds) makes the fact salient enough to override the anchor.
+    # Anchor reset: resumed sessions can over-weight prior tool failures.
+    # The bridge starts a fresh Codex exec process on every turn and app/MCP
+    # availability may have changed, so force a current-turn retry before the
+    # agent claims a source is unavailable.
     cleaned_with_reset = (
-        "[bridge note — TOOL STATE FOR THIS TURN: all MCP servers "
-        "(mcp__maas-*, mcp__claude_ai_*) are connected and operational "
-        "right now. The bridge re-initializes them on every claude "
-        "spawn. Disregard any earlier-turn belief that 'MCP is "
-        "disconnected' or 'tools are unavailable' — that is stale "
-        "context, not current reality. Try the appropriate MCP tool "
-        "for this question first, before claiming inability.]\n\n"
+        "[bridge note — TOOL STATE FOR THIS TURN: Codex app plugins "
+        "(Teams, Slack, Outlook, Google Drive, GitHub) and any registered "
+        "Codex MCP servers are initialized for this turn. Disregard any "
+        "earlier-turn belief that tools are disconnected or unavailable; "
+        "try the appropriate app/MCP tool for this question first. Do not "
+        "use PA CLI or shell for enterprise-source reads.]\n\n"
         f"{cleaned}"
     )
     start = time.time()
@@ -1261,25 +1159,25 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             log.warning("progress_update_failed", err=str(exc))
 
     try:
-        # Look up the Claude Code session for this Slack thread. First
-        # message ⇒ no session yet ⇒ claude creates one and we save the
-        # ID. Subsequent messages resume the same session, which is how
+        # Look up the Codex session for this Slack thread. First message
+        # means no session yet; Codex creates one and we save the ID.
+        # Subsequent messages resume the same session, which is how
         # context, prompt-cache hits, and tool-use history are preserved.
         existing_sid = await get_session_id(thread_ts)
         try:
-            answer, new_sid = await spawn_claude(
+            answer, new_sid = await spawn_codex(
                 cleaned_with_reset, resume_session_id=existing_sid,
                 progress_cb=progress_cb, thread_ts=thread_ts,
             )
         except SessionExpired as exc:
-            # The on-disk session went away (claude was restarted, project
+            # The on-disk session went away (Codex was restarted, project
             # path changed, file got cleaned, etc.). Retry without --resume
             # so the user sees the bridge respond gracefully instead of an
             # error message — they lose continuity, that's it.
             log.warning("session_expired_starting_fresh",
                         thread_ts=thread_ts, expired=existing_sid, err=str(exc))
             await clear_session(thread_ts)
-            answer, new_sid = await spawn_claude(
+            answer, new_sid = await spawn_codex(
                 cleaned_with_reset, progress_cb=progress_cb,
                 thread_ts=thread_ts,
             )
@@ -1539,7 +1437,7 @@ async def ensure_dm_channel(client) -> str | None:
 async def check_mcp_auth(client) -> None:
     global _last_notify_ts, _last_need_auth_set
     try:
-        out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+        out = await run_command([CODEX_BIN, "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
     except Exception as exc:
         log.warning("mcp_list_failed", err=str(exc))
         return
@@ -1548,7 +1446,14 @@ async def check_mcp_auth(client) -> None:
         for line in out.splitlines()
         if "Needs authentication" in line
     )
-    log.info("mcp_health_check", need_auth_count=len(need_auth), servers=need_auth)
+    missing_tokens = _missing_codex_mcp_token_envs(out)
+    need_auth = sorted(set(need_auth) | set(missing_tokens))
+    log.info(
+        "mcp_health_check",
+        need_auth_count=len(need_auth),
+        servers=need_auth,
+        missing_bearer_tokens=missing_tokens,
+    )
     if not need_auth:
         _last_need_auth_set = ""
         return
@@ -1567,7 +1472,7 @@ async def check_mcp_auth(client) -> None:
         "",
         "Run `/reauth` here, or on the bridge host:",
         "```",
-        "uv run agent-me-reauth",
+        "uv run agent-me-codex-reauth",
         "```",
         "Bridge picks up new tokens on the next call — no restart needed.",
     ))
@@ -1626,7 +1531,7 @@ async def run_morning_routine(client) -> None:
 
     Flow:
       1. Post a fresh date-headed STARTER message (becomes thread root).
-      2. Run `claude mcp list` to check MCP auth state.
+      2. Run `codex mcp list` to check MCP auth state.
       3. Reply in thread:
          - If anything stale → reauth prompt with [🔧 Reauth now] +
            [📅 Brief anyway] buttons.
@@ -1659,7 +1564,7 @@ async def run_morning_routine(client) -> None:
 
     # Step 2: MCP probe.
     try:
-        out = await run_command(["claude", "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+        out = await run_command([CODEX_BIN, "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
         need_auth = sorted(
             line.split(":")[0].strip()
             for line in out.splitlines()
@@ -1697,7 +1602,7 @@ async def run_morning_routine(client) -> None:
 
     # All MCPs healthy → action menu.
     intro = (
-        "✅ *All MCPs connected.*\n\n"
+        "✅ *Codex MCPs connected.*\n\n"
         "What would you like to do?"
     )
     await client.chat_postMessage(
@@ -1757,38 +1662,37 @@ async def _post_approval_request(client, req: approvals.ApprovalRequest) -> None
             ).fetchone()
         if row:
             thread_ts = row[0]
-    if thread_ts:
-        if approvals.thread_auto_approve(db, thread_ts):
-            approvals.write_decision(
-                state_dir=STATE_DIR,
+    if thread_ts and approvals.thread_auto_approve(db, thread_ts):
+        approvals.write_decision(
+            state_dir=STATE_DIR,
+            tool_use_id=req.tool_use_id,
+            decision="allow",
+            reason="auto-approved (per-thread toggle)",
+        )
+        approval_id = uuid.uuid4().hex[:12]
+        async with DB_LOCK:
+            approvals.insert_pending(
+                db,
+                approval_id=approval_id,
+                thread_ts=thread_ts,
                 tool_use_id=req.tool_use_id,
-                decision="allow",
-                reason="auto-approved (per-thread toggle)",
+                tool_name=req.tool_name,
+                tool_input_json=json.dumps(req.tool_input,
+                                           ensure_ascii=False),
+                session_id=req.session_id,
+                slack_channel=None,
+                slack_message_ts=None,
             )
-            approval_id = uuid.uuid4().hex[:12]
-            async with DB_LOCK:
-                approvals.insert_pending(
-                    db,
-                    approval_id=approval_id,
-                    thread_ts=thread_ts,
-                    tool_use_id=req.tool_use_id,
-                    tool_name=req.tool_name,
-                    tool_input_json=json.dumps(req.tool_input,
-                                               ensure_ascii=False),
-                    session_id=req.session_id,
-                    slack_channel=None,
-                    slack_message_ts=None,
-                )
-                approvals.resolve(
-                    db, approval_id=approval_id, status="approved",
-                    decision_reason="auto-approved (per-thread toggle)",
-                    auto=True,
-                )
-            approvals.archive_request(STATE_DIR, req.tool_use_id, "approved")
-            log.info("approval_auto_allowed",
-                     tool=req.tool_name, tool_use_id=req.tool_use_id,
-                     thread_ts=thread_ts)
-            return
+            approvals.resolve(
+                db, approval_id=approval_id, status="approved",
+                decision_reason="auto-approved (per-thread toggle)",
+                auto=True,
+            )
+        approvals.archive_request(STATE_DIR, req.tool_use_id, "approved")
+        log.info("approval_auto_allowed",
+                 tool=req.tool_name, tool_use_id=req.tool_use_id,
+                 thread_ts=thread_ts)
+        return
 
     # Slow path: ask the human.
     dm = await ensure_dm_channel(client)
@@ -1971,14 +1875,12 @@ async def on_approval_auto_thread(ack, body, client):
 
 async def main_async() -> int:
     handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    log.info("bridge_starting", phase=("2b" if APPROVAL_GATE_ON else "2a"),
+    log.info("bridge_starting", agent="codex",
              approval_gate=APPROVAL_GATE_ON,
              model=MODEL, mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
 
-    # Phase 2b bootstrap: write the PreToolUse hook + .claude/settings.json
-    # into CHAT_CWD so claude -p picks them up. Idempotent — overwrites on
-    # every startup so a fresh state dir on a new host works without
-    # manual intervention.
+    # Legacy Claude approval bootstrap. Codex is the default backend, so this
+    # only runs if an operator explicitly enables the old hook path.
     if APPROVAL_GATE_ON:
         try:
             approvals.bootstrap_hooks(chat_cwd=CHAT_CWD, state_dir=STATE_DIR)
@@ -2018,10 +1920,8 @@ async def main_async() -> int:
         loop.call_later(8.0, lambda: (log.warning("force_exit_after_timeout"), os._exit(1)))
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError, RuntimeError):
             loop.add_signal_handler(sig, _sig, sig.name)
-        except (NotImplementedError, RuntimeError):
-            pass
 
     try:
         await handler.start_async()
@@ -2038,18 +1938,14 @@ async def main_async() -> int:
             approval_task.cancel()
             bg_tasks.append(approval_task)
         for t in bg_tasks:
-            try:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError, Exception):
                 await asyncio.wait_for(t, timeout=2.0)
-            except (TimeoutError, asyncio.CancelledError, Exception):
-                pass
         try:
             await asyncio.wait_for(handler.close_async(), timeout=4.0)
         except (TimeoutError, Exception) as exc:
             log.warning("handler_close_timed_out_or_failed", err=str(exc))
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
         log.info("bridge_stopped")
     return 0
 

@@ -76,7 +76,7 @@ STATIC_DIR = PKG_DIR / "static"
 START_TS = time.time()
 RUNNER = BriefRunner()
 
-# Cached MCP probe — `claude mcp list` takes ~1s and we don't want
+# Cached MCP probe — `codex mcp list` takes ~1s and we don't want
 # every page hit to trigger one.
 _MCP_CACHE: dict[str, Any] = {"servers": [], "checked_at": 0}
 _MCP_CACHE_TTL_S = 30
@@ -231,7 +231,7 @@ async def api_refresh_all(request: Request):
 
 
 async def api_mcp_refresh(_request: Request):
-    """Force a `claude mcp list` probe, bypassing TTL."""
+    """Force a `codex mcp list` probe, bypassing TTL."""
     servers, checked_at = await check_mcp_health()
     _MCP_CACHE["servers"] = [s.__dict__ for s in servers]
     _MCP_CACHE["checked_at"] = checked_at
@@ -282,7 +282,7 @@ async def sse_logs_slack(_request: Request):
 
 
 async def sse_logs_session(request: Request):
-    """Stream a Claude session JSONL trace by session_id."""
+    """Stream a Codex session JSONL trace by session_id."""
     session_id = request.query_params.get("session_id", "").strip()
     if not session_id:
         return JSONResponse({"error": "missing session_id"}, status_code=400)

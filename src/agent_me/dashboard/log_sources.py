@@ -21,11 +21,11 @@ Three sources, three follow strategies:
    "user-facing" interaction; bridge can keep emitting any event it
    wants.
 
-3. **Claude session trace** — `~/.claude/projects/<sanitized>/<sid>.jsonl`.
-   Claude Code itself writes these JSONL files line-by-line, but a
-   reader that polls between two write syscalls can see a half-written
-   line. We accumulate bytes and only emit on `\n` boundaries, holding
-   the trailing partial in a buffer until the next poll.
+3. **Codex session trace** — `~/.codex/sessions/YYYY/MM/DD/*<sid>.jsonl`.
+   Codex writes these JSONL files line-by-line, but a reader that polls
+   between two write syscalls can see a half-written line. We accumulate
+   bytes and only emit on `\n` boundaries, holding the trailing partial
+   in a buffer until the next poll.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from typing import Any
 
 import structlog
 
-from agent_me.dashboard.state_reader import BRIDGE_LOG, STATE_DIR, StateReader
+from agent_me.dashboard.state_reader import BRIDGE_LOG, STATE_DIR, StateReader  # noqa: F401
 
 log = structlog.get_logger("dashboard.log_sources")
 
@@ -201,86 +201,32 @@ async def tail_bridge_slack_filtered(
         yield {**evt, "source": "slack"}
 
 
-# ── 3. Claude session trace: ~/.claude/projects/<sanitized>/<sid>.jsonl ─
+# ── 3. Codex session trace: ~/.codex/sessions/.../*<sid>.jsonl ─────────
 
 
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+# Backwards-compatible test/monkeypatch alias. Older docs/tests called this
+# CLAUDE_PROJECTS_DIR; the resolver now treats it as the generic session root.
+CLAUDE_PROJECTS_DIR = CODEX_SESSIONS_DIR
 
 
 def _sanitize_path(path: Path) -> str:
-    """Mirror Claude Code's project-dir naming.
-
-    Claude Code replaces every non-alphanumeric character in the
-    absolute path with `-`. Example:
-
-        /localhome/local-thaphan/.local/state/agent-me/chat-cwd
-        →
-        -localhome-local-thaphan--local-state-agent-me-chat-cwd
-
-    The `.` and `/` both collapse to `-`, which makes the encoding
-    lossy (you can't recover the original from the dir name alone).
-    For *resolution* that's fine — we only need the forward direction.
-    """
+    """Legacy helper retained for tests that scaffold nested session dirs."""
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
-def _decode_dir_name(name: str) -> str:
-    """Inverse of `_sanitize_path` for fuzzy matching only.
-
-    Used by the glob fallback to compare a dir basename to a path.
-    The decode is lossy (`-` → `/` collapses adjacent dashes), so
-    callers must compare via `_sanitize_path` round-trip rather than
-    string equality on the decoded form.
-    """
-    return name.replace("-", "/")
-
-
 def resolve_session_jsonl_path(session_id: str) -> Path | None:
-    """Find `<session_id>.jsonl` in the project dir matching CHAT_CWD.
-
-    Two-step lookup:
-
-    1. Build the literal sanitized name from `STATE_DIR / "chat-cwd"`
-       (after resolving symlinks). If `<projects>/<sanitized>/` exists
-       and contains the session jsonl, return it.
-
-    2. Glob `~/.claude/projects/*/` and pick the dir whose name
-       round-trips to the same sanitized form. This catches drift if
-       Claude Code ever changes its sanitizer (e.g. adds case-folding).
-
-    Returns `None` if no matching jsonl exists.
-    """
-    if not CLAUDE_PROJECTS_DIR.exists():
+    """Find a Codex session JSONL whose filename contains `session_id`."""
+    sessions_dir = CLAUDE_PROJECTS_DIR
+    if not sessions_dir.exists():
         return None
 
-    chat_cwd = STATE_DIR / "chat-cwd"
-    try:
-        chat_cwd_resolved = chat_cwd.resolve()
-    except OSError:
-        chat_cwd_resolved = chat_cwd
-
-    expected_name = _sanitize_path(chat_cwd_resolved)
-    direct = CLAUDE_PROJECTS_DIR / expected_name
-    candidate = direct / f"{session_id}.jsonl"
-    if candidate.is_file():
-        return candidate
-
-    # Glob fallback — handles the case where chat_cwd resolution
-    # differs slightly (e.g. trailing slash, /private prefix on macOS)
-    # but Claude's sanitizer agrees with ours.
-    for project_dir in CLAUDE_PROJECTS_DIR.glob("*/"):
-        if not project_dir.is_dir():
-            continue
-        # Compare via decoded-then-resanitized — protects against
-        # edge cases where one side has a different absolute prefix
-        # but the same fuzzy structure.
-        decoded = _decode_dir_name(project_dir.name)
-        if _sanitize_path(Path(decoded)) == expected_name:
-            session_path = project_dir / f"{session_id}.jsonl"
-            if session_path.is_file():
-                return session_path
-
-    return None
+    matches = sorted(
+        sessions_dir.glob(f"**/*{session_id}.jsonl"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    return matches[0] if matches else None
 
 
 async def tail_session_jsonl(
@@ -289,10 +235,10 @@ async def tail_session_jsonl(
     follow: bool = True,
     poll_interval_s: float = 0.5,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Tail a Claude session JSONL with partial-line safety.
+    """Tail a Codex session JSONL with partial-line safety.
 
-    Claude Code writes each turn as a single JSON object terminated by
-    `\\n`. Between two write syscalls the file may end mid-line; we
+    Codex writes each turn as JSON objects terminated by `\\n`. Between
+    two write syscalls the file may end mid-line; we
     accumulate bytes in a buffer and only emit when we've seen a
     complete `\\n`-terminated chunk. This prevents `JSONDecodeError`
     every time we poll while a turn is being written.
@@ -306,7 +252,7 @@ async def tail_session_jsonl(
         yield {
             "source": "session",
             "line": {"event": "missing", "session_id": session_id,
-                     "note": "no jsonl under ~/.claude/projects/.../"},
+                     "note": "no jsonl under ~/.codex/sessions/.../"},
             "ts": int(time.time() * 1000),
             "replay": False,
         }
@@ -358,7 +304,7 @@ async def tail_session_jsonl(
         except OSError:
             continue
         if cur_size < offset:
-            # Truncation/rotation — Claude Code doesn't normally rotate
+            # Truncation/rotation — Codex doesn't normally rotate
             # session jsonls, but a manual `>` redirect would do this.
             offset = 0
             pending = b""

@@ -7,7 +7,7 @@
     <h1 class="text-2xl font-semibold text-slate-100">Logs</h1>
     <p class="text-slate-400 text-sm mt-1">
       Three live streams: the watcher unit (git poll), filtered Slack
-      interactions from the bridge, and per-session Claude traces.
+      interactions from the bridge, and per-session Codex traces.
     </p>
   </header>
 
@@ -93,7 +93,7 @@
            class="rounded-lg border border-ink-700 bg-ink-900">
     <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800 flex-wrap gap-2">
       <div class="flex items-center gap-2 flex-wrap">
-        <h2 class="font-semibold text-slate-100">Claude session trace</h2>
+        <h2 class="font-semibold text-slate-100">Codex session trace</h2>
         <select x-model="sessionId" @change="onSessionChange()"
                 class="text-xs bg-ink-800 border border-ink-700 rounded px-2 py-1 text-slate-200 font-mono">
           <option value="">— select a session —</option>
@@ -229,7 +229,7 @@
 
       formatSessionType(line) {
         if (!line) return "";
-        // Claude session JSONL lines have a `type` field (user / assistant
+        // Agent session JSONL lines usually have a `type` field
         // / tool_use / tool_result / system). Fall back to event/raw.
         const tag = line.type || line.event || (line.raw ? "raw" : "?");
         return `[${tag}]`;
