@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete**. Benchmarked Codex app/MCP tools against PA CLI for Teams, Slack, Outlook Email, Google Drive, and NVBugs. Codex app tools can read Teams Graph chats/messages/search, Outlook Graph mail, Slack, and Google Drive directly; PA headless could read Teams/Outlook/GDrive but Slack was unauthenticated and NVBugs was not configured. Runtime decision: retire the PA/Claude hybrid path and run bridge + daily brief through `codex exec --json`. MaaS MCP auth uses Codex bearer-token env vars populated from the existing MaaS token store because `codex mcp login` reports native OAuth unsupported for MaaS HTTP servers. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md). Verified: compile, ruff, 71 tests, and idempotent Codex MCP setup._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**. Benchmarked Codex app/MCP tools against PA CLI for Teams, Slack, Outlook Email, Google Drive, and NVBugs. Codex app tools can read Teams Graph chats/messages/search, Outlook Graph mail, Slack, and Google Drive directly; PA headless could read Teams/Outlook/GDrive but Slack was unauthenticated and NVBugs was not configured. Runtime decision: retire the PA/Claude hybrid path and run bridge + daily brief through `codex exec --json`. MaaS MCP auth uses Codex bearer-token env vars populated from the existing MaaS token store because `codex mcp login` reports native OAuth unsupported for MaaS HTTP servers. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md). Verified: compile, ruff, 73 tests, and idempotent Codex MCP setup._
 
 ## Phase
 
@@ -57,6 +57,14 @@ approval gate.
   as bearer-token env-var MCPs. `uv run agent-me-codex-reauth`
   refreshes the existing MaaS OAuth token store; Codex consumes those
   tokens through `agent_me.mcp_tokens`.
+- [x] **Daily brief thread + mirror delivery (2026-05-11)** — when
+  `brief` / `/brief` is invoked from Slack, bridge passes the current
+  channel/thread into `agent-me-brief`; each platform posts as its own
+  message in that thread and the same brief mirrors to the Slack DM
+  resolved from `thaphan@nvidia.com`. NVBugs fetch prompt now asks for
+  the full open set where QA Eng/QA owner is `thaphan` or any open
+  ARB-related bug involving `thaphan`, with a clickable NVBugs link on
+  every item.
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites

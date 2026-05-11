@@ -76,6 +76,7 @@ structlog.configure(
 log = structlog.get_logger("daily-brief")
 
 USER = os.environ.get("AGENT_ME_USER", "thaphan")  # NVIDIA shortname
+DEFAULT_MIRROR_EMAIL = os.environ.get("BRIEF_MIRROR_EMAIL", "")
 AGENT_TIMEOUT_S = float(os.environ.get("AGENT_TIMEOUT_S", os.environ.get("CODEX_TIMEOUT_S", 240.0)))
 CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
 MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
@@ -106,6 +107,18 @@ class BriefItem:
     deadline: str | None = None        # ISO date
     last_activity: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SlackDestination:
+    label: str
+    channel: str
+    root_ts: str
+    thread_ts: str | None = None
+
+    @property
+    def reply_thread_ts(self) -> str:
+        return self.thread_ts or self.root_ts
 
 
 # ── Date / format helpers (kept from previous version) ─────────────────
@@ -244,16 +257,21 @@ def parse_confluence(data: dict, _spec: SourceSpec) -> list[BriefItem]:
 def parse_nvbugs(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     out: list[BriefItem] = []
     for nb in data.get("items", []) or []:
+        bug_id = str(nb.get("id", "?")).removeprefix("Bug ")
+        url = str(nb.get("url", ""))
+        if bug_id and bug_id != "?" and not url:
+            url = f"https://nvbugs.nvidia.com/Bug/{bug_id}"
         out.append(BriefItem(
             source="nvbugs", icon="🐛",
-            item_id=str(nb.get("id", "?")),
+            item_id=bug_id,
             title=str(nb.get("title", ""))[:200],
-            url=str(nb.get("url", "")),
+            url=url,
             group=_g(nb, "group", "uncategorized"),
             reason=nb.get("reason"),
             status=nb.get("status"),
             priority=nb.get("priority"),
             deadline=nb.get("due"),
+            last_activity=nb.get("updated"),
         ))
     return out
 
@@ -379,16 +397,32 @@ If errors, items: []. JSON ONLY."""
 
 NVBUGS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
-User: `{user}`. Find NVBugs assigned to me, status NOT in (Closed, Resolved,
-WontFix, Duplicate). Use the registered Codex MCP server `maas-nvbugs`;
-call its NVBugs search v2 tool, top 30.
+User shortname: `{user}`. User email: `{user}@nvidia.com`.
+Use the registered Codex MCP server `maas-nvbugs`; call its NVBugs
+search v2 tool.
+
+Find ALL currently open NVBugs matching either condition:
+  1. QA engineer / QA Eng / QA owner is `{user}` or `{user}@nvidia.com`
+  2. The bug is ARB-related and `{user}` / `{user}@nvidia.com` is involved
+     (ARB owner, ARB reviewer, ARB approver, requester, assignee, reporter,
+      Cc, comment mention, or any explicit ARB field)
+
+Open means status/state is NOT in:
+  Closed, Resolved, WontFix, Duplicate, Fixed, Verified, Released, Deferred.
+
+Run separate searches if needed, then merge and dedupe by bug id. Do not
+stop at the first page; fetch as many pages/results as the tool allows until
+you have the complete open set or the tool returns no more results.
 
 Each item:
   {{"id": "...", "title": "...", "priority": "P0|P1|P2|P3",
-    "status": "Open", "due": null,
-    "url": "https://nvbugs.nvidia.com/<id>",
+    "status": "Open", "due": null, "updated": "...",
+    "url": "https://nvbugs.nvidia.com/Bug/<id>",
     "group": "<module|component|product>",
-    "reason": "assignee|mentioned"}}
+    "reason": "qa_eng|arb_owner|arb_reviewer|arb_approver|arb_related|assignee|reporter|cc|mentioned"}}
+
+Every item MUST include a clickable NVBugs URL. If the tool returns only
+an id, construct `https://nvbugs.nvidia.com/Bug/<id>`.
 
 If the tool errors (auth or otherwise), items: []. JSON ONLY."""
 
@@ -821,6 +855,32 @@ def build_root_blocks(period: str, results: list[SubagentResult],
     return blocks
 
 
+def resolve_user_dm_by_email(client: WebClient, email: str) -> str:
+    user = client.users_lookupByEmail(email=email)["user"]
+    opened = client.conversations_open(users=user["id"])
+    return opened["channel"]["id"]
+
+
+def post_root_message(
+    client: WebClient,
+    *,
+    channel: str,
+    text: str,
+    label: str,
+    thread_ts: str | None = None,
+) -> SlackDestination:
+    kwargs: dict[str, Any] = {"channel": channel, "text": text}
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    res = client.chat_postMessage(**kwargs)
+    return SlackDestination(
+        label=label,
+        channel=channel,
+        thread_ts=thread_ts,
+        root_ts=res["ts"],
+    )
+
+
 # ── Orchestration ─────────────────────────────────────────────────────
 
 async def run_subagent(spec: SourceSpec, period_days: int) -> SubagentResult:
@@ -836,8 +896,13 @@ async def run_subagent(spec: SourceSpec, period_days: int) -> SubagentResult:
                               seconds=int(time.time() - started))
 
 
-async def main_async(period: str = "day", dry_run: bool = False,
-                     channel_override: str | None = None) -> int:
+async def main_async(
+    period: str = "day",
+    dry_run: bool = False,
+    channel_override: str | None = None,
+    thread_ts_override: str | None = None,
+    mirror_email: str | None = None,
+) -> int:
     preset = PERIOD_PRESETS.get(period)
     if not preset:
         log.error("unknown period", period=period, valid=list(PERIOD_PRESETS))
@@ -847,8 +912,7 @@ async def main_async(period: str = "day", dry_run: bool = False,
              days=preset["days"], n_subagents=len(SOURCES))
 
     # ── Resolve Slack target + post root header ─────────────────────────
-    root_channel: str | None = None
-    root_ts: str | None = None
+    destinations: list[SlackDestination] = []
     client: WebClient | None = None
     target: str | None = None
     if not dry_run:
@@ -871,21 +935,45 @@ async def main_async(period: str = "day", dry_run: bool = False,
         else:
             root_channel = target
 
+        root_text = (
+            f"📅 *{preset['title']} — {date.today().isoformat()}*\n"
+            f"🔄 _Fanning out {len(SOURCES)} subagents in parallel "
+            "(jira / gitlab / confluence / nvbugs / slack / outlook / github)…_\n"
+            "_Each platform will post as its own message._"
+        )
         try:
-            res = client.chat_postMessage(
+            primary = post_root_message(
+                client,
                 channel=root_channel,
-                text=(
-                    f"📅 *{preset['title']} — {date.today().isoformat()}*\n"
-                    f"🔄 _Fanning out {len(SOURCES)} subagents in parallel "
-                    "(jira / gitlab / confluence / nvbugs / slack / outlook / github)…_\n"
-                    "_Each will post a threaded reply when it finishes._"
-                ),
+                thread_ts=thread_ts_override,
+                text=root_text,
+                label="primary",
             )
-            root_ts = res["ts"]
-            log.info("root_header_posted", channel=root_channel, ts=root_ts)
+            destinations.append(primary)
+            log.info("root_header_posted", channel=root_channel, ts=primary.root_ts,
+                     thread_ts=thread_ts_override, label="primary")
         except Exception as exc:
             log.error("root_post_failed", err=str(exc))
             return 3
+
+        mirror = mirror_email or DEFAULT_MIRROR_EMAIL
+        if mirror:
+            try:
+                mirror_channel = resolve_user_dm_by_email(client, mirror)
+                if mirror_channel != root_channel:
+                    mirror_dest = post_root_message(
+                        client,
+                        channel=mirror_channel,
+                        text=root_text + f"\n_Source mirror from `{root_channel}`._",
+                        label=f"mirror:{mirror}",
+                    )
+                    destinations.append(mirror_dest)
+                    log.info("mirror_root_posted", email=mirror,
+                             channel=mirror_channel, ts=mirror_dest.root_ts)
+                else:
+                    log.info("mirror_skipped_same_channel", email=mirror, channel=mirror_channel)
+            except Exception as exc:
+                log.warning("mirror_open_or_post_failed", email=mirror, err=str(exc)[:300])
 
     # ── Fan out subagents in parallel ───────────────────────────────────
     # Each post is serialized through this lock so we don't hit Slack with
@@ -895,21 +983,22 @@ async def main_async(period: str = "day", dry_run: bool = False,
 
     async def run_and_reply(spec: SourceSpec) -> SubagentResult:
         result = await run_subagent(spec, preset["days"])
-        if dry_run or not (client and root_channel and root_ts):
+        if dry_run or not (client and destinations):
             return result
         blocks = build_source_blocks(result)
         async with post_lock:
-            try:
-                client.chat_postMessage(
-                    channel=root_channel,
-                    thread_ts=root_ts,
-                    text=(f"{spec.icon} {spec.label} — "
-                          f"{'❌ failed' if result.error else f'{len(result.items)} item(s)'}"),
-                    blocks=blocks,
-                )
-            except Exception as exc:
-                log.warning("threaded_reply_failed",
-                            source=spec.id, err=str(exc)[:300])
+            for dest in destinations:
+                try:
+                    client.chat_postMessage(
+                        channel=dest.channel,
+                        thread_ts=dest.reply_thread_ts,
+                        text=(f"{spec.icon} {spec.label} — "
+                              f"{'❌ failed' if result.error else f'{len(result.items)} item(s)'}"),
+                        blocks=blocks,
+                    )
+                except Exception as exc:
+                    log.warning("threaded_reply_failed", label=dest.label,
+                                source=spec.id, err=str(exc)[:300])
         return result
 
     results: list[SubagentResult] = await asyncio.gather(
@@ -926,29 +1015,31 @@ async def main_async(period: str = "day", dry_run: bool = False,
     # ── Synthesise priority list across all sources, post as last reply ─
     all_items = [i for r in results for i in r.items]
     priority_blocks = build_priority_blocks(all_items)
-    if not dry_run and client and root_channel and root_ts:
-        try:
-            client.chat_postMessage(
-                channel=root_channel, thread_ts=root_ts,
-                text="⏰ Priorities", blocks=priority_blocks,
-            )
-        except Exception as exc:
-            log.warning("priority_reply_failed", err=str(exc)[:300])
+    if not dry_run and client and destinations:
+        for dest in destinations:
+            try:
+                client.chat_postMessage(
+                    channel=dest.channel, thread_ts=dest.reply_thread_ts,
+                    text="⏰ Priorities", blocks=priority_blocks,
+                )
+            except Exception as exc:
+                log.warning("priority_reply_failed", label=dest.label, err=str(exc)[:300])
 
     # ── Update root header with final summary + buttons ─────────────────
     final_root = build_root_blocks(period, results, total_seconds)
-    if not dry_run and client and root_channel and root_ts:
+    if not dry_run and client and destinations:
         fallback = (f"{preset['title']} — {date.today().isoformat()} "
                     f"({total_items} items, {total_seconds}s)")
-        try:
-            client.chat_update(
-                channel=root_channel, ts=root_ts,
-                text=fallback, blocks=final_root,
-            )
-            log.info("root_header_updated", ts=root_ts, total_items=total_items,
-                     total_seconds=total_seconds)
-        except Exception as exc:
-            log.warning("root_update_failed", err=str(exc)[:300])
+        for dest in destinations:
+            try:
+                client.chat_update(
+                    channel=dest.channel, ts=dest.root_ts,
+                    text=fallback, blocks=final_root,
+                )
+                log.info("root_header_updated", label=dest.label, ts=dest.root_ts,
+                         total_items=total_items, total_seconds=total_seconds)
+            except Exception as exc:
+                log.warning("root_update_failed", label=dest.label, err=str(exc)[:300])
 
     if dry_run:
         # Print everything as JSON so a human / shell test can diff it.
@@ -992,10 +1083,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="print per-source JSON, don't post to Slack")
     parser.add_argument("--channel", help="override target channel id (default: operator DM)")
+    parser.add_argument("--thread-ts", help="post all platform messages into this Slack thread")
+    parser.add_argument("--mirror-email", help="also mirror the brief into this Slack user's DM by email")
     args = parser.parse_args()
     try:
         return asyncio.run(main_async(period=args.period, dry_run=args.dry_run,
-                                      channel_override=args.channel))
+                                      channel_override=args.channel,
+                                      thread_ts_override=args.thread_ts,
+                                      mirror_email=args.mirror_email))
     except KeyboardInterrupt:
         return 130
 

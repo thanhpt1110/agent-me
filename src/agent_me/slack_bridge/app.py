@@ -871,7 +871,12 @@ async def cmd_whoami(user_id: str | None) -> str:
 BRIEF_LOG_FILE = _LOG_DIR / "brief.log"
 
 
-async def cmd_brief(args_text: str = "") -> str:
+async def cmd_brief(
+    args_text: str = "",
+    *,
+    channel: str | None = None,
+    thread_ts: str | None = None,
+) -> str:
     """Spawn `uv run agent-me-brief --period <X>` detached.
 
     The brief script posts a placeholder DM immediately and updates it as
@@ -898,8 +903,14 @@ async def cmd_brief(args_text: str = "") -> str:
     )
     log_fp.flush()
     try:
+        cmd = [_UV_BIN, "run", "agent-me-brief", "--period", period]
+        if channel:
+            cmd.extend(["--channel", channel])
+        if thread_ts:
+            cmd.extend(["--thread-ts", thread_ts])
+        cmd.extend(["--mirror-email", "thaphan@nvidia.com"])
         await asyncio.create_subprocess_exec(
-            _UV_BIN, "run", "agent-me-brief", "--period", period,
+            *cmd,
             cwd=str(REPO_DIR),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=log_fp, stderr=log_fp,
@@ -911,8 +922,8 @@ async def cmd_brief(args_text: str = "") -> str:
     label = {"day": "Daily", "week": "Weekly", "month": "Monthly"}[period]
     return (
         f"📅 *{label} brief generation started.* "
-        "Watch for a `🔄 generating…` message in your DM (it auto-updates with progress, "
-        "then becomes the final brief). Total time ~30-90s.\n"
+        "Each platform will post as its own message in this thread, and the same brief "
+        "will be mirrored to `thaphan@nvidia.com`. Total time ~30-90s.\n"
         f"_If something goes wrong, tail `{BRIEF_LOG_FILE}` for crash details "
         "or run `/mcp` + `/reauth` for stale tokens._"
     )
@@ -989,7 +1000,8 @@ def _help_blocks() -> list[dict]:
 
 
 async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
-                       *, thread_ts: str | None = None) -> str | SlashResult:
+                       *, channel: str | None = None,
+                       thread_ts: str | None = None) -> str | SlashResult:
     if cmd == "/mcp":
         return await cmd_mcp()
     if cmd == "/version":
@@ -999,7 +1011,7 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
     if cmd == "/reauth":
         return await cmd_reauth()
     if cmd == "/brief":
-        return await cmd_brief(args_text)
+        return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
     if cmd == "/reset":
         return await cmd_reset(thread_ts)
     if cmd == "/help":
@@ -1084,7 +1096,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         placeholder_ts = await post_thinking(client, channel, thread_ts)
         try:
             result = await handle_slash(cmd, user_id, args_text,
-                                         thread_ts=thread_ts)
+                                         channel=channel, thread_ts=thread_ts)
             text, blocks = _split_result(result)
             if blocks:
                 # chat.update accepts blocks; include text as fallback for
@@ -1254,7 +1266,12 @@ async def _native_slash(ack, respond, command, cmd_name: str):
     log.info("native_slash", cmd=cmd_name, user=command.get("user_id"),
              channel=command.get("channel_id"), args=args_text)
     try:
-        result = await handle_slash(cmd_name, command.get("user_id"), args_text)
+        result = await handle_slash(
+            cmd_name,
+            command.get("user_id"),
+            args_text,
+            channel=command.get("channel_id"),
+        )
         text, blocks = _split_result(result)
         payload: dict = {"response_type": "in_channel", "text": text or "(see blocks)"}
         if blocks:
@@ -1311,12 +1328,19 @@ async def _post_in_channel(client, body: dict, text: str):
         await client.chat_postMessage(channel=channel, text=text)
 
 
+def _button_thread_context(body: dict) -> tuple[str | None, str | None]:
+    channel = body.get("channel", {}).get("id") if isinstance(body.get("channel"), dict) else None
+    msg = body.get("message") or {}
+    return channel, msg.get("thread_ts") or msg.get("ts")
+
+
 @app.action("brief_refresh")
 async def on_brief_refresh(ack, body, client):
     await ack()
     period = (body.get("actions") or [{}])[0].get("value") or "day"
     log.info("button_brief_refresh", period=period, user=body.get("user", {}).get("id"))
-    await cmd_brief(period if period != "day" else "")
+    channel, thread_ts = _button_thread_context(body)
+    await cmd_brief(period if period != "day" else "", channel=channel, thread_ts=thread_ts)
     await _post_in_channel(client, body, f"📅 Refreshing brief (`{period}`) — back in ~60s.")
 
 
@@ -1364,9 +1388,10 @@ async def on_morning_reauth(ack, body, client):
 async def on_morning_brief_now(ack, body, client):
     await ack()
     log.info("button_morning_brief_now", user=body.get("user", {}).get("id"))
-    await cmd_brief("")
+    channel, thread_ts = _button_thread_context(body)
+    await cmd_brief("", channel=channel, thread_ts=thread_ts)
     await _reply_in_thread(client, body,
-                           "📅 Generating today's brief — back in ~60s in this DM (top level).")
+                           "📅 Generating today's brief — back in ~60s in this thread.")
 
 
 # ── Action-menu buttons (posted in morning thread or after reauth) ────
@@ -1375,7 +1400,8 @@ async def on_morning_brief_now(ack, body, client):
 async def on_menu_brief_day(ack, body, client):
     await ack()
     log.info("button_menu_brief_day", user=body.get("user", {}).get("id"))
-    await cmd_brief("")
+    channel, thread_ts = _button_thread_context(body)
+    await cmd_brief("", channel=channel, thread_ts=thread_ts)
     await _reply_in_thread(client, body, "📅 Daily brief generating — back in ~60s.")
 
 
@@ -1383,7 +1409,8 @@ async def on_menu_brief_day(ack, body, client):
 async def on_menu_brief_week(ack, body, client):
     await ack()
     log.info("button_menu_brief_week", user=body.get("user", {}).get("id"))
-    await cmd_brief("week")
+    channel, thread_ts = _button_thread_context(body)
+    await cmd_brief("week", channel=channel, thread_ts=thread_ts)
     await _reply_in_thread(client, body, "📊 Weekly recap generating — back in ~60s.")
 
 
@@ -1391,7 +1418,8 @@ async def on_menu_brief_week(ack, body, client):
 async def on_menu_brief_month(ack, body, client):
     await ack()
     log.info("button_menu_brief_month", user=body.get("user", {}).get("id"))
-    await cmd_brief("month")
+    channel, thread_ts = _button_thread_context(body)
+    await cmd_brief("month", channel=channel, thread_ts=thread_ts)
     await _reply_in_thread(client, body, "📆 Monthly recap generating — back in ~60s.")
 
 
