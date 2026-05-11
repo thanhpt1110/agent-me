@@ -134,11 +134,11 @@ def test_recent_brief_runs_parses_fan_out_done_entries(temp_state_dir: Path) -> 
     assert runs[1]["total_items"] == 42
 
 
-def test_all_snapshots_returns_seven(temp_state_dir: Path) -> None:
+def test_all_snapshots_returns_all_sources(temp_state_dir: Path) -> None:
     from agent_me.dashboard.state_reader import SOURCES, StateReader
 
     snaps = StateReader.all_snapshots()
-    assert len(snaps) == len(SOURCES) == 7
+    assert len(snaps) == len(SOURCES) == 8
     assert {s.source for s in snaps} == {
-        "jira", "gitlab", "confluence", "nvbugs", "slack", "outlook", "github"
+        "jira", "gitlab", "confluence", "nvbugs", "slack", "outlook", "calendar", "github"
     }

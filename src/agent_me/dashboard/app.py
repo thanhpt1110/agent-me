@@ -206,7 +206,7 @@ async def api_refresh(request: Request):
 
 
 async def api_refresh_all(request: Request):
-    """Fan out a refresh across all 7 sources in parallel.
+    """Fan out a refresh across all sources in parallel.
 
     Each source goes through the same single-flight lock as a single
     refresh, so if a source is already running we coalesce onto its

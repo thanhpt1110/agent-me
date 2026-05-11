@@ -11,13 +11,14 @@ Architecture (2026-05-10 refactor):
 
     Python orchestrator
       ├── post root header DM ("📅 Daily Brief — running…")
-      └── asyncio.gather (7 subagents in parallel):
+      └── asyncio.gather (8 subagents in parallel):
             ├── jira       → codex exec (maas-jira)
             ├── gitlab     → codex exec (maas-gitlab)
             ├── confluence → codex exec (maas-confluence)
             ├── nvbugs     → codex exec (maas-nvbugs)
             ├── slack      → codex exec (Slack app tools)
             ├── outlook    → codex exec (Outlook Email app tools)
+            ├── calendar   → codex exec (Outlook Calendar app tools)
             └── github     → `gh` CLI directly
           Each subagent posts ONE threaded reply when done.
       └── final priority synthesis posted as last threaded reply.
@@ -50,8 +51,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from dotenv import load_dotenv
@@ -77,12 +80,19 @@ structlog.configure(
 log = structlog.get_logger("daily-brief")
 
 USER = os.environ.get("AGENT_ME_USER", "thaphan")  # NVIDIA shortname
+USER_FULL_NAME = os.environ.get("AGENT_ME_FULL_NAME", "Thanh Phan")
 DEFAULT_MIRROR_EMAIL = os.environ.get("BRIEF_MIRROR_EMAIL", "thaphan@nvidia.com")
 AGENT_TIMEOUT_S = float(os.environ.get("AGENT_TIMEOUT_S", os.environ.get("CODEX_TIMEOUT_S", 240.0)))
 MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 PRIORITY_WINDOW_DAYS = 7
 ITEMS_PER_GROUP = 5
 SLACK_SECTION_MAX_CHARS = 2900   # Slack hard limit is 3000; keep buffer.
+BRIEF_TIMEZONE = os.environ.get("AGENT_ME_TIMEZONE", "Asia/Ho_Chi_Minh")
+try:
+    LOCAL_TZ = ZoneInfo(BRIEF_TIMEZONE)
+except ZoneInfoNotFoundError:
+    LOCAL_TZ = ZoneInfo("UTC")
+    BRIEF_TIMEZONE = "UTC"
 
 PERIOD_PRESETS = {
     "day":   {"days": 1,  "label": "Daily",   "title": "Daily Brief"},
@@ -119,7 +129,7 @@ READONLY_MAAS_APPROVAL_CONFIGS = (
 
 @dataclass
 class BriefItem:
-    source: str        # "jira" | "gitlab" | "github" | "nvbugs" | "confluence" | "slack" | "outlook"
+    source: str        # "jira" | "gitlab" | "github" | "nvbugs" | "confluence" | "slack" | "outlook" | "calendar"
     icon: str
     item_id: str
     title: str
@@ -154,6 +164,29 @@ class ConnectorMirrorResult:
 
 # ── Date / format helpers (kept from previous version) ─────────────────
 
+def local_now() -> datetime:
+    return datetime.now(LOCAL_TZ)
+
+
+def local_today() -> date:
+    return local_now().date()
+
+
+def period_window(period_days: int) -> dict[str, str]:
+    start = local_today()
+    end_exclusive = start + timedelta(days=max(period_days, 1))
+    end_display = end_exclusive - timedelta(days=1)
+    start_dt = datetime.combine(start, dt_time.min, LOCAL_TZ)
+    end_dt = datetime.combine(end_exclusive, dt_time.min, LOCAL_TZ)
+    return {
+        "timezone": BRIEF_TIMEZONE,
+        "start_date": start.isoformat(),
+        "end_date": end_display.isoformat(),
+        "start_at": start_dt.isoformat(timespec="seconds"),
+        "end_at": end_dt.isoformat(timespec="seconds"),
+    }
+
+
 def parse_date(s: str | None) -> date | None:
     if not s or not isinstance(s, str):
         return None
@@ -174,7 +207,7 @@ def fmt_due(deadline: str | None) -> str:
     d = parse_date(deadline)
     if not d:
         return ""
-    today = date.today()
+    today = local_today()
     delta = (d - today).days
     if delta < 0:
         return f"⚠️ overdue {abs(delta)}d ({d.isoformat()})"
@@ -191,7 +224,7 @@ def fmt_age(s: str | None) -> str:
     d = parse_date(s)
     if not d:
         return ""
-    delta = (date.today() - d).days
+    delta = (local_today() - d).days
     if delta == 0:
         return "today"
     if delta == 1:
@@ -203,6 +236,30 @@ def fmt_age(s: str | None) -> str:
     if delta < 365:
         return f"{delta // 30}mo ago"
     return d.isoformat()
+
+
+def parse_datetime(s: str | None) -> datetime | None:
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo:
+        return dt.astimezone(LOCAL_TZ)
+    return dt.replace(tzinfo=LOCAL_TZ)
+
+
+def fmt_event_time(start: str | None, end: str | None) -> str:
+    start_dt = parse_datetime(start)
+    end_dt = parse_datetime(end)
+    if not start_dt:
+        return ""
+    if end_dt and start_dt.date() == end_dt.date():
+        return f"{start_dt.strftime('%a %m/%d %H:%M')}-{end_dt.strftime('%H:%M')}"
+    if end_dt:
+        return f"{start_dt.strftime('%a %m/%d %H:%M')} -> {end_dt.strftime('%a %m/%d %H:%M')}"
+    return start_dt.strftime("%a %m/%d %H:%M")
 
 
 def md_link(text: str, url: str) -> str:
@@ -342,6 +399,31 @@ def parse_outlook(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     return out
 
 
+def parse_calendar(data: dict, _spec: SourceSpec) -> list[BriefItem]:
+    out: list[BriefItem] = []
+    for ev in data.get("items", []) or []:
+        start = str(ev.get("start", "") or "")
+        group = str(ev.get("group", "") or (parse_date(start) or "unscheduled"))
+        out.append(BriefItem(
+            source="calendar", icon="📅",
+            item_id="",
+            title=str(ev.get("subject", "") or ev.get("title", ""))[:200],
+            url=str(ev.get("url", "") or ev.get("web_link", "")),
+            group=group,
+            reason=ev.get("reason"),
+            status=ev.get("show_as") or ev.get("response_status"),
+            extras={
+                "start": start,
+                "end": str(ev.get("end", "") or ""),
+                "organizer": str(ev.get("organizer", "") or ""),
+                "location": str(ev.get("location", "") or ""),
+                "body_summary": str(ev.get("body_summary", "") or ev.get("summary", ""))[:180],
+                "is_online": ev.get("is_online"),
+            },
+        ))
+    return out
+
+
 # ── Source specs ──────────────────────────────────────────────────────
 
 @dataclass
@@ -360,7 +442,9 @@ JIRA_PROMPT = """Return ONLY a JSON object: {{"items": [...]}}. No prose, no mar
 User shortname: `{user}`. Find every Jira issue where this user is involved
 AND statusCategory != Done.
 
-Use the registered Codex MCP server `maas-jira`; call its Jira search tool.
+Use the registered Codex MCP server `maas-jira`; call
+`mcp__maas-jira__jira_search` directly. Do not use `tool_search` to discover
+Jira tools; the MCP server is already registered for this run.
 
 Run these searches separately, merge, and dedupe by key:
   1. assignee = currentUser() AND statusCategory != Done
@@ -402,9 +486,10 @@ Use the registered Codex MCP server `maas-gitlab`. Tools to call:
    - scope=created_by_me state=opened, max 25
    - scope=review_requested state=opened, max 25 (skip if not supported)
 
-2. mcp__maas-gitlab__gitlab_list_issues — call TWICE, merge dedup:
-   - scope=assigned_to_me state=opened, max 25
-   - scope=created_by_me state=opened, max 25
+2. Issues are optional. Only call mcp__maas-gitlab__gitlab_list_issues if
+   you already have a concrete `project_id` accepted by the tool schema. If
+   the tool requires `project_id` and no concrete project is known, return
+   `"issues": []` without treating that as a source error.
 
 For each MR:
   {{"iid": ..., "title": "...", "state": "opened",
@@ -440,13 +525,14 @@ Do not report errors as "nothing pending". JSON ONLY."""
 
 NVBUGS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
-User shortname: `{user}`. User email: `{user}@nvidia.com`.
+User shortname: `{user}`. User full name: `{full_name}`.
+User email: `{user}@nvidia.com`.
 Use the registered Codex MCP server `maas-nvbugs`; call its NVBugs
 search v2 tool.
 
 Find ALL currently open NVBugs matching either condition:
-  1. QA engineer / QA Eng / QA owner is `{user}` or `{user}@nvidia.com`
-  2. The bug is ARB-related and `{user}` / `{user}@nvidia.com` is involved
+  1. QA engineer / QA Eng / QA owner is `{user}`, `{full_name}`, or `{user}@nvidia.com`
+  2. The bug is ARB-related and `{user}` / `{full_name}` / `{user}@nvidia.com` is involved
      (ARB owner, ARB reviewer, ARB approver, requester, assignee, reporter,
       Cc, comment mention, or any explicit ARB field)
 
@@ -461,7 +547,9 @@ Use natural-language search queries. Do NOT invent or force internal database
 column names such as `QAEngineerFullName`; the NVBugs MCP SQL generator may
 reject unknown field names. Prefer simple queries like:
   - open bugs where QA engineer is `{user}`
+  - open bugs where QA engineer is `{full_name}`
   - open ARB bugs involving `{user}`
+  - open ARB bugs involving `{full_name}`
   - open bugs assigned/reported/cc/mentioned `{user}` with ARB in title or fields
 
 Each item:
@@ -511,6 +599,10 @@ You are READ-ONLY. Do NOT call any tool that sends, replies, drafts,
 deletes, or modifies emails or calendar events. Use Codex Outlook Email
 app read tools directly: `microsoft outlook email_list_messages`,
 `microsoft outlook email_search_messages`, and fetch only if needed.
+Prefer simple search/list calls and filter the results yourself. Avoid complex
+OData `$filter` expressions with OR clauses; if a list/search call returns
+`ErrorInvalidUrlQueryFilter`, retry with a simpler query or a plain recent
+message list before reporting an error.
 
 User: `{user}@nvidia.com`. Find unread emails in the last {period_days}
 day(s) where I'm in to/cc OR sender expects a reply (not a noreply / list /
@@ -527,6 +619,41 @@ Each item:
 Skip: noreply@*, do-not-reply@*, list@*, automated build/CI notifications,
 calendar invitations (those go in a separate calendar fetch later).
 Top 20. If errors, return {{"error": "<exact tool error>", "items": []}}.
+Do not report errors as "nothing pending". JSON ONLY."""
+
+
+CALENDAR_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
+
+You are READ-ONLY. Do NOT call any tool that creates, updates, replies to,
+deletes, or modifies calendar events. Use Codex Outlook Calendar app read
+tools directly, preferably `microsoft outlook calendar_list_events`.
+
+User: `{user}@nvidia.com`. Timezone: `{timezone}`.
+Window: `{start_at}` inclusive to `{end_at}` exclusive
+({start_date} through {end_date}, {period_days} day(s)).
+
+Find meetings/events on the default personal Outlook calendar in this window.
+For daily scope this means today's meetings; for weekly/monthly scope this
+means the next 7/30 calendar days. Exclude cancelled events and declined
+events. Skip all-day holidays or OOO blocks unless the title makes them
+actionable.
+
+Sort by start ascending. Top 60.
+
+Each item:
+  {{"subject": "...", "start": "<ISO 8601 with timezone>",
+    "end": "<ISO 8601 with timezone>", "organizer": "<name or email>",
+    "location": "<room/Teams/online/empty>", "is_online": true,
+    "body_summary": "<one short summary of agenda/body if visible, else empty>",
+    "url": "<deeplink or web_link if available>",
+    "group": "YYYY-MM-DD", "show_as": "busy|tentative|free|...",
+    "response_status": "accepted|tentative|organizer|required|optional|unknown",
+    "reason": "organizer|required|optional|tentative|accepted"}}
+
+Keep `body_summary` under 140 characters and do not invent details when the
+event body is empty or hidden by permissions.
+
+If errors, return {{"error": "<exact tool error>", "items": []}}.
 Do not report errors as "nothing pending". JSON ONLY."""
 
 
@@ -613,7 +740,12 @@ async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
     Spawns one `codex exec` subprocess, rendering the prompt with
     {user, period_days}, returning the parsed JSON.
     """
-    prompt = spec.prompt_template.format(user=USER, period_days=period_days)
+    prompt = spec.prompt_template.format(
+        user=USER,
+        full_name=USER_FULL_NAME,
+        period_days=period_days,
+        **period_window(period_days),
+    )
     started = time.time()
     log.info("subagent_start", source=spec.id, backend="codex", hint=spec.allowed_tools)
     raw = await _run_codex(prompt, AGENT_TIMEOUT_S)
@@ -739,6 +871,10 @@ SOURCES: list[SourceSpec] = [
                fetcher=codex_fetcher, parser=parse_outlook,
                allowed_tools="codex-outlook-email-app",
                prompt_template=OUTLOOK_PROMPT),
+    SourceSpec(id="calendar", label="Outlook Calendar", icon="📅",
+               fetcher=codex_fetcher, parser=parse_calendar,
+               allowed_tools="codex-outlook-calendar-app",
+               prompt_template=CALENDAR_PROMPT),
     SourceSpec(id="github", label="GitHub", icon="🐱",
                fetcher=github_fetcher, parser=parse_github),
 ]
@@ -757,6 +893,8 @@ class SubagentResult:
 def _format_item_line(i: BriefItem) -> str:
     label = md_link(f"{i.item_id} {i.title}".strip(), i.url) if i.item_id else md_link(i.title, i.url)
     bits: list[str] = []
+    if event_time := fmt_event_time(i.extras.get("start"), i.extras.get("end")):
+        bits.append(event_time)
     if i.priority:
         bits.append(f"*[{i.priority}]*")
     if i.status:
@@ -771,6 +909,12 @@ def _format_item_line(i: BriefItem) -> str:
             bits.append(f"upd {a}")
     if i.reason:
         bits.append(i.reason)
+    if organizer := i.extras.get("organizer"):
+        bits.append(str(organizer)[:60])
+    if location := i.extras.get("location"):
+        bits.append(str(location)[:80])
+    if summary := i.extras.get("body_summary"):
+        bits.append(str(summary)[:140])
     if v := i.extras.get("kind"):
         bits.append(str(v))
     line = f"  • {label}"
@@ -783,11 +927,13 @@ def _group_items(items: list[BriefItem]) -> list[dict]:
     by_group: dict[str, list[BriefItem]] = {}
     for i in items:
         by_group.setdefault(i.group or "uncategorized", []).append(i)
-    today = date.today()
+    today = local_today()
     soon = today + timedelta(days=PRIORITY_WINDOW_DAYS)
     out: list[dict] = []
     for name, gitems in by_group.items():
         def sort_key(x: BriefItem):
+            if start_dt := parse_datetime(x.extras.get("start")):
+                return (start_dt.date(), int(start_dt.timestamp()))
             d = parse_date(x.deadline)
             return (d or date.max, -(parse_date(x.last_activity) or date.min).toordinal())
         gitems_sorted = sorted(gitems, key=sort_key)
@@ -851,7 +997,7 @@ def build_source_blocks(result: SubagentResult) -> list[dict]:
 
 
 def build_priority_blocks(all_items: list[BriefItem]) -> list[dict]:
-    today = date.today()
+    today = local_today()
     soon = today + timedelta(days=PRIORITY_WINDOW_DAYS)
     priority_items = sorted(
         [i for i in all_items if (d := parse_date(i.deadline)) and d <= soon],
@@ -877,6 +1023,8 @@ def build_priority_blocks(all_items: list[BriefItem]) -> list[dict]:
 def _plain_item_line(i: BriefItem) -> str:
     label = md_link(f"{i.item_id} {i.title}".strip(), i.url) if i.item_id else md_link(i.title, i.url)
     bits: list[str] = []
+    if event_time := fmt_event_time(i.extras.get("start"), i.extras.get("end")):
+        bits.append(event_time)
     if i.priority:
         bits.append(f"[{i.priority}]")
     if i.status:
@@ -887,6 +1035,12 @@ def _plain_item_line(i: BriefItem) -> str:
         bits.append(f"upd {a}")
     if i.reason:
         bits.append(i.reason)
+    if organizer := i.extras.get("organizer"):
+        bits.append(str(organizer)[:60])
+    if location := i.extras.get("location"):
+        bits.append(str(location)[:80])
+    if summary := i.extras.get("body_summary"):
+        bits.append(str(summary)[:140])
     suffix = f" · {' · '.join(bits)}" if bits else ""
     return f"• {label}{suffix}"
 
@@ -896,7 +1050,7 @@ def build_connector_mirror_text(period: str, results: list[SubagentResult],
     preset = PERIOD_PRESETS[period]
     total = sum(len(r.items) for r in results)
     rows = [
-        f"📅 *{preset['title']} — {date.today().isoformat()}*",
+        f"📅 *{preset['title']} — {local_today().isoformat()}*",
         f"_agent-me mirror · {total} item(s) · {total_seconds}s_",
         "",
     ]
@@ -962,7 +1116,7 @@ Message JSON string:
 def build_root_blocks(period: str, results: list[SubagentResult],
                       total_seconds: int) -> list[dict]:
     preset = PERIOD_PRESETS[period]
-    today = date.today()
+    today = local_today()
     total = sum(len(r.items) for r in results)
     by_source = " · ".join(
         f"*{len(r.items)}* {r.spec.id}" for r in sorted(results, key=lambda r: -len(r.items)) if r.items
@@ -976,7 +1130,7 @@ def build_root_blocks(period: str, results: list[SubagentResult],
                   "text": f"📅 {preset['title']} — {today.strftime('%a %Y-%m-%d')}"}},
         {"type": "context",
          "elements": [{"type": "mrkdwn",
-                       "text": (f"_{datetime.now().strftime('%-I:%M %p')} · "
+                       "text": (f"_{local_now().strftime('%-I:%M %p')} · "
                                 f"{total} total · {by_source} · {total_seconds}s wall-clock"
                                 f"{err_line}_")}]},
         {"type": "actions",
@@ -1077,9 +1231,9 @@ async def main_async(
             root_channel = target
 
         root_text = (
-            f"📅 *{preset['title']} — {date.today().isoformat()}*\n"
+            f"📅 *{preset['title']} — {local_today().isoformat()}*\n"
             f"🔄 _Fanning out {len(SOURCES)} subagents in parallel "
-            "(jira / gitlab / confluence / nvbugs / slack / outlook / github)…_\n"
+            "(jira / gitlab / confluence / nvbugs / slack / outlook / calendar / github)…_\n"
             "_Each platform will post as its own message._"
         )
         try:
@@ -1155,7 +1309,7 @@ async def main_async(
     # ── Update root header with final summary + buttons ─────────────────
     final_root = build_root_blocks(period, results, total_seconds)
     if not dry_run and client and destinations:
-        fallback = (f"{preset['title']} — {date.today().isoformat()} "
+        fallback = (f"{preset['title']} — {local_today().isoformat()} "
                     f"({total_items} items, {total_seconds}s)")
         for dest in destinations:
             try:
@@ -1183,7 +1337,7 @@ async def main_async(
 
     if dry_run:
         # Print everything as JSON so a human / shell test can diff it.
-        soon = date.today() + timedelta(days=PRIORITY_WINDOW_DAYS)
+        soon = local_today() + timedelta(days=PRIORITY_WINDOW_DAYS)
         upcoming = [i for i in all_items
                     if (d := parse_date(i.deadline)) and d <= soon]
         upcoming_sorted = sorted(upcoming,

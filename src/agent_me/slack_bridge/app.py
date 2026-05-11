@@ -8,7 +8,7 @@ What this owns:
 - AsyncApp + Socket Mode connection to Slack
 - SQLite state DB (threads, messages, pending_approvals — schema in db/)
 - Event handlers: DM messages and channel @mentions
-- Native slash commands: /mcp /version /whoami /help /reauth
+- Native slash commands: /mcp /version /whoami /help /reauth /brief /model-free-draft
 - Text-prefix slash commands (same set, intercepted from message body)
 - Spawning headless `codex exec` per query with app/MCP read access
 - Hybrid streaming UX (placeholder → final via chat.update)
@@ -405,6 +405,12 @@ ROUTING RULES — apply automatically.
 5. WRITES
    - Only write to Slack, Teams, Outlook, Google Drive, Jira, GitLab, NVBugs, or files when the user explicitly asks for that write.
    - Do not call Slack send/post to answer in the current agent-me thread. The bridge posts your final text. Use Slack write tools only for a separate requested Slack message.
+   - Standing Outlook rule from the user: when the current prompt asks you to fetch/search/read/check email related to the user, inspect the matching email subjects. If the latest relevant message/thread has a subject containing `Model Free 2.0` (case-insensitive; trailing punctuation is irrelevant), create a reply-all draft on that exact email thread. Do not send it. Use exactly this plain-text body:
+     Received. Will start testing today
+
+     Best regards
+     Thanh Phan
+     After creating the draft, mention it briefly in the final reply with the subject and source message link if available. This standing rule does not apply to read-only daily/weekly/monthly brief jobs.
 
 6. REPLY — synthesize, do NOT dump
    - When all parallel calls return, SYNTHESIZE results into ONE concise final-text reply. The bridge posts it to Slack automatically — you do NOT call any Slack tool.
@@ -816,9 +822,10 @@ HELP_TEXT = "\n".join((
     "",
     "Type any of these as `/cmd`, plain text (`brief`, `mcp`, `reauth`…), or click buttons in posted messages — all three work.",
     "",
-    "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Confluence)",
+    "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Confluence + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
+    "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
     "• `reset` / `clear` / `new` — start a fresh Codex session for this thread (drops prior context)",
@@ -881,6 +888,11 @@ async def cmd_whoami(user_id: str | None) -> str:
 
 
 BRIEF_LOG_FILE = _LOG_DIR / "brief.log"
+MODEL_FREE_SUBJECT_PATTERN = os.environ.get("MODEL_FREE_SUBJECT_PATTERN", "Model Free 2.0")
+MODEL_FREE_DRAFT_BODY = os.environ.get(
+    "MODEL_FREE_DRAFT_BODY",
+    "Received. Will start testing today\n\nBest regards\nThanh Phan",
+)
 
 
 async def cmd_brief(
@@ -939,6 +951,32 @@ async def cmd_brief(
         f"_If something goes wrong, tail `{BRIEF_LOG_FILE}` for crash details "
         "or run `/mcp` + `/reauth` for stale tokens._"
     )
+
+
+async def cmd_model_free_draft(thread_ts: str | None = None) -> str:
+    prompt = f"""The user explicitly asked you to create an Outlook reply-all draft.
+
+Use only the Codex Outlook Email connector tools. Do not use shell commands.
+Do not send the email; create a draft only.
+
+Find the latest received email message where:
+- subject contains `{MODEL_FREE_SUBJECT_PATTERN}` case-insensitively
+- the message was sent to or cc'd to the signed-in user
+- the latest matching message is not authored by the signed-in user
+
+Search recent mail first, then widen if necessary. Fetch the exact latest
+matching message/thread before drafting. Create a reply-all draft tied to
+that exact message with this exact plain-text body:
+
+{MODEL_FREE_DRAFT_BODY}
+
+Return a concise status:
+- if created: draft created, subject, sender, received time, and source link if available
+- if no match: say no matching `{MODEL_FREE_SUBJECT_PATTERN}` email was found
+- if the connector fails: include the exact failure in one short line
+"""
+    answer, _sid = await spawn_codex(prompt, progress_cb=None, thread_ts=thread_ts)
+    return answer.strip() or "_(no output)_"
 
 
 async def cmd_reset(thread_ts: str | None) -> str:
@@ -1024,6 +1062,8 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
         return await cmd_reauth()
     if cmd == "/brief":
         return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
+    if cmd == "/model-free-draft":
+        return await cmd_model_free_draft(thread_ts=thread_ts)
     if cmd == "/reset":
         return await cmd_reset(thread_ts)
     if cmd == "/help":
@@ -1071,6 +1111,11 @@ PLAIN_COMMANDS: dict[str, tuple[str, str]] = {
     "brief monthly":  ("/brief", "month"),
     "monthly":        ("/brief", "month"),
     "this month":     ("/brief", "month"),
+    # outlook automation shortcuts
+    "model free draft":       ("/model-free-draft", ""),
+    "draft model free":       ("/model-free-draft", ""),
+    "model free 2.0 draft":   ("/model-free-draft", ""),
+    "draft model free 2.0":   ("/model-free-draft", ""),
     # other commands
     "mcp":            ("/mcp", ""),
     "status":         ("/mcp", ""),
@@ -1323,6 +1368,11 @@ async def slash_reauth(ack, respond, command):
 @app.command("/brief")
 async def slash_brief(ack, respond, command):
     await _native_slash(ack, respond, command, "/brief")
+
+
+@app.command("/model-free-draft")
+async def slash_model_free_draft(ack, respond, command):
+    await _native_slash(ack, respond, command, "/model-free-draft")
 
 
 # ── Block Kit button handlers ──────────────────────────────────────────

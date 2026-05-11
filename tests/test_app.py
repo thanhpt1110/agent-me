@@ -45,9 +45,9 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     body = r.text
     assert "agent-me" in body
     assert "Overview" in body
-    # All 7 sources should appear in the nav at minimum
+    # All brief sources should appear in the nav at minimum
     for label in ("Jira", "GitLab", "Confluence", "NVBugs",
-                  "Slack", "Outlook", "GitHub"):
+                  "Slack", "Outlook", "Outlook Calendar", "GitHub"):
         assert label in body
 
 
@@ -69,15 +69,15 @@ def test_ops_page_renders(client: TestClient, with_token: str) -> None:
     assert "MCP servers" in r.text
 
 
-def test_api_state_returns_seven_snapshots(client: TestClient, with_token: str) -> None:
+def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:
     r = client.get("/api/state", headers=_auth(with_token))
     assert r.status_code == 200
     body = r.json()
     assert "uptime_s" in body
-    assert len(body["snapshots"]) == 7
+    assert len(body["snapshots"]) == 8
     sources = {s["source"] for s in body["snapshots"]}
     assert sources == {"jira", "gitlab", "confluence", "nvbugs",
-                       "slack", "outlook", "github"}
+                       "slack", "outlook", "calendar", "github"}
 
 
 def test_api_source_returns_cached_snapshot(client: TestClient, temp_state_dir: Path,
@@ -120,13 +120,13 @@ def test_unauth_root_returns_401(temp_state_dir: Path, with_token: str) -> None:
     assert r.status_code == 401
 
 
-def test_refresh_all_returns_seven_jobs(client: TestClient, monkeypatch,
-                                        with_token: str) -> None:
+def test_refresh_all_returns_all_jobs(client: TestClient, monkeypatch,
+                                      with_token: str) -> None:
     """The `/api/refresh/_all` endpoint should kick off one job per source.
 
     We patch `BriefRunner.start` so it returns immediately without
     spawning a real `codex exec` subprocess; the test only verifies the
-    endpoint shape + that all 7 sources are scheduled.
+    endpoint shape + that all sources are scheduled.
     """
     import uuid
 
@@ -148,10 +148,10 @@ def test_refresh_all_returns_seven_jobs(client: TestClient, monkeypatch,
     r = client.post("/api/refresh/_all", headers=_auth(with_token))
     assert r.status_code == 202
     body = r.json()
-    assert len(body["jobs"]) == 7
+    assert len(body["jobs"]) == 8
     assert sorted(j["source"] for j in body["jobs"]) == sorted([
-        "confluence", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
+        "calendar", "confluence", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
     ])
     assert sorted(started) == sorted([
-        "confluence", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
+        "calendar", "confluence", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
     ])

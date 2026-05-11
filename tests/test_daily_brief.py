@@ -30,6 +30,35 @@ def test_parse_nvbugs_builds_clickable_bug_url() -> None:
     assert items[0].last_activity == "2026-05-11T10:00:00Z"
 
 
+def test_parse_calendar_preserves_meeting_context() -> None:
+    spec = next(s for s in daily_brief.SOURCES if s.id == "calendar")
+    items = daily_brief.parse_calendar(
+        {
+            "items": [
+                {
+                    "subject": "Model Free 2.0 sync",
+                    "start": "2026-05-11T09:00:00+07:00",
+                    "end": "2026-05-11T09:30:00+07:00",
+                    "organizer": "qa-lead@nvidia.com",
+                    "location": "Teams",
+                    "body_summary": "Daily test status and open blockers",
+                    "url": "https://outlook.office.com/calendar/item/1",
+                    "group": "2026-05-11",
+                    "reason": "required",
+                }
+            ]
+        },
+        spec,
+    )
+
+    assert len(items) == 1
+    assert items[0].source == "calendar"
+    assert items[0].group == "2026-05-11"
+    assert items[0].extras["start"] == "2026-05-11T09:00:00+07:00"
+    assert "Daily test status" in items[0].extras["body_summary"]
+    assert "09:00-09:30" in daily_brief._format_item_line(items[0])
+
+
 def test_slack_destination_replies_to_existing_thread_when_present() -> None:
     threaded = daily_brief.SlackDestination(
         label="primary",
@@ -97,3 +126,15 @@ def test_readonly_mcp_approval_configs_cover_core_brief_tools() -> None:
     assert "maas-confluence.tools.confluence_search" in joined
     assert "maas-nvbugs.tools.nvbugs_search_v2" in joined
     assert "approval_mode=\"approve\"" in joined
+
+
+def test_nvbugs_prompt_includes_full_name_alias() -> None:
+    prompt = daily_brief.NVBUGS_PROMPT.format(
+        user="thaphan",
+        full_name="Thanh Phan",
+        period_days=1,
+        **daily_brief.period_window(1),
+    )
+
+    assert "Thanh Phan" in prompt
+    assert "open bugs where QA engineer is `Thanh Phan`" in prompt

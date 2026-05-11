@@ -69,6 +69,7 @@ SOURCES: tuple[tuple[str, str, str], ...] = (
     ("nvbugs", "NVBugs", "🐛"),
     ("slack", "Slack", "💬"),
     ("outlook", "Outlook", "📧"),
+    ("calendar", "Outlook Calendar", "📅"),
     ("github", "GitHub", "🐱"),
 )
 SOURCE_IDS = {s[0] for s in SOURCES}
