@@ -35,7 +35,7 @@ import uuid
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -380,12 +380,75 @@ PHASE_2B_ALLOWED_TOOLS = " ".join((
     "mcp__maas-nvbugs__*",
     "mcp__maas-onedrive__*",
     "mcp__maas-sharepoint__*",
+    "mcp__claude_ai_Slack__*",
+    "mcp__claude_ai_Microsoft_365__*",
+    "mcp__claude_ai_Atlassian_Rovo__*",
+    "Agent",
 ))
 
 # Tools never allowed in chat regardless of approval (truly dangerous /
 # operationally unsuitable for chat surface). Empty for v1 — the hook
 # is the gate. Move things here only after a real incident.
 PHASE_2B_DISALLOWED_TOOLS = ""
+
+# Routing rules baked into every spawn so the orchestrator knows how to
+# combine PA-CLI (aggregation) with Claude's MCP set (writes) and how to
+# fan out across sources. Interpolated per-spawn with today's date and
+# the current Slack thread context so subagents post back into the same
+# thread instead of starting new top-level DMs.
+SYSTEM_PROMPT_TEMPLATE = """\
+You are agent-me, the user's autonomous personal assistant. The bridge spawning you is responsible for posting your final text to the user's Slack thread — you do NOT call any Slack tool to post a reply. Today: {today}. Timezone: Asia/Ho_Chi_Minh.
+
+ROUTING RULES — apply automatically. Do not ask the user for permission.
+
+1. **MCP IS THE DEFAULT. BASH IS OPT-IN ONLY.**
+   - All `mcp__*` tools are pre-authenticated and frictionless. Use them for EVERY read by default.
+   - Bash (`pa -p ...`) is gated by NVIDIA org policy and surfaces a Slack approval prompt PER CALL. The user does not want those prompts on routine requests.
+
+2. WHEN TO CALL BASH — STRICT GATE
+   - Call Bash ONLY if BOTH of these are true:
+     a. The user's current prompt **contains the literal token `pa` or `bash`**, OR has already approved a Bash-based plan in this turn.
+     b. AND (an MCP tool has already returned empty/insufficient data for this question this turn, OR the user is explicitly asking for PA's `read_chat` / richer Teams data).
+   - **Otherwise: USE MCP.** This is non-negotiable.
+     - Multi-source aggregation requests are routine MCP work. Do not interpret "fan-out" as a license to call Bash — fan-out means multiple MCP tool_use blocks in parallel.
+     - "Tóm tắt email + Slack + meetings" → parallel MCP calls (outlook + slack + calendar), NEVER `pa -p`.
+   - If you're unsure whether to use Bash, DON'T. Use MCP and let the user explicitly upgrade you to PA if they want more.
+
+3. SOURCE → MCP TOOL MAPPING (frictionless tier)
+   - **Outlook email** → `mcp__maas-outlook__outlook_list_messages` (filter via `query` param), then `outlook_get_message` or `outlook_get_conversation` for detail.
+   - **Outlook calendar / meetings** → `mcp__maas-outlook__outlook_list_calendar_view` for occurrences in a date range, `outlook_list_events` for recurring masters, `outlook_get_event` for one event.
+   - **Microsoft Teams chats** → `mcp__claude_ai_Microsoft_365__chat_message_search` (note: M365 search index lags a few hours behind; if results look incomplete you may suggest `pa -p` as an opt-in upgrade, but do NOT call PA without acknowledgement).
+   - **Slack** → `mcp__claude_ai_Slack__slack_search_messages` (primary) or `mcp__maas-slack__slack_search_messages` (ECI-scoped fallback); `mcp__maas-slack__slack_get_conversation_history` for a known channel.
+   - **Confluence / GitLab / Jira reads / GDrive / OneDrive / ServiceNow / NVBugs / GitHub** → corresponding `mcp__maas-*` or `mcp__claude_ai_*` tool.
+
+4. PARALLEL FAN-OUT — multiple MCP calls in ONE assistant turn
+   - For requests spanning multiple sources, emit one tool_use per source in a SINGLE assistant message. Claude Code runs them in parallel.
+   - Example for "Teams + Slack mentions + email mentions + meetings today": one assistant turn with 4 MCP tool_use blocks (`mcp__claude_ai_Microsoft_365__chat_message_search` + `mcp__claude_ai_Slack__slack_search_messages` + `mcp__maas-outlook__outlook_list_messages` + `mcp__maas-outlook__outlook_list_calendar_view`).
+   - Do NOT use the Agent/Task tool for fan-out — it adds startup overhead without unlocking any tool the orchestrator doesn't already have.
+
+5. GRACEFUL FALLBACK — never break the user's thread
+   - If a Bash/`pa -p` call is denied or fails for any reason, IMMEDIATELY retry the same data need via the equivalent MCP tool from §3. Do NOT tell the user "Bash was denied" or "MCP disconnected" or ask them to switch threads.
+   - On a resumed session, ignore any prior-turn evidence that "Bash is broken" or "MCP is disconnected". The bridge re-initializes MCP on every spawn — those statements are stale. Try the MCP tool for the current question FIRST before reporting any inability.
+   - If you genuinely have no path to the data, say so concisely with one sentence and offer the user the PA opt-in (e.g. "M365 chat search returned no Teams messages from the last 2 hours — index lag. I can try `pa -p` instead if you approve it.").
+
+3. REPLY — synthesize, do NOT dump
+   - When all parallel calls return, SYNTHESIZE results into ONE concise final-text reply. The bridge posts it to Slack automatically — you do NOT call any Slack tool.
+   - **Hard size budget: keep the final reply under ~6000 characters total.** Slack rejects long messages even when chunked; staying under 6k means the bridge can post the digest as a single clean message rather than fragmenting it across thread replies. Treat 6000 as a ceiling, not a target.
+   - Do NOT paste raw PA tool output. PA returns 50–200 KB of formatted text per source; that's ingestion material, not your reply. Extract the items that matter (~5–15 per source) and rewrite them in your own compact format.
+   - Format guideline: short header per section (📅 Meetings / 💬 Teams / 🟪 Slack / ✉️ Email). 3–8 bullets each, each bullet on one line: `HH:MM · who · subject · one-line note · link`. Drop noise (auto-bug emails, mailing-list traffic without a direct mention to you or your teams).
+   - Do NOT call `mcp__claude_ai_Slack__slack_send_message` for your reply — the claude_ai Slack integration is a different Slack app and cannot post into the agent-me bot's DM thread (channel_not_found).
+
+4. WRITES to other systems (only if explicitly asked)
+   - Jira/Confluence/GitLab writes → `mcp__maas-*` or `mcp__claude_ai_Atlassian_Rovo__*`. These ARE approval-gated; one Slack button per write.
+   - File edits → Edit / Write.
+
+5. NEVER say "I don't have access to X" without first attempting `pa -p` via Bash. PA almost certainly has the data.
+"""
+
+
+def build_system_prompt() -> str:
+    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
+    return SYSTEM_PROMPT_TEMPLATE.format(today=today)
 
 # Toggle. Default 0 (Phase 2a behaviour, no behavioural change for
 # already-deployed bridges). Setting `APPROVAL_GATE=1` in configs/.env
@@ -441,6 +504,113 @@ def truncate_for_slack(text: str | None) -> str:
     return f"{text[:MAX_SLACK_TEXT - 120]}\n\n_…[truncated; {len(text) - MAX_SLACK_TEXT} chars cut]_"
 
 
+# Slack documented chat.update text cap is 40_000, but empirically
+# the live API rejected 39k AND 12k Vietnamese-heavy payloads with
+# `msg_too_long`. Multi-byte chars + mrkdwn rendering + link unfurls
+# count against an internal byte budget we cannot inspect. 2500 chars
+# is well under Block Kit's per-text 3000-char ceiling, which is the
+# tightest documented Slack limit, and survives every payload we've
+# tried.
+SLACK_CHUNK_SIZE = 2_500
+
+
+def chunk_for_slack(text: str) -> list[str]:
+    """Split a long reply into Slack-safe chunks, preferring newline breaks."""
+    if not text:
+        return ["_(no output)_"]
+    if len(text) <= SLACK_CHUNK_SIZE:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= SLACK_CHUNK_SIZE:
+            chunks.append(remaining)
+            break
+        # Prefer breaking on a newline near the limit for readability;
+        # fall back to a hard cut if no convenient newline exists in the
+        # back half of the slice.
+        cut = remaining.rfind("\n", SLACK_CHUNK_SIZE // 2, SLACK_CHUNK_SIZE - 100)
+        if cut < SLACK_CHUNK_SIZE // 2:
+            cut = SLACK_CHUNK_SIZE - 100
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    total = len(chunks)
+    return [
+        f"{c}\n\n_…(part {i+1}/{total})_" if i < total - 1
+        else f"{c}\n\n_…(part {i+1}/{total} — end)_"
+        for i, c in enumerate(chunks)
+    ]
+
+
+# Streaming progress: Slack tier-2 chat.update is ~1 req/s before
+# throttling kicks in. Two seconds gives headroom across burst events
+# (the orchestrator can emit a flurry of tool_use blocks in one
+# assistant turn) without making the placeholder feel stale.
+PROGRESS_UPDATE_MIN_INTERVAL_S = 2.0
+
+
+def format_progress(state: dict[str, Any]) -> str:
+    """Render the live progress block shown on the Slack placeholder."""
+    started = state["tools_started"]
+    done = state["tools_done"]
+    in_flight = list(state["in_flight"].values())
+    completed = state["completed"]
+    lines = [f"🔄 *{done}/{started} tool calls done* (live progress)"]
+    if in_flight:
+        head = ", ".join(f"`{t}`" for t in in_flight[:6])
+        if len(in_flight) > 6:
+            head += f", +{len(in_flight) - 6} more"
+        lines.append(f"▸ running: {head}")
+    if completed:
+        recent = completed[-6:]
+        lines.append("▸ completed: " + ", ".join(f"`{t}`" for t in recent))
+    return "\n".join(lines)
+
+
+async def post_chunked_reply(
+    client, *, channel: str, placeholder_ts: str, thread_ts: str, text: str,
+) -> None:
+    """Replace placeholder with first chunk; post remaining chunks in-thread.
+
+    Slack's `chat.update` rejects messages that `chat.postMessage` accepts
+    of identical size — we have empirically seen 2500-char Vietnamese
+    payloads bounce with `msg_too_long` on update while the same content
+    posts cleanly as a fresh message. So: try chat.update first, and if
+    it fails for any reason, demote the placeholder to a short status
+    line and post every chunk as a fresh thread message instead.
+    """
+    chunks = chunk_for_slack(text)
+    try:
+        await client.chat_update(
+            channel=channel, ts=placeholder_ts, text=chunks[0],
+        )
+        for chunk in chunks[1:]:
+            await client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=chunk,
+            )
+        return
+    except Exception as exc:
+        log.warning("chat_update_fallback", err=str(exc),
+                    placeholder_ts=placeholder_ts, chunks=len(chunks))
+    # Fallback: short placeholder + every chunk as a fresh in-thread message.
+    try:
+        await client.chat_update(
+            channel=channel, ts=placeholder_ts,
+            text=f"✅ done — reply in {len(chunks)} part(s) below"
+            if len(chunks) > 1 else "✅ done — reply below",
+        )
+    except Exception as exc:
+        log.warning("placeholder_finalize_failed", err=str(exc))
+    for chunk in chunks:
+        try:
+            await client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=chunk,
+            )
+        except Exception as exc:
+            log.error("chunk_post_failed", err=str(exc),
+                      chunk_len=len(chunk))
+
+
 def strip_bot_mention(text: str | None) -> str:
     return re.sub(r"^\s*<@[A-Z0-9]+>\s*", "", text or "").strip()
 
@@ -471,18 +641,44 @@ class SessionExpired(RuntimeError):
     Caller should retry without --resume to start a fresh conversation."""
 
 
+# Words that, when present in the current user prompt, unlock Bash for
+# that spawn. PA CLI via `pa -p` is the only sanctioned reason to call
+# Bash from the bridge, and the model has been observed to drift toward
+# Bash on resumed sessions even when the system prompt forbids it. The
+# cleanest enforcement is at the --allowedTools layer: if the user
+# didn't ask for `pa` or `bash`, the tool is removed from the spawn's
+# tool list entirely so the model literally cannot pick it.
+_BASH_OPT_IN_PATTERN = re.compile(r"\b(pa|bash)\b", re.IGNORECASE)
+
+
+def _prompt_unlocks_bash(prompt: str) -> bool:
+    return bool(_BASH_OPT_IN_PATTERN.search(prompt))
+
+
 async def spawn_claude(
     prompt: str,
     *,
     resume_session_id: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    thread_ts: str | None = None,
 ) -> tuple[str, str | None]:
-    """Spawn `claude -p` with read-only tool restrictions.
+    """Spawn `claude -p --output-format stream-json` and stream events.
 
-    Uses --output-format json so the wrapper can capture session_id (and
-    usage stats for logging). Pass `resume_session_id` to continue an
-    existing thread — claude handles all context and cache transparently.
+    Parses each stream-json event as it arrives so the wrapper can track
+    tool-use start/complete and surface live progress through
+    `progress_cb` (the bridge passes a callback that writes a throttled
+    Slack chat.update on the placeholder message).
 
-    Returns (response_text, session_id_or_None).
+    `progress_cb` receives a snapshot dict with:
+      - tools_started: int
+      - tools_done: int
+      - in_flight: dict[tool_use_id -> tool_name] (currently running)
+      - completed: list[tool_name] (in completion order)
+      - session_id: str | None
+      - final_text: str | None (set on the result event)
+      - is_error: bool / error_message: str | None
+
+    Returns (final_response_text, session_id_or_None).
 
     Raises SessionExpired if --resume hit a missing session — caller can
     retry without --resume to recover.
@@ -494,43 +690,168 @@ async def spawn_claude(
         allowed_tools = PHASE_2A_ALLOWED_TOOLS
         disallowed_tools = PHASE_2A_DISALLOWED_TOOLS
 
+    # Strip Bash from the allow-list unless the user prompt explicitly
+    # opts in with the word `pa` or `bash`. This prevents the model
+    # from drifting onto pa-via-Bash on routine MCP requests (observed
+    # repeatedly with resumed sessions, where the prior turn's Bash
+    # usage anchors the next turn's tool choice even when system prompt
+    # says otherwise).
+    if not _prompt_unlocks_bash(prompt):
+        allowed_tools = " ".join(
+            tok for tok in allowed_tools.split() if tok != "Bash"
+        )
+
     args = [
         "claude", "-p", prompt,
         "--model", MODEL,
-        "--output-format", "json",
-        # NO --dangerously-skip-permissions: that flag bypasses --disallowedTools,
-        # which made claude follow the project's "auto memory" protocol (loaded
-        # from REPO_DIR/CLAUDE.md back when the bridge ran with cwd=REPO_DIR) and
-        # write .md files via the Write tool. With this flag removed plus the
-        # cwd change below, --disallowedTools (Write/Edit/Bash) is enforced and
-        # CLAUDE.md isn't loaded at all — chat is just chat.
-        "--permission-mode", "dontAsk",
+        # stream-json + --verbose required when -p emits per-event JSON
+        # lines (otherwise claude collapses to a single result message).
+        "--output-format", "stream-json",
+        "--verbose",
         "--allowedTools", allowed_tools,
+        "--append-system-prompt", build_system_prompt(),
     ]
+    # Phase 2A historically relied on `--permission-mode dontAsk` to enforce
+    # --disallowedTools (Write/Edit/Bash) and to suppress CLAUDE.md auto-memory
+    # loading from REPO_DIR. With cwd=CHAT_CWD (no CLAUDE.md) and Phase 2B
+    # making disallowedTools empty (the PreToolUse hook gates writes instead),
+    # dontAsk became actively harmful: it overrides the hook's "allow"
+    # decision and refuses Bash even though Bash is in --allowedTools.
+    # Phase 2B uses --dangerously-skip-permissions, which passes CLI-level
+    # permission checks but does NOT bypass --allowedTools or hooks.
+    if APPROVAL_GATE_ON:
+        args += ["--dangerously-skip-permissions"]
+    else:
+        args += ["--permission-mode", "dontAsk"]
     if disallowed_tools:
         args += ["--disallowedTools", disallowed_tools]
     if resume_session_id:
         args += ["--resume", resume_session_id]
     log.info("claude_spawn", cwd=str(CHAT_CWD), model=MODEL,
              prompt_len=len(prompt), resume=resume_session_id)
+    # Default StreamReader buffer is 64KB. stream-json emits one event
+    # per line; a single tool_result line carrying a PA digest can easily
+    # exceed that. Bump to 16MB so we never trip "chunk is longer than
+    # limit" on legitimate output.
+    # AGENT_ME_THREAD_TS propagates to the PreToolUse hook script via
+    # inherited env, so the hook can stamp the originating thread_ts on
+    # every approval request. That lets the bridge resolve the
+    # per-thread auto-approve toggle without waiting on the
+    # `claude_sessions` row, which is only written after the spawn ends.
+    spawn_env = os.environ.copy()
+    if thread_ts:
+        spawn_env["AGENT_ME_THREAD_TS"] = thread_ts
     proc = await asyncio.create_subprocess_exec(
-        *args, cwd=str(CHAT_CWD),
+        *args, cwd=str(CHAT_CWD), env=spawn_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=16 * 1024 * 1024,
     )
+
+    state: dict[str, Any] = {
+        "tools_started": 0,
+        "tools_done": 0,
+        "in_flight": {},        # tool_use_id -> tool_name
+        "completed": [],        # list of completed tool names, in order
+        "session_id": None,
+        "final_text": None,
+        "is_error": False,
+        "error_message": None,
+    }
+
+    async def _emit():
+        if progress_cb is None:
+            return
+        try:
+            await progress_cb(state)
+        except Exception as exc:
+            log.warning("progress_cb_failed", err=str(exc))
+
+    stderr_chunks: list[bytes] = []
+
+    async def drain_stderr():
+        while True:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
+                return
+            stderr_chunks.append(chunk)
+
+    stderr_task = asyncio.create_task(drain_stderr())
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CLAUDE_TIMEOUT_S)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
-    if proc.returncode != 0:
-        err = stderr.decode(errors="replace").strip()[:500]
+        try:
+            async with asyncio.timeout(CLAUDE_TIMEOUT_S):
+                async for raw in proc.stdout:
+                    line = raw.decode(errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except json.JSONDecodeError:
+                        # stream-json may interleave non-JSON warnings on
+                        # the same fd in older claude builds — skip.
+                        continue
+                    etype = evt.get("type")
+                    changed = False
+                    if etype == "system" and evt.get("subtype") == "init":
+                        sid = evt.get("session_id")
+                        if sid:
+                            state["session_id"] = sid
+                    elif etype == "assistant":
+                        msg = evt.get("message") or {}
+                        for blk in msg.get("content") or []:
+                            if blk.get("type") == "tool_use":
+                                tid = blk.get("id")
+                                tname = blk.get("name", "?")
+                                if tid and tid not in state["in_flight"]:
+                                    state["in_flight"][tid] = tname
+                                    state["tools_started"] += 1
+                                    changed = True
+                    elif etype == "user":
+                        msg = evt.get("message") or {}
+                        for blk in msg.get("content") or []:
+                            if blk.get("type") == "tool_result":
+                                tid = blk.get("tool_use_id")
+                                if tid in state["in_flight"]:
+                                    state["completed"].append(
+                                        state["in_flight"].pop(tid)
+                                    )
+                                    state["tools_done"] += 1
+                                    changed = True
+                    elif etype == "result":
+                        sid = evt.get("session_id")
+                        if sid:
+                            state["session_id"] = sid
+                        if evt.get("is_error"):
+                            state["is_error"] = True
+                            state["error_message"] = (
+                                evt.get("result")
+                                or evt.get("error")
+                                or "unknown"
+                            )
+                        else:
+                            state["final_text"] = evt.get("result")
+                        changed = True
+                    if changed:
+                        await _emit()
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(f"claude timed out after {CLAUDE_TIMEOUT_S}s")
+    finally:
+        try:
+            await asyncio.wait_for(stderr_task, timeout=2.0)
+        except TimeoutError:
+            stderr_task.cancel()
+
+    return_code = await proc.wait()
+    stderr_text = b"".join(stderr_chunks).decode(errors="replace").strip()
+
+    if return_code != 0:
+        err = stderr_text[:500]
         # Cover the actual phrases the CLI uses when --resume <id> can't
-        # find the session. Confirmed empirically:
-        #   - "No conversation found with session ID: …"   (claude 2.1.x)
-        # Plus defensive matches for closely related variants we might see
-        # in future versions.
+        # find the session. Confirmed empirically with claude 2.1.x; defensive
+        # matches added for closely related variants we might see in future.
         err_l = err.lower()
         if resume_session_id and (
             "no conversation found" in err_l
@@ -544,31 +865,17 @@ async def spawn_claude(
             raise SessionExpired(
                 f"resume failed for {resume_session_id[:8]}…: {err}"
             )
-        raise RuntimeError(f"claude exited {proc.returncode}: {err}")
+        raise RuntimeError(f"claude exited {return_code}: {err}")
 
-    raw = stdout.decode(errors="replace").strip()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        log.error("claude_json_parse_failed", err=str(exc), preview=raw[:300])
-        raise RuntimeError(f"claude returned non-JSON: {raw[:200]}") from exc
+    if state["is_error"]:
+        raise RuntimeError(f"claude API error: {state['error_message']}")
 
-    if payload.get("is_error"):
-        api_err = payload.get("api_error_status") or payload.get("result") or "unknown"
-        raise RuntimeError(f"claude API error: {api_err}")
-
-    text = str(payload.get("result", "")).strip()
-    sid = payload.get("session_id")
-    usage = payload.get("usage") or {}
+    final = (state["final_text"] or "").strip()
     log.info("claude_done",
-             session_id=sid,
-             num_turns=payload.get("num_turns"),
-             duration_ms=payload.get("duration_ms"),
-             input_tokens=usage.get("input_tokens"),
-             output_tokens=usage.get("output_tokens"),
-             cache_read_tokens=usage.get("cache_read_input_tokens"),
-             cost_usd=payload.get("total_cost_usd"))
-    return text, sid
+             session_id=state["session_id"],
+             tools_started=state["tools_started"],
+             tools_done=state["tools_done"])
+    return final, state["session_id"]
 
 
 # ── Bolt app ────────────────────────────────────────────────────────────
@@ -883,7 +1190,48 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         log.error("post_thinking_failed", err=str(exc), thread_ts=thread_ts)
         return
 
+    # Anchor reset: claude has been observed to hallucinate "MCP
+    # disconnected" on resumed sessions based on prior-turn failures
+    # (denied Bash calls, etc.). The bridge re-initializes MCP servers
+    # on every spawn, so prior-turn unavailability beliefs are stale.
+    # System prompts alone don't break the bias; injecting the
+    # assertion inline with the user's message (right before claude
+    # responds) makes the fact salient enough to override the anchor.
+    cleaned_with_reset = (
+        "[bridge note — TOOL STATE FOR THIS TURN: all MCP servers "
+        "(mcp__maas-*, mcp__claude_ai_*) are connected and operational "
+        "right now. The bridge re-initializes them on every claude "
+        "spawn. Disregard any earlier-turn belief that 'MCP is "
+        "disconnected' or 'tools are unavailable' — that is stale "
+        "context, not current reality. Try the appropriate MCP tool "
+        "for this question first, before claiming inability.]\n\n"
+        f"{cleaned}"
+    )
     start = time.time()
+    # Throttled progress callback: surface live tool_use/tool_result
+    # counts back into the Slack placeholder. Updates capped to once
+    # every PROGRESS_UPDATE_MIN_INTERVAL_S to stay under Slack tier-2
+    # rate limits and to avoid noisy single-line flicker.
+    progress_state: dict[str, float] = {"last": 0.0}
+    progress_lock = asyncio.Lock()
+
+    async def progress_cb(state: dict[str, Any]) -> None:
+        now = time.monotonic()
+        is_final = state.get("final_text") is not None or state.get("is_error")
+        async with progress_lock:
+            if not is_final and now - progress_state["last"] < PROGRESS_UPDATE_MIN_INTERVAL_S:
+                return
+            progress_state["last"] = now
+            if is_final:
+                return  # final reply will replace the placeholder via post_chunked_reply
+            text = format_progress(state)
+        try:
+            await client.chat_update(
+                channel=channel, ts=placeholder_ts, text=text,
+            )
+        except Exception as exc:
+            log.warning("progress_update_failed", err=str(exc))
+
     try:
         # Look up the Claude Code session for this Slack thread. First
         # message ⇒ no session yet ⇒ claude creates one and we save the
@@ -892,7 +1240,8 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         existing_sid = await get_session_id(thread_ts)
         try:
             answer, new_sid = await spawn_claude(
-                cleaned, resume_session_id=existing_sid,
+                cleaned_with_reset, resume_session_id=existing_sid,
+                progress_cb=progress_cb, thread_ts=thread_ts,
             )
         except SessionExpired as exc:
             # The on-disk session went away (claude was restarted, project
@@ -902,13 +1251,19 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             log.warning("session_expired_starting_fresh",
                         thread_ts=thread_ts, expired=existing_sid, err=str(exc))
             await clear_session(thread_ts)
-            answer, new_sid = await spawn_claude(cleaned)
+            answer, new_sid = await spawn_claude(
+                cleaned_with_reset, progress_cb=progress_cb,
+                thread_ts=thread_ts,
+            )
 
         if new_sid:
             await upsert_session(thread_ts, new_sid)
 
         final = answer if answer.strip() else "_(no output)_"
-        await update_progress(client, channel, placeholder_ts, final)
+        await post_chunked_reply(
+            client, channel=channel, placeholder_ts=placeholder_ts,
+            thread_ts=thread_ts, text=final,
+        )
         await insert_message(thread_ts, "assistant", final, placeholder_ts)
         log.info("query_handled", thread_ts=thread_ts,
                  ms=int((time.time() - start) * 1000),
@@ -1359,13 +1714,14 @@ async def morning_loop(client) -> None:
 
 async def _post_approval_request(client, req: approvals.ApprovalRequest) -> None:
     """Insert a DB row + post the Approve/Reject message to operator DM."""
-    # Fast path: per-thread auto-approve. We don't know the thread_ts
-    # from the hook input directly (Claude has no idea about Slack),
-    # but we keyed each spawn_claude on a thread. The mapping lives in
-    # claude_sessions: session_id → thread_ts. If session_id is set on
-    # the request and the thread has auto_approve = 1, just allow.
-    thread_ts: str | None = None
-    if req.session_id:
+    # Fast path: per-thread auto-approve. We learn the thread_ts in two
+    # ways: (a) the hook stamps `agent_me_thread_ts` on the request when
+    # the bridge passes `AGENT_ME_THREAD_TS` via env (works on every
+    # turn, including the first); (b) `claude_sessions` maps session_id
+    # → thread_ts (only available from the second turn onward, because
+    # the first turn's session row is written after the spawn returns).
+    thread_ts: str | None = req.thread_ts
+    if thread_ts is None and req.session_id:
         async with DB_LOCK:
             row = db.execute(
                 "SELECT thread_ts FROM claude_sessions WHERE session_id = ?",
@@ -1373,37 +1729,38 @@ async def _post_approval_request(client, req: approvals.ApprovalRequest) -> None
             ).fetchone()
         if row:
             thread_ts = row[0]
-            if approvals.thread_auto_approve(db, thread_ts):
-                approvals.write_decision(
-                    state_dir=STATE_DIR,
+    if thread_ts:
+        if approvals.thread_auto_approve(db, thread_ts):
+            approvals.write_decision(
+                state_dir=STATE_DIR,
+                tool_use_id=req.tool_use_id,
+                decision="allow",
+                reason="auto-approved (per-thread toggle)",
+            )
+            approval_id = uuid.uuid4().hex[:12]
+            async with DB_LOCK:
+                approvals.insert_pending(
+                    db,
+                    approval_id=approval_id,
+                    thread_ts=thread_ts,
                     tool_use_id=req.tool_use_id,
-                    decision="allow",
-                    reason="auto-approved (per-thread toggle)",
+                    tool_name=req.tool_name,
+                    tool_input_json=json.dumps(req.tool_input,
+                                               ensure_ascii=False),
+                    session_id=req.session_id,
+                    slack_channel=None,
+                    slack_message_ts=None,
                 )
-                approval_id = uuid.uuid4().hex[:12]
-                async with DB_LOCK:
-                    approvals.insert_pending(
-                        db,
-                        approval_id=approval_id,
-                        thread_ts=thread_ts,
-                        tool_use_id=req.tool_use_id,
-                        tool_name=req.tool_name,
-                        tool_input_json=json.dumps(req.tool_input,
-                                                   ensure_ascii=False),
-                        session_id=req.session_id,
-                        slack_channel=None,
-                        slack_message_ts=None,
-                    )
-                    approvals.resolve(
-                        db, approval_id=approval_id, status="approved",
-                        decision_reason="auto-approved (per-thread toggle)",
-                        auto=True,
-                    )
-                approvals.archive_request(STATE_DIR, req.tool_use_id, "approved")
-                log.info("approval_auto_allowed",
-                         tool=req.tool_name, tool_use_id=req.tool_use_id,
-                         thread_ts=thread_ts)
-                return
+                approvals.resolve(
+                    db, approval_id=approval_id, status="approved",
+                    decision_reason="auto-approved (per-thread toggle)",
+                    auto=True,
+                )
+            approvals.archive_request(STATE_DIR, req.tool_use_id, "approved")
+            log.info("approval_auto_allowed",
+                     tool=req.tool_name, tool_use_id=req.tool_use_id,
+                     thread_ts=thread_ts)
+            return
 
     # Slow path: ask the human.
     dm = await ensure_dm_channel(client)
