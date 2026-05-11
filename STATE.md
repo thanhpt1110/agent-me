@@ -396,10 +396,11 @@ approval gate.
   The Linux host stores the same shape at `~/.claude/.credentials.json`
   with `claudeAiOauth` next to `mcpOAuth` — disjoint top-level keys, jq
   merge is a one-liner. Codified as `scripts/sync-mcp-creds-to-host.sh`.
-  Daily refresh workflow: `uv run agent-me-reauth` on Mac → opens stale
-  URLs locally (Mac has a browser) → `./scripts/sync-mcp-creds-to-host.sh
-  <host>` → host gets fresh tokens. Replaces the SSH-port-forward +
-  agent-me-reauth-on-the-host path as the recommended ritual.
+  Daily refresh workflow is now wrapped by
+  `scripts/mac-reauth-and-sync.sh <host>`: run reauth on the Mac so
+  all auth tabs open locally, then sync Keychain credentials to the
+  host. Replaces the SSH-port-forward + agent-me-reauth-on-the-host
+  path as the recommended ritual.
 - **2026-05-10 — Phase 4 FE stack: Jinja2+Alpine, NOT Flutter Web.**
   Bandwidth isn't the deciding factor (Tailscale Funnel has no cap),
   but Flutter Web's 3-6 MB bundle + 3-7s cold-start trade UX in the

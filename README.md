@@ -27,6 +27,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 3. **Three interactive steps** the bootstrap script reminds you to do (browser required):
    - `codex login` — one-time per machine.
    - `uv run agent-me-codex-reauth` — refreshes the MaaS OAuth token store used by Codex bearer-token MCPs and opens/prints NVIDIA-SSO URLs where needed.
+   - If the bridge runs on Colossus but your browser is on a Mac, run this on the Mac instead: `./scripts/mac-reauth-and-sync.sh <ssh-host>`. It opens all auth tabs locally, then syncs refreshed credentials back to the host.
    - Fill `configs/.env` with Slack tokens (template = `configs/.env.example`). Slack app walkthrough: `design/slack-app-setup.md`.
 4. **Verify**:
    ```bash

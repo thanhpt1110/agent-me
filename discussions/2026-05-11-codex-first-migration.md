@@ -82,6 +82,17 @@ access/refresh token, and `claude mcp list` currently flags both
 configuration is complete; the remaining work is refreshing/copying the
 MaaS token store.
 
+For the Colossus deployment, the preferred user flow is Mac-side:
+
+```bash
+./scripts/mac-reauth-and-sync.sh <ssh-host>
+```
+
+That runs the auth helper on the Mac, opens browser tabs locally, then
+syncs refreshed Keychain credentials to the host. Opening OAuth URLs
+generated on Colossus directly on the Mac is not reliable unless every
+random `localhost:<port>` callback is SSH-forwarded back to Colossus.
+
 ## Source updates
 
 - Bridge runtime, prompt, session resume, `/mcp`, `/version`, and
