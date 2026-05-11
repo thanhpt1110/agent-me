@@ -75,6 +75,47 @@ def test_model_free_followup_request_detection(monkeypatch, tmp_path) -> None:
     assert app.looks_like_model_free_followup_request("execute it for the right email")
 
 
+def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert app.model_free_subject_pattern_in_text("Subject: Model Free 2.0.4")
+    assert app.model_free_subject_pattern_in_text("Subject: model-free 2.0.4")
+    assert app.model_free_subject_pattern_in_text("ga-model-free-nim 2.0.4") is None
+
+
+def test_model_free_subject_recovers_from_slack_history(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    class FakeClient:
+        async def conversations_replies(self, **kwargs):
+            return {
+                "messages": [
+                    {"text": "fetch email with Subject contains Model Free 2.0.4"},
+                    {"text": "create another draft for this email"},
+                ],
+            }
+
+    import asyncio
+
+    subject = asyncio.run(
+        app.recover_model_free_subject_from_slack_thread(
+            FakeClient(), "D123", "1778531331.613309",
+        )
+    )
+
+    assert subject == "Model Free 2.0.4"
+
+
 def test_model_free_prompt_always_creates_new_draft(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")

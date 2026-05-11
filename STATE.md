@@ -529,7 +529,9 @@ approval gate.
   persists the requested Model Free subject per Slack thread, so follow-up
   messages such as "confirm reply all draft" or "do it for this email"
   keep targeting the same subject instead of letting generic chat pick a
-  different email. Headless `codex exec` may still report
+  different email. For Slack threads that existed before this table was
+  added, the bridge can recover the subject from recent Slack thread
+  history before routing the follow-up. Headless `codex exec` may still report
   `user cancelled MCP tool call` for Outlook write calls when the app
   connector confirmation layer blocks the draft creation; that is a
   connector execution limit, not subject selection.

@@ -130,7 +130,9 @@ as `ga-model-free-nim 2.0.4`, which is wrong for the requested
 The bridge now persists a `model_free_threads` row keyed by Slack `thread_ts`.
 When a thread has a remembered Model Free subject, follow-up messages containing
 draft/confirm/execute/same-email language route back through the dedicated
-Model Free helper with the remembered exact subject pattern. This keeps the
+Model Free helper with the remembered exact subject pattern. For Slack threads
+created before this migration, the bridge falls back to recent persisted
+messages and then Slack thread history to recover the subject. This keeps the
 target stable across Slack turns and prevents generic chat from choosing a
 nearby but different Model Free-related email.
 

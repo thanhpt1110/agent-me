@@ -410,6 +410,21 @@ async def get_model_free_thread_subject(thread_ts: str) -> str | None:
     return row[0] if row else None
 
 
+async def get_model_free_thread_subject_from_messages(thread_ts: str) -> str | None:
+    async with DB_LOCK:
+        rows = db.execute(
+            """SELECT content FROM messages
+               WHERE thread_ts=? AND content IS NOT NULL
+               ORDER BY id DESC LIMIT 40""",
+            (thread_ts,),
+        ).fetchall()
+    for (content,) in rows:
+        subject = model_free_subject_pattern_in_text(content)
+        if subject:
+            return subject
+    return None
+
+
 # Routing rules baked into every spawn so the Codex orchestrator knows how to
 # use app plugins and MaaS MCP directly. No PA CLI fallback remains in the
 # Slack bridge path.
@@ -949,10 +964,18 @@ MODEL_FREE_FOLLOWUP_TERMS = (
 
 def model_free_subject_pattern_from_text(text: str | None) -> str:
     """Prefer the exact Model Free version mentioned by the user."""
+    subject = model_free_subject_pattern_in_text(text)
+    if subject:
+        return subject
+    return MODEL_FREE_SUBJECT_PATTERN
+
+
+def model_free_subject_pattern_in_text(text: str | None) -> str | None:
+    """Return an exact Model Free subject pattern if the text contains one."""
     match = MODEL_FREE_VERSION_RE.search(text or "")
     if match:
         return f"Model Free {match.group('version')}"
-    return MODEL_FREE_SUBJECT_PATTERN
+    return None
 
 
 def looks_like_model_free_email_request(text: str | None) -> bool:
@@ -1184,6 +1207,27 @@ def _split_result(result: str | SlashResult) -> tuple[str, list[dict] | None]:
 
 # ── Event handlers ──────────────────────────────────────────────────────
 
+async def recover_model_free_subject_from_slack_thread(
+    client, channel: str, thread_ts: str,
+) -> str | None:
+    """Recover the requested Model Free subject for threads created pre-migration."""
+    try:
+        res = await client.conversations_replies(
+            channel=channel, ts=thread_ts, limit=40,
+        )
+    except Exception as exc:
+        log.warning("model_free_slack_history_recovery_failed",
+                    err=str(exc), thread_ts=thread_ts)
+        return None
+
+    messages = res.get("messages") or []
+    for msg in reversed(messages):
+        subject = model_free_subject_pattern_in_text(msg.get("text"))
+        if subject:
+            return subject
+    return None
+
+
 async def post_thinking(client, channel: str, thread_ts: str) -> str:
     res = await client.chat_postMessage(channel=channel, thread_ts=thread_ts, text="🔄 thinking…")
     return res["ts"]
@@ -1322,6 +1366,12 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         model_free_subject = model_free_subject_pattern_from_text(cleaned)
     elif looks_like_model_free_followup_request(cleaned):
         model_free_subject = await get_model_free_thread_subject(thread_ts)
+        if not model_free_subject:
+            model_free_subject = await get_model_free_thread_subject_from_messages(thread_ts)
+        if not model_free_subject:
+            model_free_subject = await recover_model_free_subject_from_slack_thread(
+                client, channel, thread_ts,
+            )
 
     if model_free_subject:
         await upsert_thread(thread_ts, channel, user_id)
