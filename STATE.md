@@ -520,6 +520,19 @@ approval gate.
   GitLab no longer fails the whole source when the issue tool requires
   `project_id`, but it may return only MRs unless a project-scoped
   issue query path is added.
+- **Model Free Outlook draft route (2026-05-11)** — Slack prompts
+  that fetch/search/read/check email for `Model Free 2.0.x` use a
+  dedicated Outlook helper instead of the generic chat path. The helper
+  always asks Codex to create one fresh reply-all draft against the
+  latest inbound non-self exact subject match; it must not skip because
+  a previous user-authored reply or draft already exists. The bridge
+  persists the requested Model Free subject per Slack thread, so follow-up
+  messages such as "confirm reply all draft" or "do it for this email"
+  keep targeting the same subject instead of letting generic chat pick a
+  different email. Headless `codex exec` may still report
+  `user cancelled MCP tool call` for Outlook write calls when the app
+  connector confirmation layer blocks the draft creation; that is a
+  connector execution limit, not subject selection.
 
 ## Phase 4 — locked decisions
 

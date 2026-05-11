@@ -108,15 +108,38 @@ tied to the latest inbound non-self message from Sergei Nikolaev. The bridge
 now routes Model Free email prompts through the dedicated helper instead of the
 generic chat path. The helper extracts the exact requested version, treats
 spaces and hyphens in `Model Free` / `model-free` as equivalent, selects the
-latest inbound non-self message, and avoids duplicate drafts when the thread
-already has the requested user-authored reply unless the user explicitly asks
-for another draft.
+latest inbound non-self message, and always requests one fresh reply-all draft.
+It must not skip because an equivalent user-authored reply or previous draft
+already exists.
 
 Follow-up service inspection showed the helper completed successfully, but
 Slack held the placeholder at `thinking...` because the dedicated route did not
 pass the standard Codex progress callback into `spawn_codex`. The helper now
 accepts and forwards a progress callback, and the Model Free message route uses
 the same throttled Slack progress renderer as generic chat.
+
+## Follow-up: Deterministic Same-Thread Draft Requests
+
+Further Slack testing showed a second failure mode: after the first Model Free
+search, user follow-up messages such as "create another reply-all draft for
+this email" did not include the words `Model Free`, so the bridge sent them
+through generic chat. Generic chat then selected a different email subject such
+as `ga-model-free-nim 2.0.4`, which is wrong for the requested
+`Model Free 2.0.4` thread.
+
+The bridge now persists a `model_free_threads` row keyed by Slack `thread_ts`.
+When a thread has a remembered Model Free subject, follow-up messages containing
+draft/confirm/execute/same-email language route back through the dedicated
+Model Free helper with the remembered exact subject pattern. This keeps the
+target stable across Slack turns and prevents generic chat from choosing a
+nearby but different Model Free-related email.
+
+Manual headless testing also confirmed a separate connector limit: even with a
+strict prompt and the correct Sergei Nikolaev source message, `codex exec`
+Outlook write calls can return `user cancelled MCP tool call`. The route fix
+removes the hallucinated target selection and duplicate-skip behavior; a direct
+non-headless connector path or Graph-backed draft fallback is still needed if
+Slack-driven Outlook draft creation must bypass that confirmation layer.
 
 ## Verification
 

@@ -60,3 +60,48 @@ def test_model_free_detection_ignores_non_email_requests(monkeypatch, tmp_path) 
     app = importlib.import_module("agent_me.slack_bridge.app")
 
     assert not app.looks_like_model_free_email_request("summarize model-free 2.0.4 bugs")
+
+
+def test_model_free_followup_request_detection(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert app.looks_like_model_free_followup_request("confirm reply all draft")
+    assert app.looks_like_model_free_followup_request("create another draft for this email")
+    assert app.looks_like_model_free_followup_request("execute it for the right email")
+
+
+def test_model_free_prompt_always_creates_new_draft(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    captured: dict[str, str] = {}
+
+    async def fake_spawn_codex(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "ok", "session"
+
+    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
+
+    import asyncio
+
+    asyncio.run(
+        app.cmd_model_free_draft(
+            subject_pattern="Model Free 2.0.4",
+            user_request="fetch email with subject Model Free 2.0.4",
+        )
+    )
+
+    prompt = captured["prompt"]
+    assert "create exactly one new reply-all draft" in prompt
+    assert "Do not skip because a previous user-authored" in prompt
+    assert "Reject subjects such as `ga-model-free-nim 2.0.4`" in prompt
+    assert "if skipped because an equivalent reply already exists" not in prompt

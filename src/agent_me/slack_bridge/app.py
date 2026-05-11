@@ -260,6 +260,14 @@ CREATE TABLE IF NOT EXISTS claude_sessions (
     last_used_at  INTEGER NOT NULL,
     turn_count    INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS model_free_threads (
+    thread_ts        TEXT PRIMARY KEY,
+    subject_pattern  TEXT NOT NULL,
+    last_request     TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
+);
 """
 
 db = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
@@ -374,6 +382,34 @@ async def clear_session(thread_ts: str) -> str | None:
     return old_id
 
 
+async def remember_model_free_thread(
+    thread_ts: str,
+    subject_pattern: str,
+    user_request: str,
+) -> None:
+    now = int(time.time() * 1000)
+    async with DB_LOCK:
+        db.execute(
+            """INSERT INTO model_free_threads
+                 (thread_ts, subject_pattern, last_request, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(thread_ts) DO UPDATE SET
+                 subject_pattern = excluded.subject_pattern,
+                 last_request = excluded.last_request,
+                 updated_at = excluded.updated_at""",
+            (thread_ts, subject_pattern, user_request, now, now),
+        )
+
+
+async def get_model_free_thread_subject(thread_ts: str) -> str | None:
+    async with DB_LOCK:
+        row = db.execute(
+            "SELECT subject_pattern FROM model_free_threads WHERE thread_ts=?",
+            (thread_ts,),
+        ).fetchone()
+    return row[0] if row else None
+
+
 # Routing rules baked into every spawn so the Codex orchestrator knows how to
 # use app plugins and MaaS MCP directly. No PA CLI fallback remains in the
 # Slack bridge path.
@@ -405,7 +441,7 @@ ROUTING RULES — apply automatically.
 5. WRITES
    - Only write to Slack, Teams, Outlook, Google Drive, Jira, GitLab, NVBugs, or files when the user explicitly asks for that write.
    - Do not call Slack send/post to answer in the current agent-me thread. The bridge posts your final text. Use Slack write tools only for a separate requested Slack message.
-   - Standing Outlook rule from the user: when the current prompt asks you to fetch/search/read/check email related to the user, inspect the matching email subjects. If the latest relevant message/thread has a subject containing `Model Free 2.0` (case-insensitive; trailing punctuation is irrelevant), create a reply-all draft on the latest matching inbound message that is not authored by the signed-in user. If the same thread already has a later user-authored reply with this body, do not create a duplicate unless the current prompt explicitly asks for another draft. Do not send it. Use exactly this plain-text body:
+   - Standing Outlook rule from the user: when the current prompt asks you to fetch/search/read/check email related to the user, inspect the matching email subjects. If the latest relevant message/thread has a subject containing `Model Free 2.0` (case-insensitive; trailing punctuation is irrelevant), create a new reply-all draft on the latest matching inbound message that is not authored by the signed-in user. Do not skip because a previous user-authored reply or draft exists. Do not send it. Use exactly this plain-text body:
      Received. Will start testing today
 
      Best regards
@@ -905,6 +941,10 @@ MODEL_FREE_EMAIL_TERMS = (
 MODEL_FREE_FORCE_DRAFT_TERMS = (
     "draft", "reply all", "reply-all", "create reply", "create draft",
 )
+MODEL_FREE_FOLLOWUP_TERMS = (
+    "draft", "reply all", "reply-all", "confirm", "execute", "same email",
+    "this email", "right email", "again", "test feature",
+)
 
 
 def model_free_subject_pattern_from_text(text: str | None) -> str:
@@ -929,6 +969,11 @@ def looks_like_model_free_email_request(text: str | None) -> bool:
 def model_free_request_forces_draft(text: str | None) -> bool:
     lowered = (text or "").lower()
     return any(term in lowered for term in MODEL_FREE_FORCE_DRAFT_TERMS)
+
+
+def looks_like_model_free_followup_request(text: str | None) -> bool:
+    lowered = (text or "").lower()
+    return any(term in lowered for term in MODEL_FREE_FOLLOWUP_TERMS)
 
 
 async def cmd_brief(
@@ -994,37 +1039,40 @@ async def cmd_model_free_draft(
     *,
     subject_pattern: str | None = None,
     user_request: str | None = None,
-    force_draft: bool = True,
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> str:
     subject_pattern = subject_pattern or MODEL_FREE_SUBJECT_PATTERN
-    draft_mode = (
-        "Create the draft even if the thread already has a matching user-authored reply."
-        if force_draft else
-        "If the thread already has a matching user-authored reply after the latest inbound message, report that no new draft is needed instead of creating a duplicate draft."
-    )
-    prompt = f"""The user asked about Outlook email matching the Model Free standing rule.
+    prompt = f"""The user explicitly authorized an Outlook reply-all draft for a Model Free email.
 
 Use only the Codex Outlook Email connector tools. Do not use shell commands.
-Do not send the email; create a draft only.
+Do not send the email; create exactly one new reply-all draft.
+Do not ask for confirmation. Do not skip because a previous user-authored
+reply or draft already exists; this is a feature test and the user wants a
+fresh draft.
 
 Find the latest received email message where:
-- subject contains `{subject_pattern}` case-insensitively; treat spaces and hyphens in "Model Free" / "model-free" as equivalent
+- subject contains the exact normalized pattern `{subject_pattern}` case-insensitively
 - the message was sent to or cc'd to the signed-in user
 - the latest matching message is not authored by the signed-in user
 
-Search recent mail first, then widen if necessary. Fetch the exact latest
-matching message/thread before drafting. Create a reply-all draft tied to
-that exact message with this exact plain-text body:
+Subject matching rule:
+- Treat `Model Free 2.0.4` and `model-free 2.0.4` as equivalent.
+- The version must match exactly.
+- Reject subjects such as `ga-model-free-nim 2.0.4` when `{subject_pattern}`
+  was requested, because `nim` appears between `free` and the version.
+- Prefer the newest inbound non-self message by received time among exact
+  matches.
+
+Search recent mail first, then widen if necessary. Fetch the exact target
+message before drafting. Create the reply-all draft tied to that exact message
+with this exact plain-text body:
 
 {MODEL_FREE_DRAFT_BODY}
 
 Current user request: {user_request or "/model-free-draft"}
-Draft mode: {draft_mode}
 
 Return a concise status:
 - if created: draft created, subject, sender, received time, and source link if available
-- if skipped because an equivalent reply already exists: say no new draft was created because the thread already has the requested reply
 - if no match: say no matching `{subject_pattern}` email was found
 - if the connector fails: include the exact failure in one short line
 """
@@ -1120,7 +1168,6 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
             thread_ts=thread_ts,
             subject_pattern=model_free_subject_pattern_from_text(args_text),
             user_request=args_text or "/model-free-draft",
-            force_draft=True,
         )
     if cmd == "/reset":
         return await cmd_reset(thread_ts)
@@ -1270,23 +1317,31 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         await _dispatch(cmd, args_text, "slash")
         return
 
+    model_free_subject = None
     if looks_like_model_free_email_request(cleaned):
+        model_free_subject = model_free_subject_pattern_from_text(cleaned)
+    elif looks_like_model_free_followup_request(cleaned):
+        model_free_subject = await get_model_free_thread_subject(thread_ts)
+
+    if model_free_subject:
+        await upsert_thread(thread_ts, channel, user_id)
+        await insert_message(thread_ts, "user", cleaned, event_ts)
+        await remember_model_free_thread(thread_ts, model_free_subject, cleaned)
         placeholder_ts = await post_thinking(client, channel, thread_ts)
         progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
         try:
             result = await cmd_model_free_draft(
                 thread_ts=thread_ts,
-                subject_pattern=model_free_subject_pattern_from_text(cleaned),
+                subject_pattern=model_free_subject,
                 user_request=cleaned,
-                force_draft=model_free_request_forces_draft(cleaned),
                 progress_cb=progress_cb,
             )
             await update_progress(client, channel, placeholder_ts, result)
+            await insert_message(thread_ts, "assistant", result, placeholder_ts)
             log.info(
                 "model_free_email_handled",
                 thread_ts=thread_ts,
-                subject_pattern=model_free_subject_pattern_from_text(cleaned),
-                force_draft=model_free_request_forces_draft(cleaned),
+                subject_pattern=model_free_subject,
             )
         except Exception as exc:
             log.error("model_free_email_failed", err=str(exc), thread_ts=thread_ts)
