@@ -60,8 +60,9 @@ approval gate.
 - [x] **Daily brief thread + mirror delivery (2026-05-11)** — when
   `brief` / `/brief` is invoked from Slack, bridge passes the current
   channel/thread into `agent-me-brief`; each platform posts as its own
-  message in that thread and the same brief mirrors to the Slack DM
-  resolved from `thaphan@nvidia.com`. NVBugs fetch prompt now asks for
+  message in that thread and a concise digest mirrors to
+  `thaphan@nvidia.com` via the Codex Slack connector (not the
+  personal-workspace bot token). NVBugs fetch prompt now asks for
   the full open set where QA Eng/QA owner is `thaphan` or any open
   ARB-related bug involving `thaphan`, with a clickable NVBugs link on
   every item.

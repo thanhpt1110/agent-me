@@ -136,6 +136,13 @@ class SlackDestination:
         return self.thread_ts or self.root_ts
 
 
+@dataclass
+class ConnectorMirrorResult:
+    ok: bool
+    error: str | None = None
+    raw: str = ""
+
+
 # ── Date / format helpers (kept from previous version) ─────────────────
 
 def parse_date(s: str | None) -> date | None:
@@ -827,6 +834,91 @@ def build_priority_blocks(all_items: list[BriefItem]) -> list[dict]:
     return [{"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(rows)}}]
 
 
+def _plain_item_line(i: BriefItem) -> str:
+    label = md_link(f"{i.item_id} {i.title}".strip(), i.url) if i.item_id else md_link(i.title, i.url)
+    bits: list[str] = []
+    if i.priority:
+        bits.append(f"[{i.priority}]")
+    if i.status:
+        bits.append(i.status)
+    if i.deadline and (d := fmt_due(i.deadline)):
+        bits.append(f"due {d}")
+    if i.last_activity and (a := fmt_age(i.last_activity)):
+        bits.append(f"upd {a}")
+    if i.reason:
+        bits.append(i.reason)
+    suffix = f" · {' · '.join(bits)}" if bits else ""
+    return f"• {label}{suffix}"
+
+
+def build_connector_mirror_text(period: str, results: list[SubagentResult],
+                                total_seconds: int) -> str:
+    preset = PERIOD_PRESETS[period]
+    total = sum(len(r.items) for r in results)
+    rows = [
+        f"📅 *{preset['title']} — {date.today().isoformat()}*",
+        f"_agent-me mirror · {total} item(s) · {total_seconds}s_",
+        "",
+    ]
+    for result in results:
+        spec = result.spec
+        if result.error:
+            rows.append(f"{spec.icon} *{spec.label}* — ❌ fetch failed: `{result.error[:180]}`")
+            rows.append("")
+            continue
+        if not result.items:
+            rows.append(f"{spec.icon} *{spec.label}* — ✓ nothing pending")
+            rows.append("")
+            continue
+        rows.append(f"{spec.icon} *{spec.label}* — {len(result.items)} item(s)")
+        for item in result.items[:ITEMS_PER_GROUP]:
+            rows.append(_plain_item_line(item))
+        if len(result.items) > ITEMS_PER_GROUP:
+            rows.append(f"_+ {len(result.items) - ITEMS_PER_GROUP} more in the source thread_")
+        rows.append("")
+
+    text = "\n".join(rows).strip()
+    if len(text) <= 4800:
+        return text
+    return text[:4700].rstrip() + "\n\n_…truncated for Slack connector mirror; see source thread for full split._"
+
+
+async def send_connector_slack_mirror(email: str, message: str) -> ConnectorMirrorResult:
+    prompt = f"""Return ONLY a JSON object. No prose, no markdown fences.
+
+The user explicitly requested this Slack send. Use the Codex Slack connector
+app tools only. Do not use shell commands. Do not use SLACK_BOT_TOKEN.
+
+Destination: Slack DM for exact email `{email}`.
+
+Steps:
+1. Search Slack users for the exact email `{email}` using the Slack connector user search tool.
+2. Pick the exact email match and get its Slack user_id.
+3. Send the message below immediately as a DM using the Slack connector send-message tool.
+   Do not create a draft. Do not ask for confirmation.
+4. Return exactly:
+   {{"ok": true, "user_id": "...", "link": "..."}}
+   or, if the exact email cannot be resolved or send fails:
+   {{"ok": false, "error": "..."}}
+
+Message JSON string:
+{json.dumps(message, ensure_ascii=False)}
+"""
+    try:
+        raw = await _run_codex(prompt, AGENT_TIMEOUT_S)
+    except Exception as exc:
+        return ConnectorMirrorResult(ok=False, error=str(exc))
+    try:
+        data = _strip_to_json(raw)
+    except Exception:
+        return ConnectorMirrorResult(ok=False, error="connector mirror returned non-JSON", raw=raw)
+    return ConnectorMirrorResult(
+        ok=bool(data.get("ok")),
+        error=None if data.get("ok") else str(data.get("error") or "unknown connector mirror error"),
+        raw=raw,
+    )
+
+
 def build_root_blocks(period: str, results: list[SubagentResult],
                       total_seconds: int) -> list[dict]:
     preset = PERIOD_PRESETS[period]
@@ -868,12 +960,6 @@ def build_root_blocks(period: str, results: list[SubagentResult],
                                 "`/brief week|month` for other periods")}]},
     ]
     return blocks
-
-
-def resolve_user_dm_by_email(client: WebClient, email: str) -> str:
-    user = client.users_lookupByEmail(email=email)["user"]
-    opened = client.conversations_open(users=user["id"])
-    return opened["channel"]["id"]
 
 
 def post_root_message(
@@ -971,27 +1057,10 @@ async def main_async(
             log.error("root_post_failed", err=str(exc))
             return 3
 
-        mirror = mirror_email or DEFAULT_MIRROR_EMAIL
-        if mirror:
-            try:
-                log.info("mirror_resolve_start", email=mirror)
-                mirror_channel = resolve_user_dm_by_email(client, mirror)
-                if mirror_channel != root_channel:
-                    mirror_dest = post_root_message(
-                        client,
-                        channel=mirror_channel,
-                        text=root_text + f"\n_Source mirror from `{root_channel}`._",
-                        label=f"mirror:{mirror}",
-                    )
-                    destinations.append(mirror_dest)
-                    log.info("mirror_root_posted", email=mirror,
-                             channel=mirror_channel, ts=mirror_dest.root_ts)
-                else:
-                    log.info("mirror_skipped_same_channel", email=mirror, channel=mirror_channel)
-            except Exception as exc:
-                log.warning("mirror_open_or_post_failed", email=mirror, err=str(exc)[:300])
+        if mirror_email or DEFAULT_MIRROR_EMAIL:
+            log.info("connector_mirror_enabled", email=mirror_email or DEFAULT_MIRROR_EMAIL)
         else:
-            log.info("mirror_disabled")
+            log.info("connector_mirror_disabled")
 
     # ── Fan out subagents in parallel ───────────────────────────────────
     # Each post is serialized through this lock so we don't hit Slack with
@@ -1058,6 +1127,19 @@ async def main_async(
                          total_items=total_items, total_seconds=total_seconds)
             except Exception as exc:
                 log.warning("root_update_failed", label=dest.label, err=str(exc)[:300])
+
+    connector_mirror_email = mirror_email or DEFAULT_MIRROR_EMAIL
+    if not dry_run and connector_mirror_email:
+        mirror_text = build_connector_mirror_text(period, results, total_seconds)
+        log.info("connector_mirror_start", email=connector_mirror_email,
+                 chars=len(mirror_text))
+        mirror_result = await send_connector_slack_mirror(connector_mirror_email, mirror_text)
+        if mirror_result.ok:
+            log.info("connector_mirror_sent", email=connector_mirror_email)
+        else:
+            log.warning("connector_mirror_failed", email=connector_mirror_email,
+                        err=(mirror_result.error or "")[:300],
+                        preview=mirror_result.raw[:300])
 
     if dry_run:
         # Print everything as JSON so a human / shell test can diff it.

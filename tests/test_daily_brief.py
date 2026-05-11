@@ -60,3 +60,30 @@ def test_resolve_cli_bin_finds_local_bin(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", "")
 
     assert daily_brief.resolve_cli_bin("CODEX_BIN", "codex") == str(codex)
+
+
+def test_build_connector_mirror_text_contains_source_links() -> None:
+    spec = daily_brief.SOURCES[3]
+    result = daily_brief.SubagentResult(
+        spec=spec,
+        items=[
+            daily_brief.BriefItem(
+                source="nvbugs",
+                icon="🐛",
+                item_id="1234567",
+                title="ARB waiver needs QA signoff",
+                url="https://nvbugs.nvidia.com/Bug/1234567",
+                group="gpu",
+                reason="arb_related",
+                status="Open",
+            )
+        ],
+        error=None,
+        seconds=4,
+    )
+
+    text = daily_brief.build_connector_mirror_text("day", [result], 4)
+
+    assert "Daily Brief" in text
+    assert "NVBugs" in text
+    assert "<https://nvbugs.nvidia.com/Bug/1234567|1234567 ARB waiver needs QA signoff>" in text

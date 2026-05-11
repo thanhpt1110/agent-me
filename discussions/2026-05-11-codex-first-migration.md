@@ -102,8 +102,9 @@ random `localhost:<port>` callback is SSH-forwarded back to Colossus.
 - Daily brief source fetchers now run through Codex.
 - Slack `brief` / `/brief` invocations now pass the current channel and
   thread timestamp to `agent-me-brief`, so each platform result posts
-  as its own message in the same thread. The same brief is mirrored to
-  the Slack DM resolved from `thaphan@nvidia.com`.
+  as its own message in the same thread. A concise digest is mirrored
+  to `thaphan@nvidia.com` through the Codex Slack connector, not the
+  personal-workspace bot token.
 - NVBugs daily brief prompt now fetches the full open set where QA
   Eng/QA owner is `thaphan` plus open ARB-related bugs involving
   `thaphan`, and every item must include a clickable NVBugs link.
