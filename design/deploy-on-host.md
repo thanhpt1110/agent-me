@@ -366,6 +366,51 @@ Then revert the test commit:
 git revert --no-edit HEAD && git push origin main
 ```
 
+## Step 9 — install the Phase 4 dashboard (optional but recommended)
+
+The dashboard is a read-only web view over the bridge's state. Reads
+the same SQLite the bridge writes, tails `bridge.log`, fans out
+on-demand brief refreshes per source, and shows three live log
+streams (watcher / Slack interactions / Claude session traces).
+
+The default install assumes you're putting it behind a reverse proxy
+on the NVIDIA-internal network — `https://agent-me.nvidia.com`.
+Setup for the proxy host itself lives in
+`design/deploy-proxy-on-host.md`. **You can skip this step entirely**
+if the operator only wants the Slack interface; everything above is
+sufficient for that.
+
+```bash
+cd ~/agent-me
+./scripts/install-dashboard.sh                 # default: reverse-proxy mode
+# or
+./scripts/install-dashboard.sh --tailscale     # also enable Tailscale Funnel as a backup public URL
+# or
+./scripts/install-dashboard.sh --token         # also generate DASHBOARD_TOKEN (defense-in-depth)
+```
+
+The default mode:
+1. `uv sync` (idempotent).
+2. Appends `DASHBOARD_TRUST_NETWORK=1` to `configs/.env` (the env flag
+   that tells the dashboard a non-loopback bind is OK because upstream
+   gates access via VPN + reverse proxy).
+3. Installs and starts `agent-me-dashboard.service` (binds
+   `0.0.0.0:8765`, accepts X-Forwarded-* from any upstream).
+4. Updates the watcher unit so future `git push origin main` also
+   restarts the dashboard along with the bridge.
+
+**Verify:**
+```bash
+systemctl --user is-active agent-me-dashboard.service   # active
+curl -sSL http://127.0.0.1:8765/healthz                 # {"ok":true,...}
+curl -sI http://127.0.0.1:8765/ | grep -i x-dashboard-auth
+# Expected: x-dashboard-auth: trust-network
+```
+
+The dashboard is now reachable from any host on the NVIDIA private
+network via `http://<this-host>:8765`. To get `https://agent-me.nvidia.com`
+working, follow `design/deploy-proxy-on-host.md` on the proxy host.
+
 ## Day-2 ops cheat sheet
 
 ```bash

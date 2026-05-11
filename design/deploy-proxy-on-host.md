@@ -1,0 +1,382 @@
+# Deploy the reverse proxy for `agent-me.nvidia.com`
+
+This file is the **single source of truth** for setting up the
+NVIDIA-internal reverse proxy that exposes the agent-me dashboard at
+`https://agent-me.nvidia.com`. It's written so a Cursor session
+running on the proxy host can read it end-to-end and reach a working
+state with minimal back-and-forth from the human.
+
+> **You are reading this on the proxy host.** The dashboard backend
+> runs on a different machine (Colossus or any internal-NVIDIA Linux
+> systemd box, see `design/deploy-on-host.md`). This proxy host's job
+> is to terminate TLS, run access control via VPN at the network
+> layer, and forward HTTP traffic to the backend on port 8765.
+
+## Architecture refresher
+
+```
+   ┌──────────────────────────────────┐
+   │ NVIDIA employee on VPN           │
+   │ https://agent-me.nvidia.com      │
+   └──────────────┬───────────────────┘
+                  │ HTTPS (NVIDIA-internal CA cert)
+                  ▼
+   ┌──────────────────────────────────┐  ← YOU ARE HERE (proxy host)
+   │ Reverse proxy                    │
+   │   nginx / caddy / traefik        │
+   │   port 443 (TLS)                 │
+   │   forwards plain HTTP →          │
+   └──────────────┬───────────────────┘
+                  │ HTTP (private network)
+                  ▼
+   ┌──────────────────────────────────┐
+   │ agent-me-dashboard.service       │  ← runs on Colossus
+   │   uvicorn @ 0.0.0.0:8765         │
+   │   Starlette ASGI app             │
+   └──────────────────────────────────┘
+```
+
+The two things that have to be true for `https://agent-me.nvidia.com`
+to resolve and work end-to-end:
+
+1. **DNS**: `agent-me.nvidia.com` → IP of *this* proxy host.
+2. **Network**: this host can reach the dashboard backend on
+   `<colossus-host>:8765` over plain HTTP.
+
+DNS is usually managed by an NVIDIA DNS team — if you don't see the
+record yet, file a ticket against your domain admins and pause here.
+
+## Things the human needs to tell you
+
+Before running this playbook, the human (or whoever is operating
+agent-me) needs to give you exactly these three things:
+
+| What | Example | Why |
+|---|---|---|
+| **Backend hostname or IP** | `1xa100-40.example.nvidia.com` or `10.20.30.40` | Where the dashboard runs. The proxy needs a working `proxy_pass` target. |
+| **Backend port** | `8765` | Default for `agent-me-dashboard.service`; only differs if explicitly overridden. |
+| **TLS cert source** | "Use NVIDIA-internal ACME via cert-manager" / "files at `/etc/ssl/...`" / "on Vault path X" | How to acquire/renew the cert for `agent-me.nvidia.com`. NVIDIA infra has its own CA workflow; this doc deliberately stays neutral. |
+
+If the human hasn't shared these yet, ask once via Slack/issue/etc.
+and pause. Don't guess.
+
+## Outbound network this host must reach
+
+Sanity-check before continuing:
+
+```bash
+BACKEND_HOST="<paste-from-above>"
+BACKEND_PORT="<paste-from-above>"
+
+for url in \
+    https://github.com \
+    "http://$BACKEND_HOST:$BACKEND_PORT/healthz"; do
+    if curl -fsSL --connect-timeout 5 -o /dev/null -w "%{http_code}\n" "$url" >/dev/null 2>&1; then
+        echo "  ✓ $url"
+    else
+        echo "  ✗ $url   (will block deployment)"
+    fi
+done
+```
+
+The backend host should respond `200` on `/healthz` even before this
+proxy is wired up — the dashboard binds to `0.0.0.0:8765` and is
+reachable on the NVIDIA private network from the proxy host. If it
+fails:
+- Backend isn't running yet → see `design/deploy-on-host.md` step 9.
+- Backend is on a different network segment → confirm the human
+  intends *this* proxy host to be allowed to reach it.
+
+## Step 1 — clone repo (so config snippets are local)
+
+```bash
+cd ~
+git clone https://github.com/thanhpt1110/agent-me.git
+cd agent-me
+git log --oneline -3   # sanity: at least 3 commits including reverse-proxy work
+```
+
+You don't need `uv sync`, `bootstrap.sh`, or any Python deps on this
+host. Only the `design/reverse-proxy-config.md` file matters.
+
+## Step 2 — pick the proxy software
+
+In rough preference order:
+
+1. **nginx** — most likely already installed at NVIDIA. Most snippets
+   in `design/reverse-proxy-config.md` are nginx. Skip to Step 3a.
+2. **Caddy** — easier TLS automation if you have free choice. Step 3b.
+3. **Traefik** — only if you're already running it (e.g. for
+   Kubernetes Ingress). Step 3c.
+
+Verify what's installed:
+
+```bash
+command -v nginx caddy traefik 2>&1
+nginx -v 2>&1 || true
+caddy version 2>&1 || true
+traefik version 2>&1 || true
+```
+
+## Step 3a — nginx config
+
+Copy the snippet from `design/reverse-proxy-config.md` (the
+`nginx snippet` section), substitute the upstream target, drop into
+`/etc/nginx/conf.d/`:
+
+```bash
+# Substitute {{ BACKEND_HOST }} and {{ BACKEND_PORT }} with the values
+# the human gave you. Example shown — adjust paths to match the
+# distribution's nginx layout (debian: conf.d/, redhat: also conf.d/,
+# alpine: http.d/).
+
+cat > /etc/nginx/conf.d/agent-me.conf <<'NGINX'
+# generated by deploy-proxy-on-host.md — see design/reverse-proxy-config.md for full spec.
+
+upstream agent_me_dashboard {
+    server BACKEND_HOST:BACKEND_PORT;
+    keepalive 16;
+    keepalive_timeout 75s;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name agent-me.nvidia.com;
+
+    ssl_certificate     /etc/ssl/certs/agent-me.nvidia.com.crt;
+    ssl_certificate_key /etc/ssl/private/agent-me.nvidia.com.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    client_max_body_size 4m;
+    proxy_buffer_size    32k;
+    proxy_buffers        16 32k;
+    proxy_busy_buffers_size 64k;
+
+    # SSE — disable buffering, long timeout
+    location ~ ^/api/sse/ {
+        proxy_pass http://agent_me_dashboard;
+
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_request_buffering off;
+        chunked_transfer_encoding on;
+
+        proxy_read_timeout    3600s;
+        proxy_send_timeout    3600s;
+        proxy_connect_timeout 5s;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_set_header Connection "";
+    }
+
+    # Everything else
+    location / {
+        proxy_pass http://agent_me_dashboard;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+    }
+}
+NGINX
+
+# Replace the placeholders with real values:
+sed -i "s/BACKEND_HOST/$BACKEND_HOST/g; s/BACKEND_PORT/$BACKEND_PORT/g" \
+    /etc/nginx/conf.d/agent-me.conf
+```
+
+Test the config + reload:
+
+```bash
+sudo nginx -t            # should print "syntax is ok" + "test is successful"
+sudo systemctl reload nginx
+```
+
+If `nginx -t` says the cert files are missing, do Step 4 first
+(certs), then come back.
+
+## Step 3b — Caddy config
+
+If using Caddy, append to `/etc/caddy/Caddyfile`:
+
+```bash
+cat >> /etc/caddy/Caddyfile <<'CADDY'
+
+agent-me.nvidia.com {
+    @sse path /api/sse/*
+    handle @sse {
+        reverse_proxy BACKEND_HOST:BACKEND_PORT {
+            flush_interval -1
+            transport http {
+                read_timeout 1h
+                write_timeout 1h
+            }
+        }
+    }
+    handle {
+        reverse_proxy BACKEND_HOST:BACKEND_PORT {
+            transport http {
+                read_timeout 60s
+                write_timeout 60s
+            }
+        }
+    }
+    request_header X-Forwarded-Proto {scheme}
+    request_header X-Forwarded-Host  {host}
+    log {
+        output file /var/log/caddy/agent-me.access.log
+    }
+}
+CADDY
+
+sudo sed -i "s/BACKEND_HOST/$BACKEND_HOST/g; s/BACKEND_PORT/$BACKEND_PORT/g" \
+    /etc/caddy/Caddyfile
+
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+Caddy normally automates TLS, but in NVIDIA-internal it likely needs
+manual cert files via `tls /path/cert /path/key` — confirm with the
+human + add that line inside the `agent-me.nvidia.com { ... }` block
+if needed.
+
+## Step 3c — Traefik config
+
+See `design/reverse-proxy-config.md` § "Traefik snippet". Apply via
+your normal config flow (file provider, K8s CRDs, or labels — depends
+on how Traefik is invoked at NVIDIA).
+
+## Step 4 — TLS cert for agent-me.nvidia.com
+
+This is the step where this doc deliberately stops being prescriptive
+because **NVIDIA's internal CA process varies by deployment**. The
+options the human will pick from:
+
+| Option | When | What you do here |
+|---|---|---|
+| **Pre-issued cert files** | Human gives you `.crt` + `.key` to drop in `/etc/ssl/...` | `chmod 600` the key, `chmod 644` the cert. Match nginx config paths. |
+| **Cert-manager (K8s)** | Proxy is K8s ingress | Apply a `Certificate` resource; nothing on this host. |
+| **Vault PKI** | NVIDIA Vault issues short-lived certs | Run `vault write pki/issue/agent-me ...`; cron the renewal. |
+| **ACME via internal CA** | Caddy / nginx-acme integration | Configure as per CA's docs. |
+
+Ask the human which path, then apply. If you don't know, fail loud
+("which TLS path should I use?") and stop.
+
+## Step 5 — verify the proxy works end-to-end
+
+After cert + config are in place:
+
+```bash
+# 1. Local: proxy software is happy
+sudo nginx -t        # or: sudo caddy validate --config /etc/caddy/Caddyfile
+curl -sSL -H "Host: agent-me.nvidia.com" -k https://127.0.0.1/healthz
+
+# 2. From an NVIDIA-VPN'd machine (not this host)
+curl -sSL https://agent-me.nvidia.com/healthz | jq .
+# Expected: { "ok": true, "uptime_s": ..., "now_ms": ... }
+
+# 3. Auth header sanity (should be "trust-network" by default)
+curl -sSL -I https://agent-me.nvidia.com/ | grep -i x-dashboard-auth
+# Expected: x-dashboard-auth: trust-network
+
+# 4. SSE flush — should print events one at a time
+curl -sSL --no-buffer https://agent-me.nvidia.com/api/sse/logs/watcher \
+    --max-time 5
+# Expect: lines starting with "event: log" + "data: {...}" within ~1s.
+# If it hangs for 5s and dumps everything at once, proxy is buffering — fix.
+
+# 5. HTML page served correctly
+curl -sSL https://agent-me.nvidia.com/ | head -20
+# Should be the dashboard HTML — agent-me + Tailwind CDN script tag.
+```
+
+If all 5 pass, **the proxy is done**. Open
+`https://agent-me.nvidia.com/` in a VPN'd browser. Expected:
+- 7 source cards (Jira / GitLab / Confluence / NVBugs / Slack / Outlook / GitHub)
+- ⚙ Ops panel with bridge stats + recent threads
+- 📜 Logs page with three live tabs
+
+## Things that can go wrong
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `nginx -t` says cert file missing | Step 4 not done yet | Either the human hasn't sent certs, or Vault/ACME hasn't issued yet. |
+| `curl agent-me.nvidia.com` → DNS error | DNS record doesn't exist or doesn't point here | File a ticket with NVIDIA DNS team. The proxy can't fix DNS. |
+| `curl agent-me.nvidia.com/healthz` → 502 | Backend unreachable from proxy | Run the outbound network check in step 0. Fix the route or the backend. |
+| `/healthz` 200 but `/` 401 / 403 | DASHBOARD_TOKEN set on backend without DASHBOARD_TRUST_NETWORK | On the backend host: edit `configs/.env`, add `DASHBOARD_TRUST_NETWORK=1`, `systemctl --user restart agent-me-dashboard`. |
+| `X-Dashboard-Auth: disabled` (instead of trust-network) | Backend env missing `DASHBOARD_TRUST_NETWORK=1` | Same fix — set on the backend host. |
+| SSE endpoint dumps everything at once | Proxy buffering enabled | nginx: confirm `proxy_buffering off` for `/api/sse/*` location. |
+| TLS handshake fails / cert error | Wrong cert chain or wrong CN | Check `openssl s_client -connect agent-me.nvidia.com:443 -servername agent-me.nvidia.com` — CN should be `agent-me.nvidia.com` and the chain should validate against NVIDIA-internal CA bundle. |
+| `curl --no-buffer SSE` returns immediately with empty body | Proxy is closing the connection | Check `proxy_read_timeout` ≥ 60s; check the backend isn't 502'ing. |
+
+## Hardening / defense-in-depth (optional)
+
+1. **Add `DASHBOARD_TOKEN` on the backend** if multiple NVIDIA
+   employees can VPN but only one operator should see the dashboard.
+   That's the "Option B" path in `design/dashboard-design.md` § Auth.
+2. **Restrict by IP** in the proxy: e.g. nginx `allow 10.0.0.0/8;
+   deny all;` if NVIDIA VPN's CIDR is well-defined.
+3. **HSTS** — only after cert is stable: `add_header
+   Strict-Transport-Security "max-age=31536000; includeSubDomains" always;`
+4. **Access logs** to a centralised aggregator (Splunk / Datadog).
+5. **Rate-limit** /api/refresh/_all to prevent accidental thunder-
+   restart (e.g. nginx `limit_req zone=...`).
+
+## Ongoing maintenance
+
+This is a single-purpose proxy. Once it's up:
+
+- **Cert rotation** — depending on cert source, schedule renewal.
+  Caddy + ACME = automatic. Vault / pre-issued = cron.
+- **Backend updates** — none needed here. The dashboard auto-deploys
+  on the backend host via `agent-me-watch.service` (60s git poll).
+- **Proxy upgrades** — when nginx/caddy ships a security release,
+  apply via your distribution's normal process. The config above
+  uses no exotic features — should work across versions.
+- **Logs to rotate** — set up logrotate for
+  `/var/log/nginx/agent-me.access.log` (or caddy equivalent).
+
+## What this doc deliberately doesn't cover
+
+- **DNS record creation** — file a ticket with NVIDIA DNS, this proxy
+  can't fix DNS.
+- **Cert-manager / Vault / ACME setup itself** — varies wildly across
+  NVIDIA deployments. This doc only documents the slot the cert lands
+  in (nginx `ssl_certificate`).
+- **Internal load balancing across multiple backend hosts** — current
+  agent-me deployment is single-host. If we ever add a hot spare,
+  the snippet above's `upstream { server …; server … backup; }` is
+  the place.
+- **The dashboard backend itself** — see `design/deploy-on-host.md`
+  for the agent-me-bridge + agent-me-dashboard install.
+
+## Cross-references
+
+- `design/reverse-proxy-config.md` — config snippets (full versions
+  of nginx/caddy/traefik) + sanity checklist + auth model + headers
+  spec.
+- `design/dashboard-design.md` — backend architecture, route list,
+  auth model, isolation guarantees from the bridge.
+- `design/deploy-on-host.md` — backend host install (the other side
+  of this proxy).

@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Claude (Opus 4.7) — Phase 4 dashboard pivoted to NVIDIA-internal reverse proxy at `agent-me.nvidia.com` (VPN-gated); Tailscale Funnel now opt-in. Phase 3 Colossus deploy: steps 1–5 done (16/17 MCPs ✓ via Keychain transfer); steps 6–8 (systemd / smoke test / auto-deploy verify) on the user._
+_Last updated: 2026-05-11 by Claude (Opus 4.7) — Phase 4 dashboard FE+BE smoke-deployed on this dev host (real bridge state.db, 9 threads / 7 sessions / 7 source snapshots streaming through SSE); reverse-proxy pivot doc + proxy-host playbook published. Phase 3 Colossus deploy: steps 1–5 done (16/17 MCPs ✓ via Keychain transfer); steps 6–8 (systemd / smoke test / auto-deploy verify) on the user._
 
 ## Phase
 
@@ -69,6 +69,22 @@ approval gate.
   is **untouched**. Design doc: `design/dashboard-design.md`. Smoke
   tested locally (compile + import + routes + auth). **Not deployed
   yet** — waiting on Phase 3 Colossus host to stabilize.
+- [x] **Phase 4 — reverse-proxy pivot + end-to-end deploy doc (2026-05-11)** —
+  Dashboard FE+BE were smoke-deployed on this dev host
+  (`/localhome/local-thaphan/agent-me`) with the new bind 0.0.0.0:8765 +
+  `--forwarded-allow-ips=*` + `DASHBOARD_TRUST_NETWORK=1`. Real bridge
+  state.db (9 threads / 18 messages / 7 claude sessions / 7 pending
+  approvals) read through `mode=ro`; live SSE streamed actual
+  `query_handled` / `query_failed` events from the bridge. `/healthz`
+  200, `/` 200 with `X-Dashboard-Auth: trust-network`, `/source/jira`
+  / `/ops` / `/logs` all render. New comprehensive playbook
+  `design/deploy-proxy-on-host.md` walks a Cursor session on the
+  proxy host through cert + nginx/caddy/traefik config + verification.
+  `design/deploy-on-host.md` step 9 added for the dashboard install.
+  README §8 added with the two-host setup pointer. **Backend deploy on
+  Colossus + proxy config on agent-me.nvidia.com host still pending
+  the operator** — both docs are written so a Cursor agent reading
+  this repo can carry it through end-to-end with minimal human input.
 - [x] **Phase 2b approval gate — DRAFT (2026-05-10 night)** —
   `src/agent_me/slack_bridge/approvals.py` (new module). PreToolUse
   hook + file-system semaphore at `${STATE_DIR}/approvals/{requests,
