@@ -85,6 +85,27 @@ approval gate.
   Colossus + proxy config on agent-me.nvidia.com host still pending
   the operator** — both docs are written so a Cursor agent reading
   this repo can carry it through end-to-end with minimal human input.
+- [x] **Proxy host live — Caddy on `agent-me.nvidia.com` (2026-05-11)** —
+  `agent-me.nvidia.com` (DNS → `10.25.186.74`, hostname `agent-me`)
+  now reverse-proxies to the Colossus dashboard at
+  `ipp1-2252.ipp1a1.colossus.nvidia.com:8765`. Stack: Caddy `v2.11.2`
+  (already user-local at `~/.local/bin/caddy`), Caddyfile at
+  `~/.config/caddy/Caddyfile`, user-systemd unit
+  `~/.config/systemd/user/caddy.service`, `cap_net_bind_service=+ep`
+  on the binary so `:80` binds without root, `Linger=yes` so it
+  survives logout. **HTTP-only** by operator decision (self-use; TLS
+  cert path deliberately deferred). Verified 5/5 from playbook
+  Step 5: `caddy validate` ok, `/healthz` `{"ok":true,"uptime_s":1388}`,
+  `X-Dashboard-Auth: trust-network`, HTML title `Overview · agent-me
+  dashboard`, real Edge browser request from operator's machine
+  (172.29.98.95) logged at 21,696 B / 200, upstream
+  `Server: uvicorn`. Caddy health-checks upstream `/healthz` every
+  30 s. Full replay-able steps + Caddyfile + unit + verification log
+  captured in
+  `discussions/2026-05-11-proxy-host-deployed-caddy.md`. Open
+  follow-ups: TLS (operator to identify NVIDIA internal CA process —
+  Glean MCP wasn't reachable this session so the agent didn't bring
+  concrete team/runbook), logrotate for the access log.
 - [x] **Phase 2b approval gate — DRAFT (2026-05-10 night)** —
   `src/agent_me/slack_bridge/approvals.py` (new module). PreToolUse
   hook + file-system semaphore at `${STATE_DIR}/approvals/{requests,
