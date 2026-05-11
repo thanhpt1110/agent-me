@@ -75,6 +75,20 @@ def test_model_free_followup_request_detection(monkeypatch, tmp_path) -> None:
     assert app.looks_like_model_free_followup_request("execute it for the right email")
 
 
+def test_outlook_write_request_detection(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert app.looks_like_outlook_write_request("draft an email to me")
+    assert app.looks_like_outlook_write_request("so" + "\u1ea1" + "n 1 email draft test codex")
+    assert app.looks_like_outlook_write_request("create reply all draft for this email")
+    assert not app.looks_like_outlook_write_request("read email about Model Free 2.0.4")
+
+
 def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
@@ -126,11 +140,11 @@ def test_model_free_prompt_always_creates_new_draft(monkeypatch, tmp_path) -> No
 
     captured: dict[str, str] = {}
 
-    async def fake_spawn_codex(prompt, **kwargs):
+    async def fake_spawn_codex_app_server(prompt):
         captured["prompt"] = prompt
-        return "ok", "session"
+        return "ok", None
 
-    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
+    monkeypatch.setattr(app, "spawn_codex_app_server", fake_spawn_codex_app_server)
 
     import asyncio
 
@@ -146,3 +160,30 @@ def test_model_free_prompt_always_creates_new_draft(monkeypatch, tmp_path) -> No
     assert "Do not skip because a previous user-authored" in prompt
     assert "Reject subjects such as `ga-model-free-nim 2.0.4`" in prompt
     assert "if skipped because an equivalent reply already exists" not in prompt
+
+
+def test_app_server_final_message_parser(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    transcript = """noise
+< {
+<   "method": "item/completed",
+<   "params": {
+<     "item": {
+<       "type": "agentMessage",
+<       "text": "Draft created. Link: https://outlook.example/item",
+<       "phase": "final_answer"
+<     }
+<   }
+< }
+tail
+"""
+
+    assert app.parse_app_server_final_message(transcript) == (
+        "Draft created. Link: https://outlook.example/item"
+    )

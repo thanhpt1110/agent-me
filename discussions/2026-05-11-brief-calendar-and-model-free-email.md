@@ -143,6 +143,38 @@ removes the hallucinated target selection and duplicate-skip behavior; a direct
 non-headless connector path or Graph-backed draft fallback is still needed if
 Slack-driven Outlook draft creation must bypass that confirmation layer.
 
+## Follow-up: App-Server Write Path
+
+The next investigation isolated why direct Codex connector calls succeed while
+Slack bridge calls fail. The bridge used `codex exec --json`, and that path
+returns `user cancelled MCP tool call` for Outlook write tools even when the
+Outlook draft tool is passed with `approval_mode="approve"`. This is not an
+expired Outlook connector token: the same account can create drafts from the
+direct Codex connector, and `codex debug app-server send-message-v2` also
+created a saved Outlook draft successfully.
+
+The working path is Codex app-server. It starts a normal app-server thread with
+`approvalPolicy=on-request`, runs guardian auto-review for the Outlook connector
+write, approves the low-risk draft action, and then the connector saves the
+draft. The bridge now routes Model Free draft requests and explicit Outlook
+draft/write Slack prompts through that app-server path. Normal chat and read
+flows stay on `codex exec --json`.
+
+MaaS Outlook is not a viable write fallback right now. Direct HTTP
+`tools/list` against `maas-outlook` returned HTTP 401 with the copied bearer
+token, and historical MaaS Outlook tool inventory only exposed read tools such
+as `outlook_list_messages`, `outlook_get_message`, and calendar reads.
+
+End-to-end bridge-helper smoke:
+
+```bash
+uv run python -c 'import asyncio; from agent_me.slack_bridge.app import cmd_model_free_draft; print(asyncio.run(cmd_model_free_draft(subject_pattern="Model Free 2.0.4", user_request="bridge helper smoke for Model Free 2.0.4")))'
+```
+
+Result: draft created, not sent, against Sergei Nikolaev's inbound
+`SWQA post-deployment review request for model-free 2.0.4` message received
+`2026-05-08T01:23:18Z`.
+
 ## Verification
 
 - `python -m compileall src scripts tests`

@@ -535,6 +535,20 @@ approval gate.
   `user cancelled MCP tool call` for Outlook write calls when the app
   connector confirmation layer blocks the draft creation; that is a
   connector execution limit, not subject selection.
+- **Outlook writes use Codex app-server (2026-05-11)** — direct
+  testing showed `codex exec` still returns `user cancelled MCP tool call`
+  for Outlook app writes even with per-tool `approval_mode="approve"`.
+  The same draft request succeeds through
+  `codex debug app-server send-message-v2`, where guardian auto-review
+  approves the connector write and the Outlook draft is saved. The Slack
+  bridge now routes Model Free drafts and other explicit Outlook draft/write
+  requests through the app-server path, while normal reads and chat keep using
+  `codex exec --json`. Direct MaaS Outlook fallback is not available for
+  draft creation: the local MaaS Outlook bearer token returned HTTP 401 on
+  `tools/list`, and the historical MaaS Outlook tool surface only included
+  read tools. End-to-end smoke of `cmd_model_free_draft("Model Free 2.0.4")`
+  through the bridge helper succeeded and created a reply-all draft on the
+  Sergei Nikolaev inbound message received `2026-05-08T01:23:18Z`.
 
 ## Phase 4 — locked decisions
 

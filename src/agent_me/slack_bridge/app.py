@@ -33,6 +33,7 @@ import signal
 import sqlite3
 import sys
 import time
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -697,6 +698,93 @@ def _codex_item_name(item: dict[str, Any]) -> str:
     return str(item.get("type") or "item")
 
 
+def _codex_app_server_args(prompt: str) -> list[str]:
+    return [
+        CODEX_BIN, "debug", "app-server", "send-message-v2", prompt,
+    ]
+
+
+def _parse_debug_json_blocks(output: str) -> list[dict[str, Any]]:
+    """Extract JSON-RPC objects from `codex debug app-server` transcript output."""
+    blocks: list[dict[str, Any]] = []
+    lines = output.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.startswith("< {"):
+            i += 1
+            continue
+        chunk: list[str] = []
+        while i < len(lines) and lines[i].startswith("< "):
+            chunk.append(lines[i][2:])
+            try:
+                obj = json.loads("\n".join(chunk))
+            except json.JSONDecodeError:
+                i += 1
+                continue
+            if isinstance(obj, dict):
+                blocks.append(obj)
+            i += 1
+            break
+        else:
+            i += 1
+    return blocks
+
+
+def parse_app_server_final_message(output: str) -> str | None:
+    final: str | None = None
+    for obj in _parse_debug_json_blocks(output):
+        if obj.get("method") != "item/completed":
+            continue
+        item = ((obj.get("params") or {}).get("item") or {})
+        if item.get("type") == "agentMessage":
+            text = (item.get("text") or "").strip()
+            if text:
+                final = text
+    return final
+
+
+async def spawn_codex_app_server(prompt: str) -> tuple[str, str | None]:
+    """Run one app-server turn for connector writes that `codex exec` cancels.
+
+    `codex exec` currently reports `user cancelled MCP tool call` for Outlook
+    app writes in headless mode. The app-server path performs the same
+    connector call through the guardian auto-review flow and can save drafts.
+    """
+    args = _codex_app_server_args(prompt)
+    log.info("codex_app_server_spawn", model=MODEL, prompt_len=len(prompt))
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(REPO_DIR),
+        env={**os.environ, **codex_mcp_token_env()},
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=32 * 1024 * 1024,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=AGENT_TIMEOUT_S,
+        )
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"codex app-server timed out after {AGENT_TIMEOUT_S}s") from exc
+
+    stdout_text = stdout.decode(errors="replace")
+    stderr_text = stderr.decode(errors="replace").strip()
+    if proc.returncode != 0:
+        err = (stderr_text or stdout_text)[-1000:]
+        raise RuntimeError(f"codex app-server exited {proc.returncode}: {err}")
+
+    final = parse_app_server_final_message(stdout_text)
+    if not final:
+        tail = (stdout_text + "\n" + stderr_text)[-1000:]
+        raise RuntimeError(f"codex app-server returned no final message: {tail}")
+    log.info("codex_app_server_done", response=clip(final, 500))
+    return final, None
+
+
 async def spawn_codex(
     prompt: str,
     *,
@@ -960,6 +1048,13 @@ MODEL_FREE_FOLLOWUP_TERMS = (
     "draft", "reply all", "reply-all", "confirm", "execute", "same email",
     "this email", "right email", "again", "test feature",
 )
+OUTLOOK_WRITE_CONTEXT_TERMS = (
+    "email", "mail", "outlook", "reply all", "reply-all",
+)
+OUTLOOK_WRITE_ACTION_TERMS = (
+    "draft", "soan", "reply all", "reply-all", "create reply", "create draft",
+    "compose", "phan hoi", "tra loi",
+)
 
 
 def model_free_subject_pattern_from_text(text: str | None) -> str:
@@ -997,6 +1092,18 @@ def model_free_request_forces_draft(text: str | None) -> bool:
 def looks_like_model_free_followup_request(text: str | None) -> bool:
     lowered = (text or "").lower()
     return any(term in lowered for term in MODEL_FREE_FOLLOWUP_TERMS)
+
+
+def ascii_search_text(text: str | None) -> str:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+
+def looks_like_outlook_write_request(text: str | None) -> bool:
+    lowered = ascii_search_text(text)
+    if not any(term in lowered for term in OUTLOOK_WRITE_ACTION_TERMS):
+        return False
+    return any(term in lowered for term in OUTLOOK_WRITE_CONTEXT_TERMS)
 
 
 async def cmd_brief(
@@ -1094,12 +1201,44 @@ with this exact plain-text body:
 
 Current user request: {user_request or "/model-free-draft"}
 
-Return a concise status:
+Return a concise Vietnamese status:
 - if created: draft created, subject, sender, received time, and source link if available
 - if no match: say no matching `{subject_pattern}` email was found
 - if the connector fails: include the exact failure in one short line
 """
-    answer, _sid = await spawn_codex(prompt, progress_cb=progress_cb, thread_ts=thread_ts)
+    if progress_cb:
+        await progress_cb({
+            "tools_started": 1,
+            "tools_done": 0,
+            "in_flight": {"app-server": "codex-app-server:outlook"},
+            "completed": [],
+            "session_id": None,
+            "final_text": None,
+            "is_error": False,
+            "error_message": None,
+        })
+    answer, _sid = await spawn_codex_app_server(prompt)
+    return answer.strip() or "_(no output)_"
+
+
+async def cmd_outlook_app_server_write(user_request: str) -> str:
+    prompt = f"""The Slack user explicitly requested an Outlook Email write or draft action.
+
+Use only Codex Outlook Email connector tools. Do not use shell commands, PA,
+Claude CLI, browser automation, or local files.
+
+Rules:
+- Draft-first unless the user explicitly asks to send.
+- If the request is missing a required recipient or target thread, ask one
+  concise clarification instead of inventing it.
+- If enough details are present, perform the requested draft/write action.
+- Return a concise Vietnamese status with the subject and Outlook link when a
+  draft is created.
+- If the connector fails, include the exact failure in one short line.
+
+Current user request: {user_request}
+"""
+    answer, _sid = await spawn_codex_app_server(prompt)
     return answer.strip() or "_(no output)_"
 
 
@@ -1398,6 +1537,24 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             await update_progress(
                 client, channel, placeholder_ts,
                 f"⚠️ Model Free draft check failed: `{str(exc)[:600]}`",
+            )
+        return
+
+    if looks_like_outlook_write_request(cleaned):
+        await upsert_thread(thread_ts, channel, user_id)
+        await insert_message(thread_ts, "user", cleaned, event_ts)
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        try:
+            result = await cmd_outlook_app_server_write(cleaned)
+            await update_progress(client, channel, placeholder_ts, result)
+            await insert_message(thread_ts, "assistant", result, placeholder_ts)
+            log.info("outlook_app_server_write_handled", thread_ts=thread_ts)
+        except Exception as exc:
+            log.error("outlook_app_server_write_failed",
+                      err=str(exc), thread_ts=thread_ts)
+            await update_progress(
+                client, channel, placeholder_ts,
+                f"⚠️ Outlook draft/write failed: `{str(exc)[:600]}`",
             )
         return
 
