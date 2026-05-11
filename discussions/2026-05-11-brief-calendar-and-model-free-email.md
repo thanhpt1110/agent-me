@@ -112,6 +112,12 @@ latest inbound non-self message, and avoids duplicate drafts when the thread
 already has the requested user-authored reply unless the user explicitly asks
 for another draft.
 
+Follow-up service inspection showed the helper completed successfully, but
+Slack held the placeholder at `thinking...` because the dedicated route did not
+pass the standard Codex progress callback into `spawn_codex`. The helper now
+accepts and forwards a progress callback, and the Model Free message route uses
+the same throttled Slack progress renderer as generic chat.
+
 ## Verification
 
 - `python -m compileall src scripts tests`

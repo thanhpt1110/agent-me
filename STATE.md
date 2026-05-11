@@ -86,7 +86,9 @@ approval gate.
   Follow-up fix: generic Model Free email prompts now route through
   the dedicated helper, extract exact versions like `2.0.4`, select
   the latest inbound non-self message, and avoid duplicate drafts when
-  the requested user-authored reply already exists.
+  the requested user-authored reply already exists. That route now
+  forwards the standard Codex progress callback so Slack shows live
+  `N/M tool calls done` updates instead of staying at `thinking...`.
 - [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
   vector source is `assets/agent-me-avatar.svg`; the visual is a
   text-free NVIDIA-green autonomous robot with circuit/web3 styling and

@@ -995,6 +995,7 @@ async def cmd_model_free_draft(
     subject_pattern: str | None = None,
     user_request: str | None = None,
     force_draft: bool = True,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> str:
     subject_pattern = subject_pattern or MODEL_FREE_SUBJECT_PATTERN
     draft_mode = (
@@ -1027,7 +1028,7 @@ Return a concise status:
 - if no match: say no matching `{subject_pattern}` email was found
 - if the connector fails: include the exact failure in one short line
 """
-    answer, _sid = await spawn_codex(prompt, progress_cb=None, thread_ts=thread_ts)
+    answer, _sid = await spawn_codex(prompt, progress_cb=progress_cb, thread_ts=thread_ts)
     return answer.strip() or "_(no output)_"
 
 
@@ -1145,6 +1146,33 @@ async def update_progress(client, channel: str, ts: str, text: str) -> None:
     await client.chat_update(channel=channel, ts=ts, text=truncate_for_slack(text))
 
 
+def make_slack_progress_callback(
+    client, channel: str, placeholder_ts: str,
+) -> Callable[[dict[str, Any]], Awaitable[None]]:
+    """Create a throttled Codex progress callback for one Slack placeholder."""
+    progress_state: dict[str, float] = {"last": 0.0}
+    progress_lock = asyncio.Lock()
+
+    async def progress_cb(state: dict[str, Any]) -> None:
+        now = time.monotonic()
+        is_final = state.get("final_text") is not None or state.get("is_error")
+        async with progress_lock:
+            if not is_final and now - progress_state["last"] < PROGRESS_UPDATE_MIN_INTERVAL_S:
+                return
+            progress_state["last"] = now
+            if is_final:
+                return  # final reply replaces the placeholder.
+            text = format_progress(state)
+        try:
+            await client.chat_update(
+                channel=channel, ts=placeholder_ts, text=text,
+            )
+        except Exception as exc:
+            log.warning("progress_update_failed", err=str(exc))
+
+    return progress_cb
+
+
 # Track auto-discovered operator user_id when SLACK_ALLOWED_USER_ID is unset.
 _operator_user_id: str | None = os.environ.get("SLACK_ALLOWED_USER_ID") or None
 
@@ -1244,12 +1272,14 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
 
     if looks_like_model_free_email_request(cleaned):
         placeholder_ts = await post_thinking(client, channel, thread_ts)
+        progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
         try:
             result = await cmd_model_free_draft(
                 thread_ts=thread_ts,
                 subject_pattern=model_free_subject_pattern_from_text(cleaned),
                 user_request=cleaned,
                 force_draft=model_free_request_forces_draft(cleaned),
+                progress_cb=progress_cb,
             )
             await update_progress(client, channel, placeholder_ts, result)
             log.info(
@@ -1290,29 +1320,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         f"{cleaned}"
     )
     start = time.time()
-    # Throttled progress callback: surface live tool_use/tool_result
-    # counts back into the Slack placeholder. Updates capped to once
-    # every PROGRESS_UPDATE_MIN_INTERVAL_S to stay under Slack tier-2
-    # rate limits and to avoid noisy single-line flicker.
-    progress_state: dict[str, float] = {"last": 0.0}
-    progress_lock = asyncio.Lock()
-
-    async def progress_cb(state: dict[str, Any]) -> None:
-        now = time.monotonic()
-        is_final = state.get("final_text") is not None or state.get("is_error")
-        async with progress_lock:
-            if not is_final and now - progress_state["last"] < PROGRESS_UPDATE_MIN_INTERVAL_S:
-                return
-            progress_state["last"] = now
-            if is_final:
-                return  # final reply will replace the placeholder via post_chunked_reply
-            text = format_progress(state)
-        try:
-            await client.chat_update(
-                channel=channel, ts=placeholder_ts, text=text,
-            )
-        except Exception as exc:
-            log.warning("progress_update_failed", err=str(exc))
+    progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
 
     try:
         # Look up the Codex session for this Slack thread. First message
