@@ -4,15 +4,15 @@ _Session run while user waited on Phase 3 Colossus MCP-reauth verification._
 
 ## Context
 
-User explicitly asked: "trong lúc đợi cài đặt và verify stage MCP
-reauth từ máy colossus, bạn làm draft trước phase 4 là build web
-hoặc dashboard để track toàn bộ task theo từng danh mục được ko?"
+User explicitly asked for a Phase 4 draft while waiting on Colossus
+MCP reauth verification: build a web/dashboard surface to track all
+tasks by category.
 
 Constraints from user (verbatim, simplified):
 1. Track all tasks by category (the 7 brief sources).
 2. Tools: anything goes — but **smooth + stable**.
-3. **Public link without owning a DNS name** ("MAKE SURE CÁI NÀY
-   TRƯỚC KHI implement").
+3. **Public link without owning a DNS name**; user explicitly asked to
+   verify this before implementation.
 4. Must NOT disturb the existing Slack flow.
 
 ## Tunnel decision
@@ -26,11 +26,11 @@ Compared four options for "public URL without owning DNS":
 | **Tailscale Funnel** | **✅** | **no cap** | **none** | ✅ | apt + login |
 | Cloudflare Named Tunnel | ✅ | unlimited | none | ✅ | needs OWN domain |
 
-User initially picked ngrok. Then asked clarifier: "có đủ dùng ko? vì
-tôi cần report daily weekly, đôi khi là chat nữa đấy". Re-evaluating:
+User initially picked ngrok, then clarified that the dashboard needed
+to support daily/weekly reports and occasional chat. Re-evaluating:
 
 - Daily/weekly passive view → ngrok free fine.
-- "Đôi khi chat" via SSE → could push close to 1 GB/month, plus
+- Occasional chat via SSE → could push close to 1 GB/month, plus
   ngrok's interstitial page every 7 days is constant friction for a
   bookmark-driven UX.
 
@@ -40,7 +40,7 @@ daemon + sign up Tailscale account once. User accepted.
 
 ## FE stack decision
 
-User asked: "có nên build FE sang flutter ko??"
+User asked whether the frontend should be built in Flutter.
 
 Considered Flutter Web, decided **no**:
 

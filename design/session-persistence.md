@@ -129,8 +129,8 @@ crash on them.
 ### Why a dedicated chat-cwd, not REPO_DIR
 
 Originally we cd'd to `REPO_DIR` (the agent-me repo root). That broke
-horribly the first time a user said "ghi nhớ" (remember) in a Slack
-DM. Claude loaded `REPO_DIR/CLAUDE.md`, saw the project's "auto
+horribly the first time a user asked the bot to remember something in
+a Slack DM. Claude loaded `REPO_DIR/CLAUDE.md`, saw the project's "auto
 memory" protocol (which is meant for dev sessions where Claude is
 helping you build agent-me itself), and went off writing `.md` files
 into `~/.claude/projects/.../memory/`. 10 turns, 78 seconds, $1.09 in

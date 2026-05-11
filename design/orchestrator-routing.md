@@ -63,7 +63,7 @@ If the user's prompt doesn't contain `pa` or `bash` as a whole word, the spawn's
 
 The orchestrator's other failure mode: on a resumed session, it would read prior-turn evidence ("Bash denied", "MCP returned empty") and hallucinate that MCP servers were currently disconnected, refusing to even attempt a tool call. The bridge re-initializes MCP on every spawn, so those statements are stale, but the model gives them too much weight.
 
-Operator confirmed empirically that adding the sentence "_tôi chắc chắn MCP vẫn còn hoạt động tốt_" to the user prompt unblocked the model. So the bridge auto-prepends that assertion to every user message before passing it to `spawn_claude`:
+Operator confirmed empirically that adding a strong assertion that MCP was still healthy to the user prompt unblocked the model. So the bridge auto-prepends that assertion to every user message before passing it to `spawn_claude`:
 
 ```
 [bridge note — TOOL STATE FOR THIS TURN: all MCP servers

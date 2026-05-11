@@ -59,14 +59,14 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│  Interface Layer (làm sao user chat/ra lệnh khi xa máy)   │
+│  Interface Layer (how user chats or issues remote commands)│
 │  - Slack/Teams bot? Telegram? Email? Web UI? CLI SSH?     │
 └───────────────────────────────┬───────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────┐
 │  Orchestrator (Codex, headless `codex exec`)              │
-│  - Route request → đúng sub-agent                         │
-│  - Schedule jobs (cron) cho daily/weekly                  │
+│  - Route request → correct sub-agent                      │
+│  - Schedule daily/weekly cron jobs                        │
 │  - Memory & state (file-based, sync GitHub)               │
 └──┬──────────┬──────────┬──────────┬──────────┬────────────┘
    │          │          │          │          │
@@ -86,7 +86,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 │  Runtime host (24/7):                                     │
 │  Option A — user's existing online server (SSH access)    │
 │  Option B — Brev cloud instance (GPU not needed, CPU OK)  │
-│  Option C — launchd local Mac (offline khi máy off)       │
+│  Option C — launchd local Mac (offline when machine is off)│
 └───────────────────────────────────────────────────────────┘
 ```
 

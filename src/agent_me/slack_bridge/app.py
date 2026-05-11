@@ -447,8 +447,8 @@ MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 #
 # Why not REPO_DIR: REPO_DIR holds the agent-me project's CLAUDE.md,
 # which contains the "auto memory" protocol meant for development
-# sessions. When a Slack user said "ghi nhớ" (remember), a prior Claude
-# backend faithfully
+# sessions. When a Slack user asked the bot to remember something, a
+# prior Claude backend faithfully
 # followed the protocol — read MEMORY.md, wrote a new memory file, and
 # updated the index. 10 turns, 78s, $1.09 for one chat message. Bridge
 # users want a chat assistant, not a memory-management agent.

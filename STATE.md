@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule, the new agent-me avatar/logo asset set, and the Slack chat `chat-cwd` Codex trust-dir fix. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 80 tests, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, and repo-facing English copy normalization. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 80 tests, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -30,6 +30,7 @@ approval gate.
 | Default model | Codex via `codex exec` (`CODEX_MODEL`, default `gpt-5.5`) |
 | MCP backend | **Codex app/MCP tools**; PA/Claude runtime hybrid retired |
 | Git identity | User requested primary commits as `Thanh Phan <thaphan@nvidia.com>` with `Co-authored-by: Codex <codex@openai.com>` when Codex contributes |
+| Repo language | User-facing chat may be Vietnamese; repo-facing docs/source/comments/discussions and commit messages stay English |
 | License | MIT |
 | Slack sandboxing | Review-by-default + per-thread auto-approve toggle (Phase 2b) |
 | State store path | `${AGENT_ME_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/agent-me}` |
@@ -294,7 +295,8 @@ approval gate.
   test surfaced that running `claude -p` from REPO_DIR loaded the
   project's CLAUDE.md (containing the auto-memory protocol meant for
   dev sessions); claude faithfully wrote `.md` files when the user
-  said "ghi nhớ", costing 10 turns / 78s / $1.09. Plus the
+  asked the bot to remember something, costing 10 turns / 78s / $1.09.
+  Plus the
   `--dangerously-skip-permissions` flag I'd added in the refactor was
   bypassing `--disallowedTools` (Write was supposed to be blocked but
   wasn't). Fix: cwd → `~/.local/state/agent-me/chat-cwd/` (empty,
@@ -415,7 +417,7 @@ approval gate.
   Cloudflare Quick Tunnel (random URL, no SSE), ngrok free static
   (1GB/20K req cap + interstitial every 7d), Cloudflare Named Tunnel
   (needs owned domain), and Tailscale Funnel. User explicitly flagged
-  "report daily/weekly + đôi khi chat" — chat over SSE could blow
+  "daily/weekly reporting plus occasional chat" — chat over SSE could blow
   ngrok's 1GB/20K caps and the interstitial is constant UX friction.
   Tailscale Funnel: stable URL `<host>.<tailnet>.ts.net`, no cap on
   free Personal, no interstitial, supports SSE/WebSocket, outbound-

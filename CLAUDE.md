@@ -27,13 +27,13 @@ A 24/7 always-on autonomous agent framework, inspired by NVIDIA's Personal Assis
 
 ## Auto-capture ideas (user's standing request)
 
-When the user mentions a new idea casually mid-task ("oh, also we should…", "tôi vừa nghĩ ra…", "lâu lâu thấy có ý gì mới"), **don't wait to be told** — append it to `discussions/ideas.md` immediately with today's date and a one-line description, then continue with the current task. Confirm briefly ("đã note vào ideas.md").
+When the user mentions a new idea casually mid-task ("oh, also we should…", "I just thought of…", "if an idea comes up from time to time…"), **don't wait to be told** — append it to `discussions/ideas.md` immediately with today's date and a one-line description, then continue with the current task. Confirm briefly ("noted in ideas.md").
 
 ## Workspace conventions
 
 - Everything is bypassPermissions-scoped to this folder via `.claude/settings.json`. Don't second-guess routine actions; just do them.
 - This project's auto-memory file is the user's global memory at `~/.claude/projects/-Users-thaphan/memory/`. Project-specific state belongs in `STATE.md`, not memory.
-- Discussion files: Vietnamese OK, code/commits in English.
+- User-facing chat may be Vietnamese when that is the user's language, but all repo-facing content must be English: code comments, docs, discussion logs, STATE updates, tests, and commit messages. When recording Vietnamese user prompts, summarize them in English instead of preserving raw Vietnamese unless exact wording is required.
 - **NVIDIA org policy** disables `--permission-mode bypassPermissions` for `claude` CLI. Use `--dangerously-skip-permissions` (different code path, not blocked) or per-tool `--allowedTools` whitelists when running headless flows.
 
 ## Tooling: Python + uv
