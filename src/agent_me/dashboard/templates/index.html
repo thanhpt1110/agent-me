@@ -8,7 +8,7 @@
   <div>
     <h1 class="text-2xl font-semibold text-slate-100">Overview</h1>
     <p class="text-slate-400 text-sm mt-1">
-      Latest cached brief items per source, plus bridge stats. Click a source to drill in or trigger a refresh.
+      Pending work across your platforms. Click a card to drill in, expand to see linked tasks (mock data — wire to real APIs in Phase 5).
     </p>
   </div>
   <div class="flex items-center gap-2">
@@ -49,14 +49,94 @@
     </div>
   </div>
   <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Last bridge activity</div>
-    <div class="mt-1 text-lg font-semibold text-slate-100">{{ bridge_stats.last_thread_active_at | age }}</div>
-    <div class="text-xs text-slate-500 mt-1">across all threads</div>
+    <div class="text-xs uppercase tracking-wide text-slate-500">Pending across all platforms</div>
+    <div class="mt-1 text-2xl font-semibold text-accent-400">{{ total_pending }}</div>
+    <div class="text-xs text-slate-500 mt-1">mock — Phase 5 real data</div>
+  </div>
+</section>
+
+<section class="mb-6" x-data="pendingPanel({{ pending_groups | tojson }})">
+  <div class="mb-3 flex items-center justify-between flex-wrap gap-2">
+    <div class="flex items-center gap-2">
+      <h2 class="text-lg font-semibold text-slate-100">Pending across platforms</h2>
+      <span class="text-xs px-2 py-0.5 rounded bg-nvgreen-900/30 text-accent-400 border border-accent-600/40">
+        {{ total_pending }} pending · mock
+      </span>
+    </div>
+    <div class="flex items-center gap-2 text-xs">
+      <button @click="expandAll()" class="text-slate-400 hover:text-accent-400">expand all</button>
+      <span class="text-slate-700">·</span>
+      <button @click="collapseAll()" class="text-slate-400 hover:text-accent-400">collapse all</button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+    <template x-for="g in groups" :key="g.group_id">
+      <article class="rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
+        <header class="px-4 py-3 flex items-center justify-between border-b border-ink-700 bg-ink-800">
+          <button @click="toggle(g.group_id)" class="flex items-center gap-2 text-left flex-1">
+            <span class="text-xl" x-text="g.icon"></span>
+            <span class="font-semibold text-slate-100" x-text="g.label"></span>
+            <span class="text-xs px-1.5 py-0.5 rounded border"
+                  :class="g.pending_count > 0
+                    ? 'bg-nvgreen-900/40 text-accent-400 border-accent-600/40'
+                    : 'bg-ink-800 text-slate-500 border-ink-700'"
+                  x-text="g.pending_count + (g.pending_count === 1 ? ' pending' : ' pending')"></span>
+          </button>
+          <div class="flex items-center gap-2 shrink-0">
+            <a :href="g.home_url" target="_blank" rel="noopener"
+               class="text-xs text-slate-400 hover:text-accent-400" title="Open in source">↗</a>
+            <button @click="toggle(g.group_id)"
+                    class="text-xs text-slate-400 hover:text-accent-400 w-5 text-center"
+                    :aria-expanded="expanded[g.group_id] ? 'true' : 'false'"
+                    x-text="expanded[g.group_id] ? '−' : '+'"></button>
+          </div>
+        </header>
+        <div x-show="expanded[g.group_id]" x-cloak x-transition>
+          <ul class="divide-y divide-ink-700">
+            <template x-for="i in g.items" :key="i.item_id">
+              <li class="px-4 py-2 hover:bg-ink-800/60">
+                <div class="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1 sm:gap-3">
+                  <a :href="i.url" :target="i.url.startsWith('/') ? '_self' : '_blank'" rel="noopener"
+                     class="text-sm text-slate-100 hover:text-accent-400 break-words sm:truncate flex-1">
+                    <span class="font-mono text-xs text-slate-500" x-text="i.item_id"></span>
+                    <span class="ml-2" x-text="i.title"></span>
+                  </a>
+                  <div class="flex items-center flex-wrap gap-2 text-xs sm:shrink-0">
+                    <template x-if="i.priority === 'P0'">
+                      <span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-800">P0</span>
+                    </template>
+                    <template x-if="i.priority === 'P1'">
+                      <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">P1</span>
+                    </template>
+                    <template x-if="i.priority === 'P2'">
+                      <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">P2</span>
+                    </template>
+                    <template x-if="i.due">
+                      <span class="text-rose-300" x-text="'due ' + i.due"></span>
+                    </template>
+                    <span class="text-slate-500" x-text="i.age_label"></span>
+                  </div>
+                </div>
+              </li>
+            </template>
+            <template x-if="g.items.length === 0">
+              <li class="px-4 py-3 text-sm text-slate-500 italic">No pending items.</li>
+            </template>
+          </ul>
+          <div class="px-4 py-2 border-t border-ink-700 bg-ink-800/40 flex items-center justify-between text-xs">
+            <span class="text-slate-500" x-text="g.note"></span>
+            <a :href="g.home_url" :target="g.home_url.startsWith('/') ? '_self' : '_blank'" rel="noopener"
+               class="text-accent-400 hover:underline">View all in <span x-text="g.label"></span> →</a>
+          </div>
+        </div>
+      </article>
+    </template>
   </div>
 </section>
 
 <section class="mb-3 flex items-center justify-between">
-  <h2 class="text-lg font-semibold text-slate-100">Sources</h2>
+  <h2 class="text-lg font-semibold text-slate-100">Briefs by source</h2>
   <span x-show="busy" x-cloak class="text-xs text-slate-400" x-text="aggregateLabel()"></span>
 </section>
 
@@ -115,6 +195,24 @@
 
 {% block scripts %}
 <script>
+  function pendingPanel(groups) {
+    return {
+      groups: groups || [],
+      // Default: expand the top 3 highest-pending groups, collapse the rest.
+      expanded: Object.fromEntries(
+        (groups || [])
+          .map((g, i) => [g.group_id, i < 3])
+      ),
+      toggle(gid) { this.expanded[gid] = !this.expanded[gid]; },
+      expandAll() {
+        for (const g of this.groups) this.expanded[g.group_id] = true;
+      },
+      collapseAll() {
+        for (const g of this.groups) this.expanded[g.group_id] = false;
+      },
+    };
+  }
+
   function overviewPage(snapshots) {
     return {
       period: "day",

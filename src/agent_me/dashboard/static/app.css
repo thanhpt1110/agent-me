@@ -4,11 +4,11 @@
 html, body { font-family: -apple-system, "Segoe UI", Roboto, system-ui, sans-serif; }
 pre, code, .font-mono { font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace; }
 
-/* Subtle scrollbar in dark theme */
+/* Subtle scrollbar in dark theme (NVIDIA black + brand-green hover). */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: #0b0f17; }
-::-webkit-scrollbar-thumb { background: #283045; border-radius: 6px; }
-::-webkit-scrollbar-thumb:hover { background: #3a4660; }
+::-webkit-scrollbar-track { background: #000000; }
+::-webkit-scrollbar-thumb { background: #313131; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #76b900; }
 
 /* Slim horizontal scrollbar for the nav strip on phones — Tailwind
    doesn't ship a `scrollbar-thin` utility by default. */
@@ -20,3 +20,6 @@ pre, code, .font-mono { font-family: "JetBrains Mono", ui-monospace, "SFMono-Reg
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
+
+/* NVIDIA accent underline strip beneath the sticky nav */
+.nv-accent-strip { background: linear-gradient(90deg, transparent 0%, #76b900 40%, #76b900 60%, transparent 100%); height: 1px; opacity: 0.6; }

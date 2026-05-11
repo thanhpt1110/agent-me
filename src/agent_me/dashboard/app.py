@@ -41,6 +41,7 @@ from agent_me.dashboard.log_sources import (
     tail_journal_unit,
     tail_session_jsonl,
 )
+from agent_me.dashboard.mock_pending import pending_groups_dicts
 from agent_me.dashboard.state_reader import (
     SOURCE_IDS,
     SOURCES,
@@ -104,6 +105,8 @@ TEMPLATES.env.filters["age"] = _ms_to_human
 async def page_index(request: Request):
     snapshots = StateReader.all_snapshots()
     bridge_stats = StateReader.bridge_stats()
+    pending_groups = pending_groups_dicts()
+    total_pending = sum(g["pending_count"] for g in pending_groups)
     return TEMPLATES.TemplateResponse(request, "index.html", {
         "snapshots": snapshots,
         # Alpine on the client wants a plain JSON-serializable list.
@@ -111,6 +114,8 @@ async def page_index(request: Request):
         "bridge_stats": bridge_stats,
         "sources": SOURCES,
         "now_ms": int(time.time() * 1000),
+        "pending_groups": pending_groups,
+        "total_pending": total_pending,
     })
 
 

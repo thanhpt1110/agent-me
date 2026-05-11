@@ -9,13 +9,45 @@
        Tailwind once the layout settles. -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
+    // Official NVIDIA brand palette (black + green) sourced from
+    // api.nth.nvidia.com colormap.css. `ink.*` and `accent.*` are kept as
+    // aliases so every existing template re-themes without per-file edits.
     tailwind.config = {
       darkMode: "class",
       theme: {
         extend: {
           colors: {
-            ink: { 950: "#0b0f17", 900: "#0f1420", 800: "#141a28", 700: "#1c2334", 600: "#283045" },
-            accent: { 400: "#7dd3fc", 500: "#38bdf8", 600: "#0284c7" },
+            nvgreen: {
+              100: "#cfff40",
+              200: "#a5de15",
+              300: "#76b900",
+              500: "#549a00",
+              700: "#3f8500",
+              900: "#265600",
+            },
+            nvgray: {
+              50:  "#eeeeee",
+              100: "#cccccc",
+              200: "#a7a7a7",
+              300: "#898989",
+              500: "#4b4b4b",
+              700: "#313131",
+              800: "#222222",
+              900: "#1a1a1a",
+              950: "#0a0a0a",
+            },
+            ink: {
+              950: "#000000",
+              900: "#0a0a0a",
+              800: "#1a1a1a",
+              700: "#313131",
+              600: "#4b4b4b",
+            },
+            accent: {
+              400: "#76b900",
+              500: "#549a00",
+              600: "#3f8500",
+            },
           },
           fontFamily: {
             mono: ["JetBrains Mono", "ui-monospace", "monospace"],
@@ -29,6 +61,7 @@
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
   <link rel="stylesheet" href="/static/app.css" />
+  <!-- Favicon: keep the robot emoji as the agent-me mascot on the NVIDIA-themed dashboard. -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='28'%3E🤖%3C/text%3E%3C/svg%3E" />
 </head>
 <body class="h-full bg-ink-950 text-slate-200 font-sans antialiased dark">
@@ -41,7 +74,7 @@
 
     <footer class="mx-auto max-w-7xl px-4 py-6 text-xs text-slate-500">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <span>agent-me · Phase 4 draft · read-only over bridge state.db + brief output</span>
+        <span>agent-me · Phase 4 · NVIDIA-themed · read-only over bridge state.db + brief output</span>
         <span><a class="hover:text-accent-400" href="https://github.com/thanhpt1110/agent-me">repo</a> · <a class="hover:text-accent-400" href="/healthz">healthz</a></span>
       </div>
     </footer>

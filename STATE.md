@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Claude (Opus 4.7) — **Orchestrator routing overhauled** for daily-driver Slack chat: 2-tier MCP/PA, streaming progress UX, chunked replies, anchor-reset prepend, NVIDIA Bash-policy workaround. Rationale in [`design/orchestrator-routing.md`](design/orchestrator-routing.md). Phase 4 dashboard FE+BE smoke-deployed on this dev host (real bridge state.db, 9 threads / 7 sessions / 7 source snapshots streaming through SSE); reverse-proxy pivot doc + proxy-host playbook published. Phase 3 Colossus deploy: steps 1–5 done (16/17 MCPs ✓ via Keychain transfer); steps 6–8 (systemd / smoke test / auto-deploy verify) on the user._
+_Last updated: 2026-05-11 by Claude (Opus 4.7) — **Dashboard re-themed to NVIDIA palette** (`#76b900` brand green on pure black, sourced from `api.nth.nvidia.com/static/color-swatches.html`) + **new "Pending across platforms" expandable panel** on the Overview page with 9 platform groups (7 brief sources + Slack threads + Claude sessions, 30 mock items total, ready for Phase 5 real-source wiring). Live on `https://agent-me.nvidia.com`. Design doc: [`design/dashboard-pending-panel.md`](design/dashboard-pending-panel.md). Earlier in this session: **Orchestrator routing overhauled** (2-tier MCP/PA, streaming, anchor-reset prepend — see [`design/orchestrator-routing.md`](design/orchestrator-routing.md)). Phase 3 Colossus deploy: steps 1–5 done (16/17 MCPs ✓); steps 6–8 on the user._
 
 ## Phase
 
@@ -144,6 +144,44 @@ approval gate.
      dropdown populated from `recent_threads()`.
   16 tests in `tests/test_log_sources.py`. All 68 dashboard +
   approval tests green.
+- [x] **Phase 4 NVIDIA theme + Pending Tasks panel (2026-05-11)** —
+  Overview page rebuilt. Stat row's 4th card replaced from "Last
+  bridge activity" (low signal) to **"Pending across all
+  platforms"** with the total count rendered in NVIDIA green
+  (`#76b900`). New section above "Briefs by source" shows 9
+  expandable platform-group cards — the 7 brief sources (jira,
+  gitlab, confluence, nvbugs, slack, outlook, github) **plus two
+  new groups**: `threads` (operator-handled Slack threads, linking
+  into `/logs?thread_ts=...`) and `sessions` (Claude Code sessions
+  the orchestrator has resumed, linking into `/logs?session_id=...`).
+  Each card has icon + label + pending-count badge + ↗ (open
+  upstream) + ± expand toggle; expanded body lists subtask items
+  with deep-link, priority badge (P0/P1/P2), due, age. Default:
+  top 3 groups expanded, rest collapsed; `expand all` /
+  `collapse all` buttons in section header. **All data is mock**
+  (clearly labelled per item + per group footer: "Mock — wire to
+  real APIs in Phase 5"); the dashboard route imports
+  `mock_pending.pending_groups_dicts()` and passes `pending_groups`
+  + `total_pending` into the template; the UI is pure Alpine.js
+  (`pendingPanel(groups)` component) with no SSE wiring (snapshot
+  refreshes on page reload). NVIDIA palette wired via Tailwind
+  config aliasing: existing `ink.*` (dark surfaces) and `accent.*`
+  (link / button accents) tokens were **remapped to NVIDIA hex
+  values** so every existing template (source.html / ops.html /
+  logs.html / nav.html) auto-re-themed without per-file edits.
+  Scrollbar colors in `static/app.css` also flipped to pure black
+  track / NVIDIA green hover. Net diff: 4 files modified + 1 new
+  file (`mock_pending.py`, 454 lines, contains the 9 group
+  factories + `PendingItem` / `PendingGroup` dataclasses + the
+  invariant `pending_count == len(items)`). Implemented via
+  3-subagent fan-out in parallel (Theme / Backend / UI), ~3 min
+  wall-clock end-to-end. Smoke verified: `pytest tests/test_app.py
+  → 11/11 green`, `curl /healthz → 200`, `curl / → 200 36 KB with
+  9 groups embedded and 30 pending`, `systemctl --user restart
+  agent-me-dashboard → active`. Phase 5 swap-in path documented in
+  `design/dashboard-pending-panel.md` — replace each
+  `_<group>_group()` factory with a real fetcher; UI + route need
+  zero changes.
 - [x] **Phase 4 polish round (2026-05-10 evening, post-Phase-3-pivot)** —
   before Colossus deploy. Auto-redeploy: `agent-me-watch.sh`
   auto-detects `agent-me-bridge` + `agent-me-dashboard` from
@@ -359,19 +397,25 @@ approval gate.
    in design doc + verified empirically**; `defer` mode also explored
    in research notes but not used in v1 (file-system semaphore is
    simpler + portable). 18 unit tests cover the module.
-4. **Phase 4 — web dashboard** ← **DRAFTED (2026-05-10), reverse-proxy
-   pivot 2026-05-11**, not yet deployed. Code at `src/agent_me/dashboard/`;
-   design at `design/dashboard-design.md`; reverse-proxy snippets at
-   `design/reverse-proxy-config.md`. Public URL is now
-   `https://agent-me.nvidia.com` via an NVIDIA-internal reverse proxy
-   on the operator's VPN-gated network — supersedes the earlier
-   Tailscale Funnel plan (now opt-in only). Once Phase 3 Colossus is
-   stable, run `scripts/install-dashboard.sh` (default reverse-proxy
-   mode) on Colossus → registers `agent-me-dashboard.service` (binds
-   `0.0.0.0:8765`, accepts X-Forwarded-* from any upstream), appends
-   `DASHBOARD_TRUST_NETWORK=1` to `configs/.env`. Operator hands the
-   nginx/caddy/traefik snippet from `design/reverse-proxy-config.md`
-   to whoever runs `agent-me.nvidia.com`. Bridge service unchanged.
+4. **Phase 4 — web dashboard** ← **LIVE at
+   [`https://agent-me.nvidia.com`](https://agent-me.nvidia.com)
+   (2026-05-11)**, NVIDIA-themed, with Pending-across-platforms
+   panel shipped. Code at `src/agent_me/dashboard/`; design docs
+   at `design/dashboard-design.md` (architecture),
+   `design/dashboard-pending-panel.md` (today's NVIDIA-theme +
+   pending feature), `design/reverse-proxy-config.md` (proxy
+   snippets). Public URL via NVIDIA-internal reverse proxy on the
+   operator's VPN-gated network — supersedes the earlier Tailscale
+   Funnel plan (now opt-in only). To re-deploy on a fresh Colossus
+   host: `./scripts/install-dashboard.sh` (default reverse-proxy
+   mode) → registers `agent-me-dashboard.service` (binds
+   `0.0.0.0:8765`, accepts X-Forwarded-* from any upstream),
+   appends `DASHBOARD_TRUST_NETWORK=1` to `configs/.env`. Operator
+   hands the nginx/caddy/traefik snippet from
+   `design/reverse-proxy-config.md` to whoever runs the proxy.
+   Bridge service unchanged. **Phase 5 follow-up:** replace mock
+   pending data with real fetchers — playbook in
+   `design/dashboard-pending-panel.md`.
 
 ## Open research / unresolved
 
@@ -415,6 +459,27 @@ approval gate.
   Dashboard is purely additive. One systemd `--user` unit always
   installed (dashboard) + one opt-in (Tailscale funnel); bridge unit
   is unchanged.
+- **Color theme: official NVIDIA palette** (2026-05-11). Pure black
+  (`#000000`) page background, `#0a0a0a` cards, `#313131` borders;
+  NVIDIA brand green `#76b900` (= `nv-green-300`) for primary
+  accents (links, badges, focus rings); hover `#549a00`; button bg
+  `#3f8500`. Hex values sourced from
+  `api.nth.nvidia.com/static/color-swatches.html` (NIM Test Hub
+  canonical NVIDIA internal palette). Wiring strategy:
+  re-alias the existing `ink.*` and `accent.*` Tailwind token names
+  to NVIDIA hexes in `base.html` Tailwind config; **no per-template
+  edits required** because every template already uses these
+  tokens. Net diff for the theme work: 2 files
+  (`base.html`, `app.css`).
+- **Pending-tasks panel: mock data first** (2026-05-11). The new
+  "Pending across platforms" Overview section is wired to
+  `mock_pending.get_pending_groups()` which returns 9 platform
+  groups with 30 hand-written items. Every item carries
+  `mock=True`; every group footer says "Mock — wire to real APIs
+  in Phase 5". Phase 5 swap-in path: replace each
+  `_<group>_group()` factory with a real fetcher returning the
+  same `PendingGroup` shape; UI + route need zero changes.
+  Detailed playbook in `design/dashboard-pending-panel.md`.
 
 ## Open questions / parking lot
 
