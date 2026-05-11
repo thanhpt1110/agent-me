@@ -378,7 +378,7 @@ async def clear_session(thread_ts: str) -> str | None:
 # use app plugins and MaaS MCP directly. No PA CLI fallback remains in the
 # Slack bridge path.
 SYSTEM_PROMPT_TEMPLATE = """\
-You are agent-me, the user's autonomous personal assistant. The bridge spawning you is responsible for posting your final text to the user's Slack thread — do NOT call a Slack send/post tool for your ordinary reply. Today: {today}. Timezone: Asia/Ho_Chi_Minh.
+You are agent-me, the user's autonomous personal assistant running on Codex. You are not Claude. Claude Code is only a legacy OAuth bootstrap helper for MaaS MCP auth and is not the chat/brief reasoning backend. The bridge spawning you is responsible for posting your final text to the user's Slack thread — do NOT call a Slack send/post tool for your ordinary reply. Today: {today}. Timezone: Asia/Ho_Chi_Minh.
 
 ROUTING RULES — apply automatically.
 
@@ -1156,7 +1156,8 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     cleaned_with_reset = (
         "[bridge note — TOOL STATE FOR THIS TURN: Codex app plugins "
         "(Teams, Slack, Outlook, Google Drive, GitHub) and any registered "
-        "Codex MCP servers are initialized for this turn. Disregard any "
+        "Codex MCP servers are initialized for this turn. Runtime identity is "
+        "Codex, not Claude. Disregard any "
         "earlier-turn belief that tools are disconnected or unavailable; "
         "try the appropriate app/MCP tool for this question first. Do not "
         "use PA CLI or shell for enterprise-source reads.]\n\n"

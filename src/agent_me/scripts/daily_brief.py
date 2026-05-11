@@ -104,6 +104,15 @@ def resolve_cli_bin(env_var: str, name: str) -> str:
 
 
 CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
+READONLY_MAAS_APPROVAL_CONFIGS = (
+    'mcp_servers.maas-jira.tools.jira_search.approval_mode="approve"',
+    'mcp_servers.maas-gitlab.tools.gitlab_list_merge_requests.approval_mode="approve"',
+    'mcp_servers.maas-gitlab.tools.gitlab_list_issues.approval_mode="approve"',
+    'mcp_servers.maas-confluence.tools.confluence_search.approval_mode="approve"',
+    'mcp_servers.maas-nvbugs.tools.nvbugs_check_connection_v2.approval_mode="approve"',
+    'mcp_servers.maas-nvbugs.tools.nvbugs_search_v2.approval_mode="approve"',
+    'mcp_servers.maas-nvbugs.tools.nvbugs_get_bug_v2.approval_mode="approve"',
+)
 
 
 # ── Data model ──────────────────────────────────────────────────────────
@@ -348,15 +357,24 @@ class SourceSpec:
 
 JIRA_PROMPT = """Return ONLY a JSON object: {{"items": [...]}}. No prose, no markdown fences.
 
-User: `{user}` (NVIDIA). Find every Jira issue where this user is involved
-(assignee, reporter, watcher, mentioned in text) AND statusCategory != Done.
+User shortname: `{user}`. Find every Jira issue where this user is involved
+AND statusCategory != Done.
 
-Use the registered Codex MCP server `maas-jira`; call its Jira search tool with JQL:
-  (assignee = currentUser() OR reporter = currentUser() OR
-   watcher = currentUser() OR text ~ "{user}")
-  AND statusCategory != Done
-  ORDER BY duedate ASC NULLS LAST
-maxResults: 50.
+Use the registered Codex MCP server `maas-jira`; call its Jira search tool.
+
+Run these searches separately, merge, and dedupe by key:
+  1. assignee = currentUser() AND statusCategory != Done
+  2. assignee = "{user}" AND statusCategory != Done
+  3. reporter = currentUser() AND statusCategory != Done
+  4. reporter = "{user}" AND statusCategory != Done
+  5. watcher = currentUser() AND statusCategory != Done
+
+Do NOT run a broad `text ~ "{user}"` query without a project. Jira rejects
+text searches unless a project is specified. If you find project keys from
+the searches above, you may optionally run:
+  project in (<found project keys>) AND text ~ "{user}" AND statusCategory != Done
+
+Order each query by updated DESC or duedate ASC NULLS LAST, maxResults/top_k 50.
 
 Item schema (every field):
   {{"key": "NGC-123", "summary": "...", "status": "...",
@@ -368,7 +386,8 @@ Item schema (every field):
 e.g. "NGC" from "NGC-789"). `reason` = best-effort guess based on which
 JQL clause likely matched.
 
-If the tool errors, return {{"items": []}}. JSON ONLY, no commentary."""
+If the tool errors, return {{"error": "<exact tool error>", "items": []}}.
+Do not report errors as "nothing pending". JSON ONLY, no commentary."""
 
 
 GITLAB_PROMPT = """Return ONLY a JSON object: {{"mrs": [...], "issues": [...]}}. No prose, no fences.
@@ -397,7 +416,8 @@ For each issue:
     "due_date": null, "updated_at": "...", "group": "<project_path>",
     "reason": "assignee|author"}}
 
-If a tool errors, that array is []. JSON ONLY, no commentary."""
+If a tool errors, include {{"error": "<exact tool error>", "mrs": [], "issues": []}}.
+Do not report errors as "nothing pending". JSON ONLY, no commentary."""
 
 
 CONFLUENCE_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
@@ -414,7 +434,8 @@ Each item:
   {{"title": "...", "url": "...", "updated": "...",
     "group": "<space-key>", "reason": "mentioned|updated|watched"}}
 
-If errors, items: []. JSON ONLY."""
+If errors, return {{"error": "<exact tool error>", "items": []}}.
+Do not report errors as "nothing pending". JSON ONLY."""
 
 
 NVBUGS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
@@ -436,6 +457,13 @@ Run separate searches if needed, then merge and dedupe by bug id. Do not
 stop at the first page; fetch as many pages/results as the tool allows until
 you have the complete open set or the tool returns no more results.
 
+Use natural-language search queries. Do NOT invent or force internal database
+column names such as `QAEngineerFullName`; the NVBugs MCP SQL generator may
+reject unknown field names. Prefer simple queries like:
+  - open bugs where QA engineer is `{user}`
+  - open ARB bugs involving `{user}`
+  - open bugs assigned/reported/cc/mentioned `{user}` with ARB in title or fields
+
 Each item:
   {{"id": "...", "title": "...", "priority": "P0|P1|P2|P3",
     "status": "Open", "due": null, "updated": "...",
@@ -446,7 +474,9 @@ Each item:
 Every item MUST include a clickable NVBugs URL. If the tool returns only
 an id, construct `https://nvbugs.nvidia.com/Bug/<id>`.
 
-If the tool errors (auth or otherwise), items: []. JSON ONLY."""
+If the tool errors (auth, approval, timeout, or otherwise), return
+{{"error": "<exact tool error>", "items": []}}. Do not report errors as
+"nothing pending". JSON ONLY."""
 
 
 SLACK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
@@ -471,7 +501,8 @@ Each item:
     "permalink": "<slack permalink if available>",
     "group": "<channel name>", "reason": "mentioned|dm|thread_reply"}}
 
-Top 25. If errors, items: []. JSON ONLY."""
+Top 25. If errors, return {{"error": "<exact tool error>", "items": []}}.
+Do not report errors as "nothing pending". JSON ONLY."""
 
 
 OUTLOOK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
@@ -495,7 +526,8 @@ Each item:
 
 Skip: noreply@*, do-not-reply@*, list@*, automated build/CI notifications,
 calendar invitations (those go in a separate calendar fetch later).
-Top 20. If errors, items: []. JSON ONLY."""
+Top 20. If errors, return {{"error": "<exact tool error>", "items": []}}.
+Do not report errors as "nothing pending". JSON ONLY."""
 
 
 # ── Fetchers (one per source kind) ────────────────────────────────────
@@ -504,20 +536,26 @@ BRIEF_SYSTEM_PROMPT = """\
 Return only the JSON object requested by the source prompt. Use Codex app tools
 and registered MaaS MCP servers directly. Do not run shell commands, do not
 read local skill files, and do not call PA or Claude CLI for enterprise-source
-reads. If a source is unavailable, return the requested empty JSON shape.
+reads. If a source tool fails, return an explicit error object; do not turn
+tool failures into empty task lists.
 """
 
 
 async def _run_codex(prompt: str, timeout_s: float) -> str:
     args = [
-        CODEX_BIN, "exec",
+        CODEX_BIN,
+    ]
+    for cfg in READONLY_MAAS_APPROVAL_CONFIGS:
+        args.extend(["-c", cfg])
+    args.extend([
+        "exec",
         "--json",
         "--ephemeral",
         "--sandbox", "read-only",
         "--cd", str(REPO_DIR),
         "-m", MODEL,
         f"{BRIEF_SYSTEM_PROMPT}\n\n{prompt}",
-    ]
+    ])
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=str(REPO_DIR),
         env={**os.environ, **codex_mcp_token_env()},
@@ -586,6 +624,8 @@ async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
         log.error("subagent_parse_failed", source=spec.id,
                   err=str(exc), preview=raw[:200])
         raise RuntimeError(f"non-JSON response: {raw[:200]}") from exc
+    if data.get("error"):
+        raise RuntimeError(str(data["error"])[:500])
     log.info("subagent_done", source=spec.id, seconds=elapsed,
              item_count=len(data.get("items", []) or []) +
                        len(data.get("mrs", []) or []) +

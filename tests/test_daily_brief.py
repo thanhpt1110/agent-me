@@ -87,3 +87,13 @@ def test_build_connector_mirror_text_contains_source_links() -> None:
     assert "Daily Brief" in text
     assert "NVBugs" in text
     assert "<https://nvbugs.nvidia.com/Bug/1234567|1234567 ARB waiver needs QA signoff>" in text
+
+
+def test_readonly_mcp_approval_configs_cover_core_brief_tools() -> None:
+    joined = "\n".join(daily_brief.READONLY_MAAS_APPROVAL_CONFIGS)
+
+    assert "maas-jira.tools.jira_search" in joined
+    assert "maas-gitlab.tools.gitlab_list_merge_requests" in joined
+    assert "maas-confluence.tools.confluence_search" in joined
+    assert "maas-nvbugs.tools.nvbugs_search_v2" in joined
+    assert "approval_mode=\"approve\"" in joined
