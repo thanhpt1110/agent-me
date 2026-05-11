@@ -301,6 +301,7 @@ def test_format_request_for_slack_emits_three_buttons() -> None:
         tool_input={"command": "rm -rf /tmp/x"},
         session_id="sess-1",
         cwd="/some/cwd", transcript_path=None,
+        thread_ts=None,
         raw={}, request_path=Path("/tmp/x.json"),
     )
     fallback, blocks = approvals.format_request_for_slack(req)

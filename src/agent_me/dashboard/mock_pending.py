@@ -21,8 +21,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 __all__ = [
-    "PendingItem",
     "PendingGroup",
+    "PendingItem",
     "get_pending_groups",
     "pending_groups_dicts",
 ]
