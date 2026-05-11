@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import sqlite3
 import sys
@@ -67,6 +68,33 @@ if ENV_PATH.exists():
 else:
     load_dotenv()  # fallback to shell exports
 os.environ["AGENT_ME_REPO_DIR"] = str(REPO_DIR)
+
+
+# ── uv binary resolution ────────────────────────────────────────────────
+#
+# systemd `--user` services start with a minimal PATH that typically
+# excludes `~/.local/bin` (where the official `uv` installer drops the
+# binary). The bridge's `ExecStart` works because the unit file uses the
+# absolute path `%h/.local/bin/uv`, but when the bridge then spawns
+# `subprocess.create_subprocess_exec("uv", ...)` for `/brief` and
+# `/reauth`, asyncio's PATH lookup fails with `[Errno 2] No such file or
+# directory: 'uv'`. Resolve to an absolute path once at import so every
+# subprocess inherits a working invocation regardless of PATH.
+
+
+def resolve_uv_bin() -> str:
+    if env := os.environ.get("UV_BIN"):
+        p = Path(env).expanduser()
+        if p.exists():
+            return str(p)
+    local_bin = Path.home() / ".local" / "bin"
+    aug_path = f"{local_bin}:/usr/local/bin:{os.environ.get('PATH', '')}"
+    if found := shutil.which("uv", path=aug_path):
+        return found
+    return "uv"
+
+
+_UV_BIN = resolve_uv_bin()
 
 # ── Logger: structlog → stdlib logging → console + rotating file ────────
 
@@ -961,7 +989,7 @@ async def cmd_brief(args_text: str = "") -> str:
     log_fp.flush()
     try:
         await asyncio.create_subprocess_exec(
-            "uv", "run", "agent-me-brief", "--period", period,
+            _UV_BIN, "run", "agent-me-brief", "--period", period,
             cwd=str(REPO_DIR),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=log_fp, stderr=log_fp,
@@ -1010,7 +1038,7 @@ async def cmd_reauth() -> str:
     # Spawn detached so we don't block. stdout/stderr go to /dev/null;
     # the user sees results by checking `claude mcp list` after signing in.
     await asyncio.create_subprocess_exec(
-        "uv", "run", "agent-me-reauth",
+        _UV_BIN, "run", "agent-me-reauth",
         cwd=str(REPO_DIR),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
