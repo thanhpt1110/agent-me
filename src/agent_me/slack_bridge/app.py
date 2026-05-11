@@ -620,6 +620,7 @@ def _codex_args(prompt: str, resume_session_id: str | None) -> list[str]:
         return [
             CODEX_BIN, "exec", "resume",
             "--json",
+            "--skip-git-repo-check",
             "-m", MODEL,
             resume_session_id,
             prompt,
@@ -627,6 +628,7 @@ def _codex_args(prompt: str, resume_session_id: str | None) -> list[str]:
     return [
         CODEX_BIN, "exec",
         "--json",
+        "--skip-git-repo-check",
         "--sandbox", "read-only",
         "--cd", str(CHAT_CWD),
         "-m", MODEL,

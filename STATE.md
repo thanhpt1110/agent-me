@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule, and the new agent-me avatar/logo asset set. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 78 tests, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule, the new agent-me avatar/logo asset set, and the Slack chat `chat-cwd` Codex trust-dir fix. Runtime decision remains: bridge + daily brief run through `codex exec --json`; Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector. Normal Slack chat does not mirror. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 80 tests, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -46,6 +46,13 @@ approval gate.
 - [x] **MCP re-auth helpers** — `uv run agent-me-reauth` refreshes the MaaS OAuth token store via the legacy pty + auto-open flow; `uv run agent-me-codex-reauth` is the Codex-facing wrapper for the same token store.
 - [x] **Daily-brief — fan-out v2 (2026-05-10; calendar added 2026-05-11)** — `uv run agent-me-brief --period day|week|month`. 8 subagents in parallel (jira / gitlab / confluence / nvbugs / slack / outlook / calendar / github), one root header + threaded reply per source, priority synthesis posted last. Calendar scope is today / next 7 days / next 30 days and includes time, organizer, location, and a short body/agenda summary when visible.
 - [x] **Slack session persistence (2026-05-10; Codex-backed 2026-05-11)** — `claude_sessions` table maps `thread_ts → session_id` for historical compatibility; bridge now runs `codex exec --json` / `codex exec resume --json <id>`. Cache hits compound across turns. `/reset` (+ plain shortcuts) clears a thread's session.
+- [x] **Slack chat Codex trust-dir fix (2026-05-11)** — bridge chat runs
+  from `~/.local/state/agent-me/chat-cwd` on purpose so repo dev
+  instructions do not leak into user chat. Codex CLI now rejects
+  non-git/untrusted directories unless `--skip-git-repo-check` is
+  passed, so `_codex_args()` includes that flag for both fresh
+  `codex exec` and `codex exec resume`. Regression test:
+  `tests/test_slack_bridge_codex_args.py`.
 - [x] **MCPs registered (17 total)** — Slack + Outlook added 2026-05-10 at user scope (project-local scope confused the OAuth helper; learnt the hard way).
 - [x] **Codex-first runtime migration (2026-05-11)** — Slack bridge and
   daily brief now call `codex exec --json` instead of `claude -p` or
