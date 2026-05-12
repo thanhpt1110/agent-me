@@ -45,7 +45,7 @@ INLINE_KEY_RE = re.compile(
     r"url[-_ ]?path|url|log[-_ ]?url|log[-_ ]?link|link|"
     r"log[-_ ]?file[-_ ]?base[-_ ]?url|source[-_ ]?code[-_ ]?path|code[-_ ]?review[-_ ]?path|"
     r"start(?:[-_ ]?date)?|finish(?:[-_ ]?date)?|end(?:[-_ ]?date)?"
-    r")\s*[:=\uff1a]\s*",
+    r")\s*(?:[:=\uff1a]|\s+l\u00e0\s+|\s+la\s+)\s*",
 )
 
 
@@ -146,17 +146,20 @@ def _strip_code_fence(text: str) -> str:
     stripped = text.strip()
     if not stripped.startswith("```"):
         return stripped
+    stripped = stripped[3:]
+    if stripped.endswith("```"):
+        stripped = stripped[:-3]
     lines = stripped.splitlines()
-    if lines and lines[0].strip().startswith("```"):
+    if lines and lines[0].strip() in {"json", "text", "txt"}:
         lines = lines[1:]
-    if lines and lines[-1].strip().endswith("```"):
-        lines = lines[:-1]
     return "\n".join(lines).strip()
 
 
 def _clean_auto_sfa_body(text: str | None) -> str:
-    body = _strip_code_fence(text or "")
+    body = text or ""
     body = body.replace("\r\n", "\n").replace("\r", "\n")
+    body = BOT_PREFIX_RE.sub("", body).strip()
+    body = _strip_code_fence(body)
     return BOT_PREFIX_RE.sub("", body).strip()
 
 
