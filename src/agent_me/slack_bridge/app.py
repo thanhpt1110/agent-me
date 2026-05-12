@@ -1494,7 +1494,10 @@ explicitly confirmed final submission, which has not happened yet.
     )
     if new_sid:
         await upsert_session(thread_ts, new_sid)
-    return await finalize_brev_if_submitted(thread_ts, org_id, answer)
+    result = await finalize_brev_if_submitted(thread_ts, org_id, answer)
+    if brev_submission_marker_seen(answer):
+        return result
+    return f"{result}\n\n_Reply trong thread này với value tiếp theo; gõ `cancel` để hủy._"
 
 
 async def cmd_brev_continue(
