@@ -851,8 +851,8 @@ async def nvbugs_fetcher(_spec: SourceSpec, _period_days: int) -> dict:
     """Fetch NVBugs directly via MCP JSON-RPC to avoid tool discovery drift."""
     started = time.time()
     token = (
-        os.environ.get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
-        or codex_mcp_token_env().get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
+        codex_mcp_token_env().get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
+        or os.environ.get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
     )
     if not token:
         raise RuntimeError("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS is not available")
