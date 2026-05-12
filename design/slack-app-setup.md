@@ -552,8 +552,13 @@ app config:
    | Command | Short Description | Usage Hint |
    |---|---|---|
    | `/mcp` | List MCP server health & auth status | _(blank)_ |
-   | `/version` | Show bridge + claude versions | _(blank)_ |
+   | `/reauth` | Refresh Codex MCP auth helper | _(blank)_ |
+   | `/version` | Show bridge + Codex versions | _(blank)_ |
+   | `/whoami` | Show Slack user id | _(blank)_ |
    | `/help` | List bot commands | _(blank)_ |
+   | `/brief` | Run daily/weekly/monthly brief | `[week|month]` |
+   | `/brev` | Request Brev credits for an org id | `<org_id>` |
+   | `/model-free-draft` | Create Model Free reply-all draft | _(blank)_ |
 3. **Request URL** field can stay blank in Socket Mode (Slack uses the WebSocket).
 4. **Save** each one.
 5. Sidebar → **Install App** → **Reinstall to Workspace** → **Allow**.

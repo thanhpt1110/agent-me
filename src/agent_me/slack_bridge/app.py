@@ -8,7 +8,7 @@ What this owns:
 - AsyncApp + Socket Mode connection to Slack
 - SQLite state DB (threads, messages, pending_approvals — schema in db/)
 - Event handlers: DM messages and channel @mentions
-- Native slash commands: /mcp /version /whoami /help /reauth /brief /model-free-draft
+- Native slash commands: /mcp /version /whoami /help /reauth /brief /brev /model-free-draft
 - Text-prefix slash commands (same set, intercepted from message body)
 - Spawning headless `codex exec` per query with app/MCP read access
 - Routing permissioned connector/MCP writes through Codex app-server auto-review
@@ -277,6 +277,15 @@ CREATE TABLE IF NOT EXISTS model_free_threads (
     updated_at       INTEGER NOT NULL,
     FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
 );
+CREATE TABLE IF NOT EXISTS brev_flows (
+    thread_ts        TEXT PRIMARY KEY,
+    org_id           TEXT NOT NULL,
+    status           TEXT NOT NULL CHECK(status IN ('active','submitted','cancelled','failed')),
+    last_result      TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
+);
 """
 
 db = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
@@ -434,6 +443,53 @@ async def get_model_free_thread_subject_from_messages(thread_ts: str) -> str | N
     return None
 
 
+async def remember_brev_flow(thread_ts: str, org_id: str, status: str = "active") -> None:
+    now = int(time.time() * 1000)
+    async with DB_LOCK:
+        db.execute(
+            """INSERT INTO brev_flows
+                 (thread_ts, org_id, status, last_result, created_at, updated_at)
+               VALUES (?, ?, ?, NULL, ?, ?)
+               ON CONFLICT(thread_ts) DO UPDATE SET
+                 org_id = excluded.org_id,
+                 status = excluded.status,
+                 last_result = NULL,
+                 updated_at = excluded.updated_at""",
+            (thread_ts, org_id, status, now, now),
+        )
+
+
+async def get_active_brev_flow(thread_ts: str) -> dict[str, Any] | None:
+    async with DB_LOCK:
+        row = db.execute(
+            """SELECT thread_ts, org_id, status, last_result, created_at, updated_at
+               FROM brev_flows
+               WHERE thread_ts=? AND status='active'""",
+            (thread_ts,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "thread_ts": row[0],
+        "org_id": row[1],
+        "status": row[2],
+        "last_result": row[3],
+        "created_at": row[4],
+        "updated_at": row[5],
+    }
+
+
+async def finish_brev_flow(thread_ts: str, status: str, last_result: str | None = None) -> None:
+    now = int(time.time() * 1000)
+    async with DB_LOCK:
+        db.execute(
+            """UPDATE brev_flows
+               SET status=?, last_result=?, updated_at=?
+               WHERE thread_ts=?""",
+            (status, last_result, now, thread_ts),
+        )
+
+
 # Routing rules baked into every spawn so the Codex orchestrator knows how to
 # use app plugins and MaaS MCP directly. No PA CLI fallback remains in the
 # Slack bridge path.
@@ -478,6 +534,60 @@ ROUTING RULES — apply automatically.
 def build_system_prompt() -> str:
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     return SYSTEM_PROMPT_TEMPLATE.format(today=today)
+
+
+BREV_FORM_URL = "https://nvidia.tfaforms.net/32"
+BREV_NOTIFY_EMAIL = "thaphan@nvidia.com"
+BREV_ORG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,80}$")
+BREV_SUBMITTED_RE = re.compile(r"(?im)^\s*BREV_SUBMITTED\b.*$")
+
+BREV_SYSTEM_PROMPT_TEMPLATE = """\
+You are agent-me running the operator's Brev credits request flow on Codex.
+This is an interactive, stateful workflow for Slack thread `{thread_ts}`.
+
+Goal:
+- Request Brev credits for org id `{org_id}` using the web form at {form_url}.
+- Use the registered `maas-playwright` MCP server for browser automation.
+- Do not use shell commands, local browser CLIs, or the Slack bot token.
+- Do not send Slack messages yourself. After successful form submission, the
+  bridge will send the required Slack connector/MCP notification.
+
+Hard constraints:
+- Do not invent, infer, or auto-approve form answers.
+- You may fill `{org_id}` only into fields that clearly ask for org/project/team
+  id/name. For all other missing fields, ask the user for the exact value.
+- For every form page, inspect the visible fields and options before filling.
+- Fill only values the user already provided in this Slack thread, values that
+  are visibly prefilled by the page, or the org id where it clearly applies.
+- If a page has required fields that are not answered, stop and ask one concise
+  question listing the exact visible field labels/options you need next.
+- If a select/radio/checkbox choice is required, present the exact visible
+  options and ask the user to choose. Do not choose defaults unless the page
+  has already selected them.
+- Before clicking the final submit button, show a short review of the visible
+  entered values and ask the user to explicitly confirm submission.
+- Do not click final submit until the user clearly confirms in a later message.
+- If the page blocks you, times out, or requires unavailable auth, report the
+  exact blocker and ask for the next user-provided step.
+- If browser state is lost between Slack turns, reopen the form and refill
+  only values already present in this session before continuing.
+
+Completion contract:
+- When and only when the form submit succeeds, make your first final-response
+  line exactly:
+  BREV_SUBMITTED org_id={org_id}
+- After that marker, add one concise Vietnamese line summarizing the form
+  submission confirmation. Do not mention Slack notification status.
+- If the form is not submitted yet, do not include `BREV_SUBMITTED`.
+"""
+
+
+def build_brev_system_prompt(org_id: str, thread_ts: str) -> str:
+    return BREV_SYSTEM_PROMPT_TEMPLATE.format(
+        org_id=org_id,
+        thread_ts=thread_ts,
+        form_url=BREV_FORM_URL,
+    )
 
 # Legacy Claude approval-gate toggle. Codex is now the default chat
 # orchestrator, so this path only matters if a future operator explicitly
@@ -733,6 +843,7 @@ async def spawn_codex(
     resume_session_id: str | None = None,
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     thread_ts: str | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[str, str | None]:
     """Spawn `codex exec --json` and stream events.
 
@@ -755,7 +866,7 @@ async def spawn_codex(
     Raises SessionExpired if --resume hit a missing session — caller can
     retry without --resume to recover.
     """
-    prompt_with_system = f"{build_system_prompt()}\n\nUSER REQUEST:\n{prompt}"
+    prompt_with_system = f"{system_prompt or build_system_prompt()}\n\nUSER REQUEST:\n{prompt}"
     args = _codex_args(prompt_with_system, resume_session_id)
     log.info("codex_spawn", cwd=str(CHAT_CWD), model=MODEL,
              prompt_len=len(prompt), resume=resume_session_id)
@@ -908,6 +1019,7 @@ HELP_TEXT = "\n".join((
     "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
+    "• `brev <org_id>` / `/brev <org_id>` — request Brev credits interactively, then send the test Slack MCP notification",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
@@ -1245,6 +1357,202 @@ Return a concise Vietnamese status:
     return answer.strip() or "_(no output)_"
 
 
+def parse_brev_org_id(args_text: str | None) -> tuple[str | None, str | None]:
+    raw = (args_text or "").strip()
+    if not raw:
+        return None, "Usage: `/brev <org_id>` hoặc `brev <org_id>`, ví dụ `brev vrdc-maxine`."
+    if raw.lower() in {"cancel", "stop", "huy", "hủy", "huỷ"}:
+        return "cancel", None
+    parts = raw.split()
+    if len(parts) != 1:
+        return None, "Chỉ truyền một `org_id` thôi, ví dụ `brev vrdc-maxine`."
+    org_id = parts[0]
+    if not BREV_ORG_ID_RE.fullmatch(org_id):
+        return None, (
+            "`org_id` chỉ nên gồm chữ/số/dấu `-`, `_`, `.`, "
+            "và bắt đầu bằng chữ hoặc số."
+        )
+    return org_id, None
+
+
+def parse_brev_plain_command(text: str | None) -> str | None:
+    m = re.match(r"^\s*brev(?:\s+(.+))?\s*$", text or "", re.IGNORECASE)
+    if not m:
+        return None
+    return (m.group(1) or "").strip()
+
+
+def is_brev_cancel_text(text: str | None) -> bool:
+    value = (text or "").strip().lower()
+    return value in {
+        "cancel",
+        "stop",
+        "huy",
+        "hủy",
+        "huỷ",
+        "brev cancel",
+        "/brev cancel",
+    }
+
+
+def brev_submission_marker_seen(text: str) -> bool:
+    return BREV_SUBMITTED_RE.search(text or "") is not None
+
+
+def strip_brev_submission_marker(text: str) -> str:
+    lines = [
+        line for line in (text or "").splitlines()
+        if not BREV_SUBMITTED_RE.match(line)
+    ]
+    return "\n".join(lines).strip() or "Brev form submitted."
+
+
+async def send_brev_slack_notification(org_id: str) -> str:
+    message = f"@brev-credits requested credits for {org_id}"
+    prompt = f"""The user explicitly authorized this Slack MCP notification after a successful Brev credits form submission.
+
+Destination: Slack DM to `{BREV_NOTIFY_EMAIL}`.
+Message text, exactly:
+{message}
+
+Use the registered `maas-slack` MCP server if its send-message tool is
+available in this turn. If Slack is exposed only through the Codex Slack app
+connector, use that connector. Do not use the agent-me Slack bot token, do not
+post in the current agent-me thread, and do not use shell commands.
+
+Send as the signed-in Slack user. Do not add "sent by ChatGPT", "via Codex",
+"via agent-me", signatures, metadata, blocks, attachments, prefixes, suffixes,
+or any extra text. Do not rewrite the bare `@brev-credits` text.
+
+Return a concise Vietnamese status after the send, including the recipient and
+permalink if the connector returns one. If the connector fails, include the
+exact failure in one short line.
+"""
+    answer, _sid = await spawn_codex_app_server(prompt)
+    return answer.strip() or "_(no output)_"
+
+
+async def finalize_brev_if_submitted(thread_ts: str, org_id: str, answer: str) -> str:
+    if not brev_submission_marker_seen(answer):
+        return answer.strip() or "_(no output)_"
+
+    visible_answer = strip_brev_submission_marker(answer)
+    await finish_brev_flow(thread_ts, "submitted", visible_answer)
+    try:
+        notify_status = await send_brev_slack_notification(org_id)
+    except Exception as exc:
+        return (
+            f"{visible_answer}\n\n"
+            "⚠️ Form đã submit, nhưng Slack MCP notification bị lỗi: "
+            f"`{str(exc)[:600]}`"
+        )
+    return f"{visible_answer}\n\n✅ Slack MCP notification: {notify_status}"
+
+
+async def cmd_brev_start(
+    args_text: str = "",
+    *,
+    channel: str | None = None,
+    thread_ts: str | None = None,
+    user_id: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> str:
+    org_id, err = parse_brev_org_id(args_text)
+    if err:
+        return err
+    if org_id == "cancel":
+        if thread_ts:
+            await finish_brev_flow(thread_ts, "cancelled", "cancelled by user")
+            await clear_session(thread_ts)
+        return "Đã hủy Brev flow trong thread này."
+    if not channel or not thread_ts:
+        return (
+            "Brev flow cần một Slack thread thật để hỏi/đáp từng bước. "
+            "Hãy chạy `brev <org_id>` trong DM với bot, hoặc dùng native `/brev <org_id>`."
+        )
+
+    await upsert_thread(thread_ts, channel, user_id)
+    await clear_session(thread_ts)
+    await remember_brev_flow(thread_ts, org_id)
+
+    prompt = f"""Start the Brev credits request flow.
+
+Org id: `{org_id}`
+Form URL: {BREV_FORM_URL}
+
+Navigate to the form with `maas-playwright`, inspect the first visible page,
+fill only the org id if a matching field is clearly present, then stop and ask
+the user for the next missing required field(s). Do not submit anything in this
+first turn unless the user has already supplied every required value and later
+explicitly confirmed final submission, which has not happened yet.
+"""
+    answer, new_sid = await spawn_codex(
+        prompt,
+        progress_cb=progress_cb,
+        thread_ts=thread_ts,
+        system_prompt=build_brev_system_prompt(org_id, thread_ts),
+    )
+    if new_sid:
+        await upsert_session(thread_ts, new_sid)
+    return await finalize_brev_if_submitted(thread_ts, org_id, answer)
+
+
+async def cmd_brev_continue(
+    thread_ts: str,
+    user_response: str,
+    *,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> str:
+    flow = await get_active_brev_flow(thread_ts)
+    if not flow:
+        return "Không có Brev flow active trong thread này. Chạy `brev <org_id>` để bắt đầu."
+
+    if is_brev_cancel_text(user_response):
+        await finish_brev_flow(thread_ts, "cancelled", "cancelled by user")
+        await clear_session(thread_ts)
+        return "Đã hủy Brev flow trong thread này."
+
+    org_id = str(flow["org_id"])
+    existing_sid = await get_session_id(thread_ts)
+    if not existing_sid:
+        await finish_brev_flow(thread_ts, "failed", "missing Codex session")
+        return (
+            "Brev flow bị mất Codex session nên không thể tiếp tục an toàn. "
+            f"Chạy lại `brev {org_id}` để bắt đầu từ đầu."
+        )
+
+    prompt = f"""The user replied with the next Brev form input or confirmation:
+
+{user_response}
+
+Continue the same Brev credits request for org id `{org_id}`. Use only the
+existing user-provided values from this session plus this latest reply. If the
+reply answers a visible field, fill it and move to the next page only when all
+required fields on the current page are answered. If more information is
+needed, ask one concise Vietnamese question with exact visible field labels and
+options. If the user explicitly confirms final submission and the review page
+is complete, submit the form and follow the completion contract.
+"""
+    try:
+        answer, new_sid = await spawn_codex(
+            prompt,
+            resume_session_id=existing_sid,
+            progress_cb=progress_cb,
+            thread_ts=thread_ts,
+            system_prompt=build_brev_system_prompt(org_id, thread_ts),
+        )
+    except SessionExpired:
+        await clear_session(thread_ts)
+        await finish_brev_flow(thread_ts, "failed", "expired Codex session")
+        return (
+            "Brev flow bị mất Codex session nên không thể tiếp tục an toàn. "
+            f"Chạy lại `brev {org_id}` để bắt đầu từ đầu."
+        )
+    if new_sid:
+        await upsert_session(thread_ts, new_sid)
+    return await finalize_brev_if_submitted(thread_ts, org_id, answer)
+
+
 async def cmd_permissioned_app_server_write(user_request: str) -> str:
     prompt = f"""The Slack user explicitly requested a permissioned connector/MCP write action.
 
@@ -1345,9 +1653,15 @@ def _help_blocks() -> list[dict]:
     ]
 
 
-async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
-                       *, channel: str | None = None,
-                       thread_ts: str | None = None) -> str | SlashResult:
+async def handle_slash(
+    cmd: str,
+    user_id: str | None,
+    args_text: str = "",
+    *,
+    channel: str | None = None,
+    thread_ts: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> str | SlashResult:
     if cmd == "/mcp":
         return await cmd_mcp()
     if cmd == "/version":
@@ -1358,6 +1672,14 @@ async def handle_slash(cmd: str, user_id: str | None, args_text: str = "",
         return await cmd_reauth()
     if cmd == "/brief":
         return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
+    if cmd == "/brev":
+        return await cmd_brev_start(
+            args_text,
+            channel=channel,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            progress_cb=progress_cb,
+        )
     if cmd == "/model-free-draft":
         return await cmd_model_free_draft(
             thread_ts=thread_ts,
@@ -1499,9 +1821,11 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
 
     async def _dispatch(cmd: str, args_text: str, label: str) -> None:
         placeholder_ts = await post_thinking(client, channel, thread_ts)
+        progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
         try:
             result = await handle_slash(cmd, user_id, args_text,
-                                         channel=channel, thread_ts=thread_ts)
+                                         channel=channel, thread_ts=thread_ts,
+                                         progress_cb=progress_cb)
             text, blocks = _split_result(result)
             if blocks:
                 # chat.update accepts blocks; include text as fallback for
@@ -1518,8 +1842,39 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             await update_progress(client, channel, placeholder_ts,
                                   f"⚠️ `{cmd}` failed: `{exc}`")
 
+    active_brev = await get_active_brev_flow(thread_ts)
+    if active_brev:
+        await upsert_thread(thread_ts, channel, user_id)
+        await insert_message(thread_ts, "user", cleaned, event_ts)
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
+        try:
+            result = await cmd_brev_continue(
+                thread_ts,
+                cleaned,
+                progress_cb=progress_cb,
+            )
+            await update_progress(client, channel, placeholder_ts, result)
+            await insert_message(thread_ts, "assistant", result, placeholder_ts)
+            log.info(
+                "brev_flow_continued",
+                thread_ts=thread_ts,
+                org_id=active_brev.get("org_id"),
+            )
+        except Exception as exc:
+            log.error("brev_flow_failed", err=str(exc), thread_ts=thread_ts)
+            await update_progress(
+                client, channel, placeholder_ts,
+                f"⚠️ Brev flow failed: `{str(exc)[:600]}`",
+            )
+        return
+
     # Plain-text command intercept (exact match): "brief", "brief week", "mcp", etc.
     plain_key = cleaned.strip().lower()
+    brev_args = parse_brev_plain_command(cleaned)
+    if brev_args is not None:
+        await _dispatch("/brev", brev_args, "plain")
+        return
     if plain_key in PLAIN_COMMANDS:
         cmd, args_text = PLAIN_COMMANDS[plain_key]
         await _dispatch(cmd, args_text, "plain")
@@ -1777,6 +2132,37 @@ async def slash_reauth(ack, respond, command):
 @app.command("/brief")
 async def slash_brief(ack, respond, command):
     await _native_slash(ack, respond, command, "/brief")
+
+
+@app.command("/brev")
+async def slash_brev(ack, respond, command, client):
+    await ack()
+    args_text = (command.get("text") or "").strip()
+    channel = command.get("channel_id")
+    user_id = command.get("user_id")
+    log.info("native_slash", cmd="/brev", user=user_id,
+             channel=channel, args=args_text)
+    if not channel:
+        await respond(response_type="ephemeral", text="⚠️ `/brev` missing Slack channel.")
+        return
+    try:
+        root = await client.chat_postMessage(
+            channel=channel,
+            text="🔄 Starting Brev credits flow… reply in this thread with each requested value.",
+        )
+        thread_ts = root["ts"]
+        progress_cb = make_slack_progress_callback(client, channel, thread_ts)
+        result = await cmd_brev_start(
+            args_text,
+            channel=channel,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            progress_cb=progress_cb,
+        )
+        await update_progress(client, channel, thread_ts, result)
+    except Exception as exc:
+        log.error("native_slash_failed", cmd="/brev", err=str(exc))
+        await respond(response_type="ephemeral", text=f"⚠️ `/brev` failed: `{exc}`")
 
 
 @app.command("/model-free-draft")
