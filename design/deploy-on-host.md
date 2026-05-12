@@ -262,9 +262,22 @@ no browser, so the URLs will be printed and need manual handling.
    ./scripts/sync-mcp-creds-to-host.sh <ssh-alias>
    ```
 
-   Verify with `claude mcp list` on the host. Empirically 16/17 turn
-   ✓ Connected immediately this way; nvbugs is occasionally stale on
-   the Mac too, in which case path 2 covers it.
+   The helper also writes `~/.config/agent-me/codex-mcp-env.sh` on the
+   host, installs a shell startup hook, and verifies how many
+   `AGENT_ME_MCP_TOKEN_*` exports future shell-launched Codex sessions
+   will see. Existing Codex sessions still need a restart because a
+   running process cannot inherit newly-written environment variables.
+
+   For the daily "reauth locally, then push to host" path, use the wrapper:
+
+   ```bash
+   # On the Mac:
+   ./scripts/mac-reauth-and-sync.sh <ssh-alias>
+   ```
+
+   Verify with `claude mcp list` or `codex mcp list` on the host. Empirically
+   16/17 turn ✓ Connected immediately this way; nvbugs is occasionally stale
+   on the Mac too, in which case path 2 covers it.
 
    **Caveats**:
    - Each token's `redirect_uri` records the Mac's localhost:NNNN
@@ -457,7 +470,7 @@ uv run agent-me-brief --period day
 | Bridge restarts every 5s, env looks ok | Wrong `SLACK_APP_TOKEN` (xoxa- not xapp-) | regenerate App Token in Slack app config |
 | Watcher pulls but bridge doesn't restart | `loginctl enable-linger` not run | `sudo loginctl enable-linger $USER && systemctl --user daemon-reload` |
 | `journalctl --user` empty after logout | linger not enabled, services died | same as above |
-| MCPs go to 401 after a day | normal (tokens expire ~24h) | `uv run agent-me-reauth` |
+| MCPs go to 401 after a day | normal (tokens expire ~24h) | On the Mac: `./scripts/mac-reauth-and-sync.sh <ssh-alias>` |
 | `git pull` fails: "would clobber" | local change on the host (someone edited there) | `git stash` (only if intentional) or hand-resolve |
 | `git pull` fails: "diverged" | local commit on the host that isn't on origin | `git log origin/main..HEAD` to inspect; either push or reset |
 

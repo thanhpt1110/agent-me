@@ -15,7 +15,9 @@
 # 3. jq-merges the host's `claudeAiOauth` (host-side `claude /login`
 #    state) with the Mac's `mcpOAuth` map.
 # 4. Writes the merged file back via scp + chmod 600.
-# 5. Verifies with `claude mcp list` on the host and prints the count
+# 5. Writes Codex bearer-token env exports on the host and installs shell
+#    startup hooks so future Codex sessions inherit refreshed MCP auth.
+# 6. Verifies with `claude mcp list` on the host and prints the count
 #    of ✓ Connected vs Needs auth maas-* servers.
 #
 # Re-run any time the Mac has fresher tokens (e.g. you just reauth'd a
@@ -29,6 +31,7 @@ if [[ $# -ne 1 ]]; then
     exit 2
 fi
 HOST="$1"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 bold() { printf "\033[1m%s\033[0m\n" "$1"; }
 ok()   { printf "\033[32m✓ %s\033[0m\n" "$1"; }
@@ -94,8 +97,18 @@ scp -q "$TMP_MERGED" "${HOST}:~/.claude/.credentials.json"
 ssh "$HOST" 'chmod 600 ~/.claude/.credentials.json'
 ok "pushed and chmod'd 600"
 
-# ── 5. Verify ──────────────────────────────────────────────────────────
-bold "Step 5 — verify with claude mcp list on host"
+# ── 5. Prepare Codex auth env ──────────────────────────────────────────
+bold "Step 5 — prepare Codex MCP auth env on host"
+if [[ ! -r "$SCRIPT_DIR/install-codex-mcp-env-on-host.sh" ]]; then
+    fail "missing helper: $SCRIPT_DIR/install-codex-mcp-env-on-host.sh"
+fi
+ssh "$HOST" 'bash -s' < "$SCRIPT_DIR/install-codex-mcp-env-on-host.sh"
+
+codex_env_count=$(ssh "$HOST" 'bash -lc ". ~/.config/agent-me/codex-mcp-env.sh 2>/dev/null; env | grep -c \"^AGENT_ME_MCP_TOKEN_\""' 2>/dev/null || true)
+echo "  Codex env exports: ${codex_env_count:-0} AGENT_ME_MCP_TOKEN_*"
+
+# ── 6. Verify ──────────────────────────────────────────────────────────
+bold "Step 6 — verify with claude mcp list on host"
 mcp_out=$(ssh "$HOST" '~/.local/bin/uv run --quiet --no-sync --directory ~/agent-me python -c "import subprocess; print(subprocess.run([\"claude\",\"mcp\",\"list\"],capture_output=True,text=True).stdout)"' 2>&1 || \
           ssh "$HOST" 'export PATH=$HOME/.local/bin:$PATH; claude mcp list' 2>&1)
 connected=$(printf '%s\n' "$mcp_out" | grep -cE "^maas-.*✓ Connected" || true)

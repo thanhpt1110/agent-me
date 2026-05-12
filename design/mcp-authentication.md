@@ -9,9 +9,9 @@
   disables proactive OAuth-token refresh in Claude Code. Cursor's MCP
   extension implements its own refresh loop, which is why Cursor sessions
   appear to last longer than `claude` sessions for the same MAAS endpoints.
-- **Re-auth has to happen on the host running the bridge** (today: your Mac;
-  Phase 3+: Brev). It cannot happen from Slack — the OAuth flow needs an
-  interactive browser session and writes to the host's `~/.claude.json`.
+- **Re-auth has to happen on a machine with an interactive browser**. For a
+  remote Colossus host, the recommended path is re-auth on the Mac, then sync
+  the refreshed credential store to the host.
 - Re-auth takes ~30 seconds and **does not require restarting the bridge** —
   it shells out to fresh `claude` per request and picks up the new token on
   the next call.
@@ -19,19 +19,43 @@
   list` and **DMs you** the re-auth one-liner so you don't have to remember
   to check.
 
+## Command cheat sheet
+
+Run these from the Mac checkout when the target host is `1xA100-40`:
+
+```bash
+# Reauth on the Mac, then push credentials and Codex env exports to the host.
+./scripts/mac-reauth-and-sync.sh 1xA100-40
+
+# Copy the current Mac Keychain credentials to the host only.
+./scripts/sync-mcp-creds-to-host.sh 1xA100-40
+
+# Reauth only on the current machine; do not sync to a host.
+uv run agent-me-codex-reauth
+```
+
+`sync-mcp-creds-to-host.sh` now also prepares Codex bearer-token auth on the
+host by writing `~/.config/agent-me/codex-mcp-env.sh` and installing a small
+shell startup hook. Future shell-launched Codex sessions inherit refreshed
+`AGENT_ME_MCP_TOKEN_*` values automatically. Existing Codex sessions keep their
+original process environment, so restart them after a sync.
+
 ## Where the auth state lives
 
-`claude mcp list` reads connection state from `~/.claude.json` on the host
-that ran `claude`. The token is written there during the OAuth callback step
-of the auth flow. Anything that spawns `claude` as a child process (the
-bridge does this with `cwd = ~/agent-me/`) inherits that state automatically.
+`claude mcp list` reads connection state from Claude's local credential store
+on the host that ran `claude`. For the Codex path, agent-me reads MaaS OAuth
+access tokens from `~/.claude/.credentials.json` and exports them as
+`AGENT_ME_MCP_TOKEN_*` before starting Codex subprocesses or new shell-launched
+Codex sessions.
 
 **This means:**
 
 - Bridge running on your **Mac** → auth from your **Mac terminal**.
-- Bridge running on **Brev** → auth from a **Brev SSH session** (with the
-  auth URL opened in your local browser; the loopback-token-paste flow is
-  documented at the bottom of this doc).
+- Bridge running on **Colossus/remote Linux** → auth from your **Mac terminal**
+  with `./scripts/mac-reauth-and-sync.sh <ssh-host>` whenever possible.
+- Bridge running on **Brev** without Mac sync → auth from a **Brev SSH
+  session** with the auth URL opened in your local browser; the
+  loopback-token-paste flow is documented at the bottom of this doc.
 - You **cannot** auth via Slack DM. There is no browser there.
 
 ## When to re-auth

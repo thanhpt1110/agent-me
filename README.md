@@ -31,8 +31,20 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 3. **Three interactive steps** the bootstrap script reminds you to do (browser required):
    - `codex login` — one-time per machine.
    - `uv run agent-me-codex-reauth` — refreshes the MaaS OAuth token store used by Codex bearer-token MCPs and opens/prints NVIDIA-SSO URLs where needed.
-   - If the bridge runs on Colossus but your browser is on a Mac, run this on the Mac instead: `./scripts/mac-reauth-and-sync.sh <ssh-host>`. It opens all auth tabs locally, then syncs refreshed credentials back to the host.
+   - If the bridge runs on Colossus but your browser is on a Mac, run this on the Mac instead: `./scripts/mac-reauth-and-sync.sh <ssh-host>`. It opens all auth tabs locally, syncs refreshed credentials back to the host, and prepares Codex MCP token env vars for future host sessions.
    - Fill `configs/.env` with Slack tokens (template = `configs/.env.example`). Slack app walkthrough: `design/slack-app-setup.md`.
+   - Daily host auth shortcuts from the Mac:
+     ```bash
+     # Reauth on the Mac, then push credentials and Codex env exports to this host.
+     ./scripts/mac-reauth-and-sync.sh 1xA100-40
+
+     # Copy current Mac Keychain credentials to this host only.
+     ./scripts/sync-mcp-creds-to-host.sh 1xA100-40
+
+     # Reauth only on the current machine; no host sync.
+     uv run agent-me-codex-reauth
+     ```
+     New shell-launched Codex sessions on the host inherit the refreshed MCP env automatically; already-running Codex sessions still need a restart.
 4. **Verify**:
    ```bash
    codex mcp list                             # all 17 MaaS MCPs should be registered

@@ -114,7 +114,7 @@ approval gate.
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites
 - [x] **Deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-host.md` is the step-by-step playbook another Claude session can follow with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets). Targets any internal-NVIDIA systemd Linux host (Colossus is first-class; external clouds like Brev work for the bridge but block on MaaS MCP endpoints).
-- [x] **Mac→host MCP token sync (2026-05-10)** — `scripts/sync-mcp-creds-to-host.sh`. Extracts the Mac Keychain item `Claude Code-credentials` (plain JSON `{"mcpOAuth":{...}}`), jq-merges with the host's existing `~/.claude/.credentials.json` (which already has `claudeAiOauth` from `claude /login`), scp's back. **One command instead of 16 browser OAuth flows** when bringing up a new host; idempotent so it doubles as the daily refresh after a Mac-side reauth. Empirically 16/17 maas-* turn ✓ Connected immediately on Colossus this way (only nvbugs needed Mac-side reauth first). Caveat: each token's `redirect_uri` records the Mac's localhost:NNNN, but ECI doesn't enforce redirect_uri match on refresh, so refresh from the host works.
+- [x] **Mac→host MCP token sync (2026-05-10; Codex env refresh added 2026-05-12)** — `scripts/sync-mcp-creds-to-host.sh`. Extracts the Mac Keychain item `Claude Code-credentials` (plain JSON `{"mcpOAuth":{...}}`), jq-merges with the host's existing `~/.claude/.credentials.json` (which already has `claudeAiOauth` from `claude /login`), scp's back, then runs `scripts/install-codex-mcp-env-on-host.sh` over SSH to write `~/.config/agent-me/codex-mcp-env.sh` and install shell startup hooks for future Codex sessions. **One command instead of 16 browser OAuth flows** when bringing up a new host; idempotent so it doubles as the daily refresh after a Mac-side reauth. Empirically 16/17 maas-* turn ✓ Connected immediately on Colossus this way (only nvbugs needed Mac-side reauth first). Caveat: each token's `redirect_uri` records the Mac's localhost:NNNN, but ECI doesn't enforce redirect_uri match on refresh, so refresh from the host works.
 - [x] **Phase 3 deploy on Colossus 1xA100-40 — steps 1–5 done (2026-05-10)** — Ubuntu 24.04, 16 CPU / 125 GB RAM / 731 GB free; passwordless sudo. Tools installed (uv, claude, gh, node), repo cloned at `~/agent-me`, `bootstrap.sh` registered all 17 MCPs at user scope, secrets vault scp'd + applied to `configs/.env`, `gh auth` linked, `claude /login` done, MCP tokens synced from Mac (16/17 ✓; nvbugs stale on both Mac and Colossus). Steps 6–8 (`scripts/install-systemd.sh` + Slack DM smoke test + auto-deploy verify) handed back to user — they're driving from a claude session on Colossus.
 - [x] **`design/maas-mcp-catalog.md`** — full MaaS MCP catalog reference
 - [x] **`tail-log.sh`** + **`kill-bridge.sh`** helper scripts
@@ -463,7 +463,10 @@ approval gate.
   Daily refresh workflow is now wrapped by
   `scripts/mac-reauth-and-sync.sh <host>`: run reauth on the Mac so
   all auth tabs open locally, then sync Keychain credentials to the
-  host. Replaces the SSH-port-forward + agent-me-reauth-on-the-host
+  host. On 2026-05-12 the sync path also started writing the Codex
+  bearer-token env file and shell hooks on the host, so future
+  shell-launched Codex sessions inherit `AGENT_ME_MCP_TOKEN_*` after
+  the sync. Replaces the SSH-port-forward + agent-me-reauth-on-the-host
   path as the recommended ritual.
 - **2026-05-10 — Phase 4 FE stack: Jinja2+Alpine, NOT Flutter Web.**
   Bandwidth isn't the deciding factor (Tailscale Funnel has no cap),

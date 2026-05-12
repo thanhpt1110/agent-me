@@ -74,6 +74,12 @@ bold "Step 2 — sync refreshed Mac Keychain credentials to $HOST"
 "$SCRIPT_DIR/sync-mcp-creds-to-host.sh" "$HOST"
 
 bold "Step 3 — verify on host"
-ssh "$HOST" 'cd ~/agent-me 2>/dev/null || cd /localhome/local-thaphan/agent-me; codex mcp list; uv run python -c "from agent_me.mcp_tokens import codex_mcp_token_env; env=codex_mcp_token_env(); print(f\"usable MaaS bearer tokens: {len(env)}\")"'
+ssh "$HOST" '
+    set -e
+    cd ~/agent-me 2>/dev/null || cd /localhome/local-thaphan/agent-me
+    codex mcp list
+    bash -lc ". ~/.config/agent-me/codex-mcp-env.sh 2>/dev/null; printf \"Codex env exports visible to new shell: \"; env | grep -c \"^AGENT_ME_MCP_TOKEN_\""
+    uv run python -c "from agent_me.mcp_tokens import codex_mcp_token_env; env=codex_mcp_token_env(); print(f\"usable MaaS bearer tokens: {len(env)}\")"
+'
 
 ok "Mac reauth + host sync complete"
