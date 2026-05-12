@@ -30,6 +30,33 @@ def test_parse_nvbugs_builds_clickable_bug_url() -> None:
     assert items[0].last_activity == "2026-05-11T10:00:00Z"
 
 
+def test_parse_nvbugs_accepts_raw_nvbugs_fields() -> None:
+    items = daily_brief.parse_nvbugs(
+        {
+            "items": [
+                {
+                    "BugId": 6064144,
+                    "Synopsis": "Benchmark Test Status Tracker",
+                    "BugAction": "Dev - Open - To fix",
+                    "Priority": "P2",
+                    "Module": "Maxine",
+                    "RequestDate": "2026-05-01T10:00:00Z",
+                    "reason": "arb",
+                }
+            ]
+        },
+        daily_brief.SOURCES[3],
+    )
+
+    assert len(items) == 1
+    assert items[0].item_id == "6064144"
+    assert items[0].url == "https://nvbugs.nvidia.com/Bug/6064144"
+    assert items[0].title == "Benchmark Test Status Tracker"
+    assert items[0].status == "Dev - Open - To fix"
+    assert items[0].group == "Maxine"
+    assert items[0].reason == "arb"
+
+
 def test_parse_calendar_preserves_meeting_context() -> None:
     spec = next(s for s in daily_brief.SOURCES if s.id == "calendar")
     items = daily_brief.parse_calendar(
@@ -125,6 +152,8 @@ def test_readonly_mcp_approval_configs_cover_core_brief_tools() -> None:
     assert "maas-gitlab.tools.gitlab_list_merge_requests" in joined
     assert "maas-confluence.tools.confluence_search" in joined
     assert "maas-nvbugs.tools.nvbugs_search_v2" in joined
+    assert "maas-nvbugs.tools.nvbugs_get_bug_details_v2" in joined
+    assert "maas-nvbugs.tools.nvbugs_get_bug_v2" not in joined
     assert "approval_mode=\"approve\"" in joined
 
 
@@ -162,4 +191,6 @@ def test_nvbugs_prompt_includes_full_name_alias() -> None:
     )
 
     assert "Thanh Phan" in prompt
-    assert "open bugs where QA engineer is `Thanh Phan`" in prompt
+    assert 'QAEngineerFullName = "Thanh Phan"' in prompt
+    assert 'ActionReqByFullName = "Thanh Phan"' in prompt
+    assert "Do NOT broaden the search to requester, assignee" in prompt

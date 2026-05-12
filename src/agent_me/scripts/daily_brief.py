@@ -123,7 +123,7 @@ READONLY_MAAS_APPROVAL_CONFIGS = (
     'mcp_servers.maas-confluence.tools.confluence_search.approval_mode="approve"',
     'mcp_servers.maas-nvbugs.tools.nvbugs_check_connection_v2.approval_mode="approve"',
     'mcp_servers.maas-nvbugs.tools.nvbugs_search_v2.approval_mode="approve"',
-    'mcp_servers.maas-nvbugs.tools.nvbugs_get_bug_v2.approval_mode="approve"',
+    'mcp_servers.maas-nvbugs.tools.nvbugs_get_bug_details_v2.approval_mode="approve"',
 )
 
 
@@ -347,21 +347,22 @@ def parse_confluence(data: dict, _spec: SourceSpec) -> list[BriefItem]:
 def parse_nvbugs(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     out: list[BriefItem] = []
     for nb in data.get("items", []) or []:
-        bug_id = str(nb.get("id", "?")).removeprefix("Bug ")
+        raw_id = nb.get("id") or nb.get("BugId") or nb.get("bugid") or "?"
+        bug_id = str(raw_id).removeprefix("Bug ")
         url = str(nb.get("url", ""))
         if bug_id and bug_id != "?" and not url:
             url = f"https://nvbugs.nvidia.com/Bug/{bug_id}"
         out.append(BriefItem(
             source="nvbugs", icon="🐛",
             item_id=bug_id,
-            title=str(nb.get("title", ""))[:200],
+            title=str(nb.get("title") or nb.get("Synopsis") or nb.get("synopsis") or "")[:200],
             url=url,
-            group=_g(nb, "group", "uncategorized"),
+            group=_g(nb, "group", _g(nb, "Module", "uncategorized")),
             reason=nb.get("reason"),
-            status=nb.get("status"),
-            priority=nb.get("priority"),
+            status=nb.get("status") or nb.get("BugAction") or nb.get("Disposition"),
+            priority=nb.get("priority") or nb.get("Priority"),
             deadline=nb.get("due"),
-            last_activity=nb.get("updated"),
+            last_activity=nb.get("updated") or nb.get("RequestDate"),
         ))
     return out
 
@@ -527,39 +528,37 @@ Do not report errors as "nothing pending". JSON ONLY."""
 
 NVBUGS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
-User shortname: `{user}`. User full name: `{full_name}`.
-User email: `{user}@nvidia.com`.
-Use the registered Codex MCP server `maas-nvbugs`; call its NVBugs
-search v2 tool.
+User full name: `{full_name}`.
+Use the registered Codex MCP server `maas-nvbugs`; call only
+`nvbugs_search_v2` unless a returned row is missing its bug id or title.
 
-Find ALL currently open NVBugs matching either condition:
-  1. QA engineer / QA Eng / QA owner is `{user}`, `{full_name}`, or `{user}@nvidia.com`
-  2. The bug is ARB-related and `{user}` / `{full_name}` / `{user}@nvidia.com` is involved
-     (ARB owner, ARB reviewer, ARB approver, requester, assignee, reporter,
-      Cc, comment mention, or any explicit ARB field)
+Find open NVBugs matching exactly either condition:
+  1. QA Eng / QA Engineer is `{full_name}`
+  2. ARB / Action Required By is `{full_name}`
 
-Open means status/state is NOT in:
-  Closed, Resolved, WontFix, Duplicate, Fixed, Verified, Released, Deferred.
+Use exactly these two structured searches with max_results=50:
+  - query: `Show open bugs where QAEngineerFullName = "{full_name}"`
+    search_type: `structured`
+  - query: `Show open bugs where ActionReqByFullName = "{full_name}"`
+    search_type: `structured`
 
-Run separate searches if needed, then merge and dedupe by bug id. Do not
-stop at the first page; fetch as many pages/results as the tool allows until
-you have the complete open set or the tool returns no more results.
+NVBugs v2 structured search field names are intentional here:
+`QAEngineerFullName` for QA Eng and `ActionReqByFullName` for ARB.
+Do NOT broaden the search to requester, assignee, reporter, Cc, comments,
+keywords, semantic search, similarity search, or ARB text mentions.
 
-Use natural-language search queries. Do NOT invent or force internal database
-column names such as `QAEngineerFullName`; the NVBugs MCP SQL generator may
-reject unknown field names. Prefer simple queries like:
-  - open bugs where QA engineer is `{user}`
-  - open bugs where QA engineer is `{full_name}`
-  - open ARB bugs involving `{user}`
-  - open ARB bugs involving `{full_name}`
-  - open bugs assigned/reported/cc/mentioned `{user}` with ARB in title or fields
+Merge the two result sets and dedupe by bug id. Treat a bug as open when the
+NVBugs result is returned by the "open bugs" structured query or its BugAction
+contains `Open`. Do not call details/comments/attachments for every bug; the
+search rows normally include BugId, Synopsis, Module, Priority, BugAction,
+Disposition, RequestDate, Engineer, and Requester.
 
 Each item:
   {{"id": "...", "title": "...", "priority": "P0|P1|P2|P3",
     "status": "Open", "due": null, "updated": "...",
     "url": "https://nvbugs.nvidia.com/Bug/<id>",
     "group": "<module|component|product>",
-    "reason": "qa_eng|arb_owner|arb_reviewer|arb_approver|arb_related|assignee|reporter|cc|mentioned"}}
+    "reason": "qa_eng|arb"}}
 
 Every item MUST include a clickable NVBugs URL. If the tool returns only
 an id, construct `https://nvbugs.nvidia.com/Bug/<id>`.
