@@ -1023,6 +1023,13 @@ READONLY_UPDATE_ME_PATTERNS = (
     "cap nhat cho toi",
     "cap nhat minh",
 )
+READONLY_CONNECTOR_QUERY_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(find|get|fetch|read|list|show|search|check|summarize|test)\b.*\b(open\s+)?(jira|gitlab|nvbugs|bugs?|issues?|tickets?)\b",
+        r"\b(open\s+)?(jira|gitlab|nvbugs|bugs?|issues?|tickets?)\b.*\b(find|get|fetch|read|list|show|search|check|summarize|test)\b",
+    )
+)
 
 
 def model_free_subject_pattern_from_text(text: str | None) -> str:
@@ -1081,9 +1088,48 @@ def looks_like_permissioned_connector_write_request(text: str | None) -> bool:
         return False
     if any(term in lowered for term in READONLY_UPDATE_ME_PATTERNS):
         return False
+    if any(pattern.search(lowered) for pattern in READONLY_CONNECTOR_QUERY_PATTERNS):
+        return False
     if looks_like_outlook_write_request(text):
         return True
     return any(pattern.search(lowered) for pattern in PERMISSIONED_CONNECTOR_WRITE_PATTERNS)
+
+
+def looks_like_nvbugs_read_request(text: str | None) -> bool:
+    """Route read-only NVBugs lookups through the source-specific fetcher."""
+    lowered = ascii_search_text(text)
+    if not lowered:
+        return False
+    if not re.search(r"\b(nvbugs|bug|bugs)\b", lowered):
+        return False
+    if any(pattern.search(lowered) for pattern in READONLY_CONNECTOR_QUERY_PATTERNS):
+        return True
+    return False
+
+
+async def cmd_nvbugs_read() -> str:
+    """Fetch the operator's open NVBugs with the hardened source prompt."""
+    from agent_me.scripts import daily_brief
+
+    spec = next(s for s in daily_brief.SOURCES if s.id == "nvbugs")
+    data = await spec.fetcher(spec, 1)
+    items = daily_brief.parse_nvbugs(data, spec)
+    if not items:
+        return "NVBugs: không có open bug nào match `QA Eng = Thanh Phan` hoặc `ARB = Thanh Phan`."
+
+    lines = [
+        "*NVBugs open bugs* — `QA Eng = Thanh Phan` hoặc `ARB = Thanh Phan`"
+    ]
+    for item in items:
+        title = item.title or "(no title)"
+        reason = item.reason or "matched"
+        status = item.status or "Open"
+        group = item.group or "uncategorized"
+        url = item.url or f"https://nvbugs.nvidia.com/Bug/{item.item_id}"
+        lines.append(
+            f"- <{url}|{item.item_id}> — {title} — `{reason}` — {status} — {group}"
+        )
+    return "\n".join(lines)
 
 
 async def cmd_brief(
@@ -1526,6 +1572,23 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             await update_progress(
                 client, channel, placeholder_ts,
                 f"⚠️ Model Free draft check failed: `{str(exc)[:600]}`",
+            )
+        return
+
+    if looks_like_nvbugs_read_request(cleaned):
+        await upsert_thread(thread_ts, channel, user_id)
+        await insert_message(thread_ts, "user", cleaned, event_ts)
+        placeholder_ts = await post_thinking(client, channel, thread_ts)
+        try:
+            result = await cmd_nvbugs_read()
+            await update_progress(client, channel, placeholder_ts, result)
+            await insert_message(thread_ts, "assistant", result, placeholder_ts)
+            log.info("nvbugs_read_handled", thread_ts=thread_ts)
+        except Exception as exc:
+            log.error("nvbugs_read_failed", err=str(exc), thread_ts=thread_ts)
+            await update_progress(
+                client, channel, placeholder_ts,
+                f"⚠️ NVBugs fetch failed: `{str(exc)[:600]}`",
             )
         return
 

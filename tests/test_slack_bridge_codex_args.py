@@ -141,6 +141,15 @@ def test_permissioned_connector_write_detection(monkeypatch, tmp_path) -> None:
     assert not app.looks_like_permissioned_connector_write_request(
         "update me about today's meetings"
     )
+    assert not app.looks_like_permissioned_connector_write_request(
+        'Find open NVBugs where QAEngineerFullName = "Thanh Phan"'
+    )
+    assert not app.looks_like_permissioned_connector_write_request(
+        "show open bugs where ARB is Thanh Phan"
+    )
+    assert app.looks_like_nvbugs_read_request(
+        'Test NVBugs only. Find open NVBugs where QAEngineerFullName = "Thanh Phan"'
+    )
 
 
 def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:

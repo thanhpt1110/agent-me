@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 import structlog
 from dotenv import load_dotenv
 from slack_sdk import WebClient
@@ -116,6 +117,10 @@ def resolve_cli_bin(env_var: str, name: str) -> str:
 
 
 CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
+NVBUGS_MCP_URL = os.environ.get(
+    "AGENT_ME_NVBUGS_MCP_URL",
+    "https://nvaihub.nvidia.com/maas/nvbugs/mcp/",
+)
 READONLY_MAAS_APPROVAL_CONFIGS = (
     'mcp_servers.maas-jira.tools.jira_search.approval_mode="approve"',
     'mcp_servers.maas-gitlab.tools.gitlab_list_merge_requests.approval_mode="approve"',
@@ -365,6 +370,32 @@ def parse_nvbugs(data: dict, _spec: SourceSpec) -> list[BriefItem]:
             last_activity=nb.get("updated") or nb.get("RequestDate"),
         ))
     return out
+
+
+def _nvbugs_rows(payload: dict) -> list[dict]:
+    data = payload.get("data") or {}
+    rows = ((data.get("ReturnValue") or {}).get("data") or [])
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 3 or not isinstance(row[2], dict):
+            continue
+        out.append(row[2])
+    return out
+
+
+def _normalize_nvbug(row: dict, reason: str) -> dict:
+    bug_id = str(row.get("BugId") or row.get("bugid") or "")
+    return {
+        "id": bug_id,
+        "title": row.get("Synopsis") or row.get("synopsis") or "",
+        "priority": row.get("Priority"),
+        "status": row.get("BugAction") or row.get("Disposition") or "Open",
+        "due": None,
+        "updated": row.get("RequestDate"),
+        "url": f"https://nvbugs.nvidia.com/Bug/{bug_id}" if bug_id else "",
+        "group": row.get("Module") or "uncategorized",
+        "reason": reason,
+    }
 
 
 def parse_slack(data: dict, _spec: SourceSpec) -> list[BriefItem]:
@@ -776,6 +807,80 @@ async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
     return data
 
 
+async def _nvbugs_search_v2(client: httpx.AsyncClient, token: str, query: str) -> dict:
+    res = await client.post(
+        NVBUGS_MCP_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": query,
+            "method": "tools/call",
+            "params": {
+                "name": "nvbugs_search_v2",
+                "arguments": {
+                    "query": query,
+                    "search_type": "structured",
+                    "max_results": 50,
+                },
+            },
+        },
+        timeout=90.0,
+    )
+    if res.status_code == 401:
+        raise RuntimeError(
+            "NVBugs MCP auth token expired or invalid; run "
+            "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
+            "then retry."
+        )
+    res.raise_for_status()
+    rpc = res.json()
+    if "error" in rpc:
+        raise RuntimeError(str(rpc["error"])[:500])
+    content = ((rpc.get("result") or {}).get("content") or [{}])[0]
+    payload = json.loads(content.get("text") or "{}")
+    if not payload.get("success"):
+        raise RuntimeError(str(payload.get("error") or payload)[:500])
+    return payload
+
+
+async def nvbugs_fetcher(_spec: SourceSpec, _period_days: int) -> dict:
+    """Fetch NVBugs directly via MCP JSON-RPC to avoid tool discovery drift."""
+    started = time.time()
+    token = (
+        os.environ.get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
+        or codex_mcp_token_env().get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
+    )
+    if not token:
+        raise RuntimeError("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS is not available")
+
+    log.info("subagent_start", source="nvbugs", backend="mcp-jsonrpc",
+             hint="maas-nvbugs")
+    queries = [
+        ("qa_eng", f'Show open bugs where QAEngineerFullName = "{USER_FULL_NAME}"'),
+        ("arb", f'Show open bugs where ActionReqByFullName = "{USER_FULL_NAME}"'),
+    ]
+    items_by_id: dict[str, dict] = {}
+    async with httpx.AsyncClient() as client:
+        for reason, query in queries:
+            payload = await _nvbugs_search_v2(client, token, query)
+            for row in _nvbugs_rows(payload):
+                item = _normalize_nvbug(row, reason)
+                bug_id = str(item.get("id") or "")
+                if bug_id and bug_id not in items_by_id:
+                    items_by_id[bug_id] = item
+
+    items = list(items_by_id.values())
+    items.sort(key=lambda item: str(item.get("updated") or ""), reverse=True)
+    elapsed = int(time.time() - started)
+    log.info("subagent_done", source="nvbugs", seconds=elapsed,
+             item_count=len(items))
+    return {"items": items}
+
+
 async def github_fetcher(_spec: SourceSpec, _period_days: int) -> dict:
     """GitHub via gh CLI. Returns same-shape dict for the parser."""
     started = time.time()
@@ -871,7 +976,7 @@ SOURCES: list[SourceSpec] = [
                allowed_tools="maas-confluence",
                prompt_template=CONFLUENCE_PROMPT),
     SourceSpec(id="nvbugs", label="NVBugs", icon="🐛",
-               fetcher=codex_fetcher, parser=parse_nvbugs,
+               fetcher=nvbugs_fetcher, parser=parse_nvbugs,
                allowed_tools="maas-nvbugs",
                prompt_template=NVBUGS_PROMPT),
     SourceSpec(id="slack", label="Slack", icon="💬",

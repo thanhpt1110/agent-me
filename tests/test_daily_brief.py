@@ -57,6 +57,39 @@ def test_parse_nvbugs_accepts_raw_nvbugs_fields() -> None:
     assert items[0].reason == "arb"
 
 
+def test_nvbugs_direct_fetcher_normalizes_structured_rows() -> None:
+    payload = {
+        "data": {
+            "ReturnValue": {
+                "data": [
+                    [
+                        6064144,
+                        "2026-04-09T10:38:28.07",
+                        {
+                            "BugId": 6064144,
+                            "Synopsis": "Benchmark Test Status Tracker",
+                            "BugAction": "Dev - Open - To fix",
+                            "Priority": "P2",
+                            "Module": "Maxine NIM",
+                            "RequestDate": "2026-04-09T10:38:28.07",
+                        },
+                    ]
+                ]
+            }
+        }
+    }
+
+    rows = daily_brief._nvbugs_rows(payload)
+    item = daily_brief._normalize_nvbug(rows[0], "arb")
+
+    assert item["id"] == "6064144"
+    assert item["url"] == "https://nvbugs.nvidia.com/Bug/6064144"
+    assert item["title"] == "Benchmark Test Status Tracker"
+    assert item["status"] == "Dev - Open - To fix"
+    assert item["group"] == "Maxine NIM"
+    assert item["reason"] == "arb"
+
+
 def test_parse_calendar_preserves_meeting_context() -> None:
     spec = next(s for s in daily_brief.SOURCES if s.id == "calendar")
     items = daily_brief.parse_calendar(
@@ -194,3 +227,4 @@ def test_nvbugs_prompt_includes_full_name_alias() -> None:
     assert 'QAEngineerFullName = "Thanh Phan"' in prompt
     assert 'ActionReqByFullName = "Thanh Phan"' in prompt
     assert "Do NOT broaden the search to requester, assignee" in prompt
+    assert next(s for s in daily_brief.SOURCES if s.id == "nvbugs").fetcher is daily_brief.nvbugs_fetcher
