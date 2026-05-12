@@ -1123,7 +1123,7 @@ async def cmd_nvbugs_read() -> str:
         reason = item.reason or "matched"
         status = item.status or "Open"
         group = item.group or "uncategorized"
-        url = item.url or f"https://nvbugs.nvidia.com/Bug/{item.item_id}"
+        url = item.url or f"https://nvbugspro.nvidia.com/bug/{item.item_id}"
         lines.append(
             f"- <{url}|{item.item_id}> — {title} — `{reason}` — {status} — {group}"
         )

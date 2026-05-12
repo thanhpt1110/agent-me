@@ -116,6 +116,7 @@ def resolve_cli_bin(env_var: str, name: str) -> str:
 
 
 CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
+NVBUGS_BUG_URL_BASE = "https://nvbugspro.nvidia.com/bug"
 JIRA_MCP_URL = os.environ.get(
     "AGENT_ME_JIRA_MCP_URL",
     "https://nvaihub.nvidia.com/maas/jira/mcp/",
@@ -429,7 +430,7 @@ def parse_nvbugs(data: dict, _spec: SourceSpec) -> list[BriefItem]:
         bug_id = str(raw_id).removeprefix("Bug ")
         url = str(nb.get("url", ""))
         if bug_id and bug_id != "?" and not url:
-            url = f"https://nvbugs.nvidia.com/Bug/{bug_id}"
+            url = f"{NVBUGS_BUG_URL_BASE}/{bug_id}"
         out.append(BriefItem(
             source="nvbugs", icon="🐛",
             item_id=bug_id,
@@ -465,7 +466,7 @@ def _normalize_nvbug(row: dict, reason: str) -> dict:
         "status": row.get("BugAction") or row.get("Disposition") or "Open",
         "due": None,
         "updated": row.get("RequestDate"),
-        "url": f"https://nvbugs.nvidia.com/Bug/{bug_id}" if bug_id else "",
+        "url": f"{NVBUGS_BUG_URL_BASE}/{bug_id}" if bug_id else "",
         "group": row.get("Module") or "uncategorized",
         "reason": reason,
     }
@@ -647,12 +648,12 @@ Disposition, RequestDate, Engineer, and Requester.
 Each item:
   {{"id": "...", "title": "...", "priority": "P0|P1|P2|P3",
     "status": "Open", "due": null, "updated": "...",
-    "url": "https://nvbugs.nvidia.com/Bug/<id>",
+    "url": "https://nvbugspro.nvidia.com/bug/<id>",
     "group": "<module|component|product>",
     "reason": "qa_eng|arb"}}
 
 Every item MUST include a clickable NVBugs URL. If the tool returns only
-an id, construct `https://nvbugs.nvidia.com/Bug/<id>`.
+an id, construct `https://nvbugspro.nvidia.com/bug/<id>`.
 
 If the tool errors (auth, approval, timeout, or otherwise), return
 {{"error": "<exact tool error>", "items": []}}. Do not report errors as

@@ -206,7 +206,7 @@ def _nvbugs_group() -> PendingGroup:
         PendingItem(
             item_id="5104883",
             title="Codex MCP OAuth refresh races on slow disks",
-            url="https://nvbugs.nvidia.com/Bug/5104883",
+            url="https://nvbugspro.nvidia.com/bug/5104883",
             kind="bug",
             priority="P1",
             age_label="8h ago",
@@ -214,7 +214,7 @@ def _nvbugs_group() -> PendingGroup:
         PendingItem(
             item_id="5104812",
             title="MCP probe leaks subprocess on timeout",
-            url="https://nvbugs.nvidia.com/Bug/5104812",
+            url="https://nvbugspro.nvidia.com/bug/5104812",
             kind="bug",
             priority="P2",
             age_label="2d ago",
@@ -222,7 +222,7 @@ def _nvbugs_group() -> PendingGroup:
         PendingItem(
             item_id="5104755",
             title="Funnel sometimes returns 526 on cold-start",
-            url="https://nvbugs.nvidia.com/Bug/5104755",
+            url="https://nvbugspro.nvidia.com/bug/5104755",
             kind="bug",
             priority="P2",
             age_label="5d ago",

@@ -25,7 +25,7 @@ def test_parse_nvbugs_builds_clickable_bug_url() -> None:
 
     assert len(items) == 1
     assert items[0].item_id == "1234567"
-    assert items[0].url == "https://nvbugs.nvidia.com/Bug/1234567"
+    assert items[0].url == "https://nvbugspro.nvidia.com/bug/1234567"
     assert items[0].reason == "qa_eng"
     assert items[0].last_activity == "2026-05-11T10:00:00Z"
 
@@ -50,7 +50,7 @@ def test_parse_nvbugs_accepts_raw_nvbugs_fields() -> None:
 
     assert len(items) == 1
     assert items[0].item_id == "6064144"
-    assert items[0].url == "https://nvbugs.nvidia.com/Bug/6064144"
+    assert items[0].url == "https://nvbugspro.nvidia.com/bug/6064144"
     assert items[0].title == "Benchmark Test Status Tracker"
     assert items[0].status == "Dev - Open - To fix"
     assert items[0].group == "Maxine"
@@ -83,7 +83,7 @@ def test_nvbugs_direct_fetcher_normalizes_structured_rows() -> None:
     item = daily_brief._normalize_nvbug(rows[0], "arb")
 
     assert item["id"] == "6064144"
-    assert item["url"] == "https://nvbugs.nvidia.com/Bug/6064144"
+    assert item["url"] == "https://nvbugspro.nvidia.com/bug/6064144"
     assert item["title"] == "Benchmark Test Status Tracker"
     assert item["status"] == "Dev - Open - To fix"
     assert item["group"] == "Maxine NIM"
@@ -259,7 +259,7 @@ def test_build_connector_mirror_text_contains_source_links() -> None:
                 icon="🐛",
                 item_id="1234567",
                 title="ARB waiver needs QA signoff",
-                url="https://nvbugs.nvidia.com/Bug/1234567",
+                url="https://nvbugspro.nvidia.com/bug/1234567",
                 group="gpu",
                 reason="arb_related",
                 status="Open",
@@ -273,7 +273,7 @@ def test_build_connector_mirror_text_contains_source_links() -> None:
 
     assert "Daily Brief" in text
     assert "NVBugs" in text
-    assert "<https://nvbugs.nvidia.com/Bug/1234567|1234567 ARB waiver needs QA signoff>" in text
+    assert "<https://nvbugspro.nvidia.com/bug/1234567|1234567 ARB waiver needs QA signoff>" in text
 
 
 def test_readonly_mcp_approval_configs_cover_core_brief_tools() -> None:
