@@ -557,7 +557,7 @@ app config:
    | `/whoami` | Show Slack user id | _(blank)_ |
    | `/help` | List bot commands | _(blank)_ |
    | `/brief` | Run daily/weekly/monthly brief | `[week|month]` |
-   | `/brev` | Request Brev credits for an org id | `<org_id>` |
+   | `/brev` | Fill Brev credits form in screenshot test mode | `<org_id>` |
    | `/model-free-draft` | Create Model Free reply-all draft | _(blank)_ |
 3. **Request URL** field can stay blank in Socket Mode (Slack uses the WebSocket).
 4. **Save** each one.

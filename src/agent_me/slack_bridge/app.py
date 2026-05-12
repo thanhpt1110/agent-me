@@ -280,7 +280,7 @@ CREATE TABLE IF NOT EXISTS model_free_threads (
 CREATE TABLE IF NOT EXISTS brev_flows (
     thread_ts        TEXT PRIMARY KEY,
     org_id           TEXT NOT NULL,
-    status           TEXT NOT NULL CHECK(status IN ('active','submitted','cancelled','failed')),
+    status           TEXT NOT NULL CHECK(status IN ('active','filled','submitted','cancelled','failed')),
     last_result      TEXT,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL,
@@ -321,7 +321,58 @@ def _migrate_pending_approvals() -> None:
     )
 
 
+def _migrate_brev_flows_status_check() -> None:
+    """Rebuild `brev_flows` when it predates the `filled` status.
+
+    SQLite cannot relax a CHECK constraint in place. Existing runtime DBs from
+    the submit-only Brev flow therefore need a small table rebuild before the
+    fill/screenshot state can be stored.
+    """
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'brev_flows'"
+    ).fetchone()
+    create_sql = (row[0] if row else "") or ""
+    if "'filled'" in create_sql:
+        return
+
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        db.execute("BEGIN")
+        db.execute(
+            """
+            CREATE TABLE brev_flows_new (
+                thread_ts        TEXT PRIMARY KEY,
+                org_id           TEXT NOT NULL,
+                status           TEXT NOT NULL CHECK(status IN ('active','filled','submitted','cancelled','failed')),
+                last_result      TEXT,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL,
+                FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO brev_flows_new
+                (thread_ts, org_id, status, last_result, created_at, updated_at)
+            SELECT thread_ts, org_id, status, last_result, created_at, updated_at
+            FROM brev_flows
+            """
+        )
+        db.execute("DROP TABLE brev_flows")
+        db.execute("ALTER TABLE brev_flows_new RENAME TO brev_flows")
+        db.execute("COMMIT")
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
+    log.info("schema_migrate_brev_flows_status_check")
+
+
 _migrate_pending_approvals()
+_migrate_brev_flows_status_check()
 log.info("state db ready", db_path=str(DB_PATH))
 
 DB_LOCK = asyncio.Lock()
@@ -539,7 +590,23 @@ def build_system_prompt() -> str:
 BREV_FORM_URL = "https://nvidia.tfaforms.net/32"
 BREV_NOTIFY_EMAIL = "thaphan@nvidia.com"
 BREV_ORG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,80}$")
+BREV_FILLED_RE = re.compile(r"(?im)^\s*BREV_FILLED\b.*$")
 BREV_SUBMITTED_RE = re.compile(r"(?im)^\s*BREV_SUBMITTED\b.*$")
+BREV_PLAYWRIGHT_APPROVAL_CONFIGS = (
+    'mcp_servers.maas-playwright.tools.browser_navigate.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_snapshot.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_tabs.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_click.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_type.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_fill_form.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_select_option.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_check.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_uncheck.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_press_key.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_wait_for.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_handle_dialog.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_resize.approval_mode="approve"',
+)
 
 BREV_SYSTEM_PROMPT_TEMPLATE = """\
 You are agent-me running the operator's Brev credits request flow on Codex.
@@ -549,36 +616,65 @@ Goal:
 - Request Brev credits for org id `{org_id}` using the web form at {form_url}.
 - Use the registered `maas-playwright` MCP server for browser automation.
 - Do not use shell commands, local browser CLIs, or the Slack bot token.
-- Do not send Slack messages yourself. After successful form submission, the
-  bridge will send the required Slack connector/MCP notification.
+- Do not send Slack messages yourself.
+
+Current test-stage goal:
+- Fill the Brev form with the reference/sample values below.
+- Take a screenshot of the filled form/review state.
+- Do NOT click the final submit button.
+- Do NOT submit the form in this stage, even if the user says they allow all
+  browser automation. Submit support will be added in a later prompt revision.
+
+Reference/sample values from `brev/` screenshots:
+- Name / Requestor Name: `Thanh Phan`
+- Email / Requestor Email: `thaphan@nvidia.com`
+- Account listed in NVCRM/SFDC: `No Specific Account`
+- Credits requested: `1000`
+- Credit use: `Brev Credit Request - Other`
+- Other reason for credit use: `Working internal projects`
+- Additional details: leave blank unless the live page requires it
+- Brev Credit Coupons needed: leave blank unless the live page requires it
+- Existing Brev org name: `{org_id}`
+- GPU configuration / Launchable / approximate cost: use
+  `data-flywheel launchable, approx. cost $12.07/hr` when the live page asks
+  for this field.
 
 Hard constraints:
 - Do not invent, infer, or auto-approve form answers.
 - You may fill `{org_id}` only into fields that clearly ask for org/project/team
   id/name. For all other missing fields, ask the user for the exact value.
 - For every form page, inspect the visible fields and options before filling.
-- Fill only values the user already provided in this Slack thread, values that
-  are visibly prefilled by the page, or the org id where it clearly applies.
+- Fill only the reference/sample values above, values the user explicitly
+  provides in this Slack thread, values visibly prefilled by the page, or the
+  org id where it clearly applies.
 - If a page has required fields that are not answered, stop and ask one concise
   question listing the exact visible field labels/options you need next.
 - If a select/radio/checkbox choice is required, present the exact visible
   options and ask the user to choose. Do not choose defaults unless the page
   has already selected them.
-- Before clicking the final submit button, show a short review of the visible
-  entered values and ask the user to explicitly confirm submission.
-- Do not click final submit until the user clearly confirms in a later message.
+- If Microsoft/NVIDIA SSO or another login wall appears, stop and say that the
+  browser session needs to be authenticated. Do not ask for or collect passwords.
+- If a final submit button is visible, do not click it. Instead, take a
+  screenshot of the filled state and return it for review.
 - If the page blocks you, times out, or requires unavailable auth, report the
   exact blocker and ask for the next user-provided step.
 - If browser state is lost between Slack turns, reopen the form and refill
   only values already present in this session before continuing.
 
 Completion contract:
-- When and only when the form submit succeeds, make your first final-response
+- When the form is filled and a screenshot is captured, make your first
+  final-response line exactly:
+  BREV_FILLED org_id={org_id} screenshot=<path-or-artifact-name>
+- After that marker, add one concise Vietnamese line summarizing what was
+  filled and where the screenshot was saved/returned.
+- In the current test stage, never include `BREV_SUBMITTED`.
+- For future submit-stage support only: when and only when a future prompt
+  explicitly enables submit and the form submit succeeds, make your first
+  final-response
   line exactly:
   BREV_SUBMITTED org_id={org_id}
-- After that marker, add one concise Vietnamese line summarizing the form
-  submission confirmation. Do not mention Slack notification status.
-- If the form is not submitted yet, do not include `BREV_SUBMITTED`.
+- If the form is not filled yet, do not include `BREV_FILLED` or
+  `BREV_SUBMITTED`.
 """
 
 
@@ -780,25 +876,34 @@ class SessionExpired(RuntimeError):
     Caller should retry without --resume to start a fresh conversation."""
 
 
-def _codex_args(prompt: str, resume_session_id: str | None) -> list[str]:
+def _codex_args(
+    prompt: str,
+    resume_session_id: str | None,
+    extra_configs: tuple[str, ...] = (),
+) -> list[str]:
+    args = [CODEX_BIN]
+    for cfg in extra_configs:
+        args.extend(["-c", cfg])
     if resume_session_id:
-        return [
-            CODEX_BIN, "exec", "resume",
+        args.extend([
+            "exec", "resume",
             "--json",
             "--skip-git-repo-check",
             "-m", MODEL,
             resume_session_id,
             prompt,
-        ]
-    return [
-        CODEX_BIN, "exec",
+        ])
+        return args
+    args.extend([
+        "exec",
         "--json",
         "--skip-git-repo-check",
         "--sandbox", "read-only",
         "--cd", str(CHAT_CWD),
         "-m", MODEL,
         prompt,
-    ]
+    ])
+    return args
 
 
 def _codex_item_name(item: dict[str, Any]) -> str:
@@ -844,6 +949,7 @@ async def spawn_codex(
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     thread_ts: str | None = None,
     system_prompt: str | None = None,
+    extra_configs: tuple[str, ...] = (),
 ) -> tuple[str, str | None]:
     """Spawn `codex exec --json` and stream events.
 
@@ -867,7 +973,7 @@ async def spawn_codex(
     retry without --resume to recover.
     """
     prompt_with_system = f"{system_prompt or build_system_prompt()}\n\nUSER REQUEST:\n{prompt}"
-    args = _codex_args(prompt_with_system, resume_session_id)
+    args = _codex_args(prompt_with_system, resume_session_id, extra_configs)
     log.info("codex_spawn", cwd=str(CHAT_CWD), model=MODEL,
              prompt_len=len(prompt), resume=resume_session_id)
 
@@ -1019,7 +1125,7 @@ HELP_TEXT = "\n".join((
     "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
-    "• `brev <org_id>` / `/brev <org_id>` — request Brev credits interactively, then send the test Slack MCP notification",
+    "• `brev <org_id>` / `/brev <org_id>` — fill the Brev credits form in test mode and return a screenshot",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
@@ -1399,12 +1505,16 @@ def brev_submission_marker_seen(text: str) -> bool:
     return BREV_SUBMITTED_RE.search(text or "") is not None
 
 
+def brev_filled_marker_seen(text: str) -> bool:
+    return BREV_FILLED_RE.search(text or "") is not None
+
+
 def strip_brev_submission_marker(text: str) -> str:
     lines = [
         line for line in (text or "").splitlines()
-        if not BREV_SUBMITTED_RE.match(line)
+        if not BREV_SUBMITTED_RE.match(line) and not BREV_FILLED_RE.match(line)
     ]
-    return "\n".join(lines).strip() or "Brev form submitted."
+    return "\n".join(lines).strip() or "Brev flow completed."
 
 
 async def send_brev_slack_notification(org_id: str) -> str:
@@ -1432,7 +1542,12 @@ exact failure in one short line.
     return answer.strip() or "_(no output)_"
 
 
-async def finalize_brev_if_submitted(thread_ts: str, org_id: str, answer: str) -> str:
+async def finalize_brev_outcome(thread_ts: str, org_id: str, answer: str) -> str:
+    if brev_filled_marker_seen(answer):
+        visible_answer = strip_brev_submission_marker(answer)
+        await finish_brev_flow(thread_ts, "filled", visible_answer)
+        return visible_answer
+
     if not brev_submission_marker_seen(answer):
         return answer.strip() or "_(no output)_"
 
@@ -1481,21 +1596,22 @@ Org id: `{org_id}`
 Form URL: {BREV_FORM_URL}
 
 Navigate to the form with `maas-playwright`, inspect the first visible page,
-fill only the org id if a matching field is clearly present, then stop and ask
-the user for the next missing required field(s). Do not submit anything in this
-first turn unless the user has already supplied every required value and later
-explicitly confirmed final submission, which has not happened yet.
+fill the visible fields using the reference/sample values in the system prompt,
+advance through the form until either all known fields are filled or a missing
+required value/authentication blocks progress, then take a screenshot of the
+filled state. Do not click the final submit button.
 """
     answer, new_sid = await spawn_codex(
         prompt,
         progress_cb=progress_cb,
         thread_ts=thread_ts,
         system_prompt=build_brev_system_prompt(org_id, thread_ts),
+        extra_configs=BREV_PLAYWRIGHT_APPROVAL_CONFIGS,
     )
     if new_sid:
         await upsert_session(thread_ts, new_sid)
-    result = await finalize_brev_if_submitted(thread_ts, org_id, answer)
-    if brev_submission_marker_seen(answer):
+    result = await finalize_brev_outcome(thread_ts, org_id, answer)
+    if brev_submission_marker_seen(answer) or brev_filled_marker_seen(answer):
         return result
     return f"{result}\n\n_Reply trong thread này với value tiếp theo; gõ `cancel` để hủy._"
 
@@ -1533,8 +1649,8 @@ existing user-provided values from this session plus this latest reply. If the
 reply answers a visible field, fill it and move to the next page only when all
 required fields on the current page are answered. If more information is
 needed, ask one concise Vietnamese question with exact visible field labels and
-options. If the user explicitly confirms final submission and the review page
-is complete, submit the form and follow the completion contract.
+options. If all known fields are filled, take a screenshot and follow the
+`BREV_FILLED` completion contract. Do not submit the form in this stage.
 """
     try:
         answer, new_sid = await spawn_codex(
@@ -1543,6 +1659,7 @@ is complete, submit the form and follow the completion contract.
             progress_cb=progress_cb,
             thread_ts=thread_ts,
             system_prompt=build_brev_system_prompt(org_id, thread_ts),
+            extra_configs=BREV_PLAYWRIGHT_APPROVAL_CONFIGS,
         )
     except SessionExpired:
         await clear_session(thread_ts)
@@ -1553,7 +1670,7 @@ is complete, submit the form and follow the completion contract.
         )
     if new_sid:
         await upsert_session(thread_ts, new_sid)
-    return await finalize_brev_if_submitted(thread_ts, org_id, answer)
+    return await finalize_brev_outcome(thread_ts, org_id, answer)
 
 
 async def cmd_permissioned_app_server_write(user_request: str) -> str:
@@ -2151,7 +2268,7 @@ async def slash_brev(ack, respond, command, client):
     try:
         root = await client.chat_postMessage(
             channel=channel,
-            text="🔄 Starting Brev credits flow… reply in this thread with each requested value.",
+            text="🔄 Starting Brev credits fill/screenshot flow… reply in this thread with each requested value.",
         )
         thread_ts = root["ts"]
         progress_cb = make_slack_progress_callback(client, channel, thread_ts)

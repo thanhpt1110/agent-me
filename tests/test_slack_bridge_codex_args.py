@@ -20,6 +20,72 @@ def test_codex_args_skip_git_check_for_chat_cwd(monkeypatch, tmp_path) -> None:
     assert resumed_args.index("--skip-git-repo-check") < resumed_args.index("-m")
 
 
+def test_codex_args_accept_extra_configs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    args = app._codex_args(
+        "hello",
+        resume_session_id=None,
+        extra_configs=('mcp_servers.maas-playwright.tools.browser_navigate.approval_mode="approve"',),
+    )
+
+    assert args[:3] == [
+        app.CODEX_BIN,
+        "-c",
+        'mcp_servers.maas-playwright.tools.browser_navigate.approval_mode="approve"',
+    ]
+    assert args[3] == "exec"
+
+
+def test_brev_status_migration_allows_filled(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    app.db.execute("DROP TABLE IF EXISTS brev_flows")
+    app.db.execute(
+        """
+        CREATE TABLE brev_flows (
+            thread_ts        TEXT PRIMARY KEY,
+            org_id           TEXT NOT NULL,
+            status           TEXT NOT NULL CHECK(status IN ('active','submitted','cancelled','failed')),
+            last_result      TEXT,
+            created_at       INTEGER NOT NULL,
+            updated_at       INTEGER NOT NULL,
+            FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
+        )
+        """
+    )
+
+    app._migrate_brev_flows_status_check()
+
+    sql = app.db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'brev_flows'"
+    ).fetchone()[0]
+    assert "'filled'" in sql
+
+    app.db.execute(
+        """INSERT OR IGNORE INTO threads
+           (thread_ts, channel, user_id, created_at, last_active_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        ("1700000000.000009", "D123", "U123", 1, 1),
+    )
+    app.db.execute(
+        """INSERT INTO brev_flows
+           (thread_ts, org_id, status, last_result, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("1700000000.000009", "vrdc-maxine", "filled", "ok", 1, 1),
+    )
+
+
 def test_app_server_args_enable_auto_review(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
@@ -182,6 +248,7 @@ def test_brev_start_uses_playwright_session_prompt(monkeypatch, tmp_path) -> Non
         captured["prompt"] = prompt
         captured["system_prompt"] = kwargs.get("system_prompt")
         captured["resume_session_id"] = kwargs.get("resume_session_id")
+        captured["extra_configs"] = kwargs.get("extra_configs")
         return "Bạn cho tôi field `Business justification` nhé.", "brev-session-1"
 
     monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
@@ -202,10 +269,56 @@ def test_brev_start_uses_playwright_session_prompt(monkeypatch, tmp_path) -> Non
     assert "https://nvidia.tfaforms.net/32" in str(captured["prompt"])
     assert "maas-playwright" in str(captured["system_prompt"])
     assert "Do not send Slack messages yourself" in str(captured["system_prompt"])
-    assert "BREV_SUBMITTED org_id=vrdc-maxine" in str(captured["system_prompt"])
+    assert "Current test-stage goal" in str(captured["system_prompt"])
+    assert "Do NOT click the final submit button" in str(captured["system_prompt"])
+    assert "BREV_FILLED org_id=vrdc-maxine" in str(captured["system_prompt"])
+    assert "browser_navigate.approval_mode" in "\n".join(captured["extra_configs"])
     flow = asyncio.run(app.get_active_brev_flow("1700000000.000001"))
     assert flow is not None
     assert flow["org_id"] == "vrdc-maxine"
+
+
+def test_brev_continue_filled_finishes_without_slack_notification(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    captured: dict[str, str] = {}
+
+    async def fake_spawn_codex(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["resume_session_id"] = kwargs.get("resume_session_id")
+        return (
+            "BREV_FILLED org_id=vrdc-maxine screenshot=brev-filled.png\n"
+            "Đã điền form và lưu screenshot.",
+            None,
+        )
+
+    async def fake_send_brev_slack_notification(org_id):
+        msg = f"unexpected Slack notification for {org_id}"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
+    monkeypatch.setattr(app, "send_brev_slack_notification",
+                        fake_send_brev_slack_notification)
+
+    import asyncio
+
+    thread_ts = "1700000000.000003"
+    asyncio.run(app.upsert_thread(thread_ts, "D123", "U123"))
+    asyncio.run(app.remember_brev_flow(thread_ts, "vrdc-maxine"))
+    asyncio.run(app.upsert_session(thread_ts, "brev-session-1"))
+
+    result = asyncio.run(app.cmd_brev_continue(thread_ts, "retry"))
+
+    assert captured["resume_session_id"] == "brev-session-1"
+    assert "BREV_FILLED" not in result
+    assert "Đã điền form" in result
+    assert "Do not submit the form in this stage" in captured["prompt"]
+    assert asyncio.run(app.get_active_brev_flow(thread_ts)) is None
 
 
 def test_brev_continue_finalizes_and_notifies_slack(monkeypatch, tmp_path) -> None:

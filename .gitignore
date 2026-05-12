@@ -64,6 +64,7 @@ tmp/
 temp/
 *.tmp
 .cache/
+brev/
 
 # Claude local state (track settings.json, ignore the rest)
 .claude/projects/

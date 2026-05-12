@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-12 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the interactive `/brev <org_id>` Brev credits flow, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, and a generalized permissioned connector/MCP write route. Runtime decision: reads/chat use `codex exec --json`; `/brev` uses `maas-playwright` through a dedicated Codex session and sends the post-submit test DM through the Slack connector/MCP app-server path; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff, 105 tests, focused Brev routing/prompt tests, source-specific Jira/GitLab/Outlook smokes, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-12 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the `/brev <org_id>` Brev credits fill-and-screenshot test flow, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, and a generalized permissioned connector/MCP write route. Runtime decision: reads/chat use `codex exec --json`; `/brev` uses `maas-playwright` through a dedicated Codex session with Playwright tool approval configs, fills the Brev credits form from reference values, returns a screenshot, and does not submit or send the post-submit Slack notification in the current test stage; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-brev-fill-screenshot-flow.md`](discussions/2026-05-12-brev-fill-screenshot-flow.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff, 108 tests, focused Brev routing/prompt tests, source-specific Jira/GitLab/Outlook smokes, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -81,15 +81,17 @@ approval gate.
   `QAEngineerFullName = "Thanh Phan"` and
   `ActionReqByFullName = "Thanh Phan"`, merges/dedupes by bug id, and
   adds a clickable NVBugs link on every item.
-- [x] **Brev credits request flow (2026-05-12)** — `brev <org_id>` and
-  `/brev <org_id>` start a dedicated interactive Codex session in the
-  Slack thread. The session uses the registered `maas-playwright` MCP to
-  navigate `https://nvidia.tfaforms.net/32`, asks the user for each
-  visible missing form field/choice, and requires explicit final submit
-  confirmation. After a successful submit marker, the bridge sends the
-  test-stage Slack notification `@brev-credits requested credits for
-  <org_id>` to `thaphan@nvidia.com` through the Slack connector/MCP
-  app-server path, not the agent-me bot token.
+- [x] **Brev credits fill/screenshot flow (2026-05-12)** — `brev <org_id>`
+  and `/brev <org_id>` start a dedicated interactive Codex session in the
+  Slack thread. The session uses the registered `maas-playwright` MCP with
+  Playwright tool approval configs to navigate
+  `https://nvidia.tfaforms.net/32`, fill reference values from the local
+  `brev/` screenshots (`Thanh Phan`, `thaphan@nvidia.com`, `1000`,
+  `Brev Credit Request - Other`, `Working internal projects`, and the
+  supplied org id), and return a filled-form screenshot for review. The
+  current test stage explicitly does **not** click the final submit button or
+  send the post-submit Slack notification. Live smoke now reaches the Microsoft
+  SSO page, so a real fill still requires an authenticated browser session.
 - [x] **Model Free Outlook draft standing rule (2026-05-11)** — in
   normal Slack chat only, when the user prompts agent-me to fetch/search/read/check
   email related to them, Codex should inspect matching subjects. If
