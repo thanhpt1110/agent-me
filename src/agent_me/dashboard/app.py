@@ -28,6 +28,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
+from agent_me.auto_sfa import AutoSFAValidationError, build_auto_sfa_request
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
     COOKIE_NAME,
@@ -35,6 +36,7 @@ from agent_me.dashboard.auth import (
     auth_required_for_public_bind,
     issue_cookie_value,
 )
+from agent_me.dashboard.auto_sfa_runner import AutoSFARunner
 from agent_me.dashboard.brief_runner import BriefRunner
 from agent_me.dashboard.log_sources import (
     tail_bridge_slack_filtered,
@@ -75,6 +77,7 @@ STATIC_DIR = PKG_DIR / "static"
 
 START_TS = time.time()
 RUNNER = BriefRunner()
+AUTO_SFA_RUNNER = AutoSFARunner()
 
 # Cached MCP probe — `codex mcp list` takes ~1s and we don't want
 # every page hit to trigger one.
@@ -160,6 +163,15 @@ async def page_logs(request: Request):
     return TEMPLATES.TemplateResponse(request, "logs.html", {
         "recent_threads": threads,
         "sources": SOURCES,
+    })
+
+
+async def page_auto_sfa(request: Request):
+    active_job = AUTO_SFA_RUNNER.active_job()
+    return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
+        "sources": SOURCES,
+        "active_job": active_job.public_dict() if active_job else None,
+        "recent_jobs": [j.public_dict() for j in AUTO_SFA_RUNNER.recent_jobs(limit=5)],
     })
 
 
@@ -256,6 +268,41 @@ async def api_mcp_status(_request: Request):
     })
 
 
+async def api_auto_sfa_run(request: Request):
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
+
+    values = {
+        "username": payload.get("username"),
+        "devtest_folder_id": payload.get("devtest_folder_id"),
+        "url_path": payload.get("url_path"),
+        "start_date": payload.get("start_date") or payload.get("start"),
+        "finish_date": payload.get("finish_date") or payload.get("finish"),
+    }
+    try:
+        sfa_request = build_auto_sfa_request(values)
+    except AutoSFAValidationError as exc:
+        return JSONResponse({"error": "invalid Auto SFA input", "errors": exc.errors},
+                            status_code=400)
+
+    try:
+        job = await AUTO_SFA_RUNNER.start(sfa_request)
+    except RuntimeError as exc:
+        active = AUTO_SFA_RUNNER.active_job()
+        return JSONResponse(
+            {
+                "error": str(exc),
+                "active_job": active.public_dict() if active else None,
+            },
+            status_code=409,
+        )
+    return JSONResponse(job.public_dict(), status_code=202)
+
+
 # ── Routes: SSE ─────────────────────────────────────────────────────────
 
 async def sse_logs(_request: Request):
@@ -302,6 +349,16 @@ async def sse_refresh(request: Request):
     return EventSourceResponse(stream())
 
 
+async def sse_auto_sfa(request: Request):
+    job_id = request.path_params["job_id"]
+
+    async def stream():
+        async for evt in AUTO_SFA_RUNNER.subscribe_events(job_id):
+            yield {"event": evt.get("event", "message"),
+                   "data": json.dumps(evt, ensure_ascii=False, default=str)}
+    return EventSourceResponse(stream())
+
+
 # ── Healthz / login ─────────────────────────────────────────────────────
 
 async def healthz(_request: Request):
@@ -343,6 +400,7 @@ def build_app() -> Starlette:
         Route("/source/{source_id}", page_source, name="source"),
         Route("/ops", page_ops, name="ops"),
         Route("/logs", page_logs, name="logs"),
+        Route("/auto-sfa", page_auto_sfa, name="auto_sfa"),
         Route("/login", page_login, name="login"),
         Route("/api/login", api_login, methods=["POST"], name="api_login"),
         Route("/api/state", api_state, name="api_state"),
@@ -354,11 +412,14 @@ def build_app() -> Starlette:
         Route("/api/mcp/status", api_mcp_status, name="api_mcp_status"),
         Route("/api/mcp/refresh", api_mcp_refresh, methods=["POST"],
               name="api_mcp_refresh"),
+        Route("/api/auto-sfa/run", api_auto_sfa_run, methods=["POST"],
+              name="api_auto_sfa_run"),
         Route("/api/sse/logs", sse_logs, name="sse_logs"),
         Route("/api/sse/logs/watcher", sse_logs_watcher, name="sse_logs_watcher"),
         Route("/api/sse/logs/slack", sse_logs_slack, name="sse_logs_slack"),
         Route("/api/sse/logs/session", sse_logs_session, name="sse_logs_session"),
         Route("/api/sse/refresh/{job_id}", sse_refresh, name="sse_refresh"),
+        Route("/api/sse/auto-sfa/{job_id}", sse_auto_sfa, name="sse_auto_sfa"),
         Route("/healthz", healthz, name="healthz"),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),
     ]

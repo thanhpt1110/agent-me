@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-12 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the `/brev <org_id>` Brev credits fill-and-screenshot test flow with persistent host browser SSO, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, and a generalized permissioned connector/MCP write route. Runtime decision: reads/chat use `codex exec --json`; `/brev` uses `maas-playwright` through a dedicated Codex session with Playwright tool approval configs and a persistent host Chrome profile, fills the Brev credits form from reference values, returns a screenshot, and does not submit or send the post-submit Slack notification in the current test stage; `brev auth` checks/refreshes the Brev browser SSO state; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-brev-fill-screenshot-flow.md`](discussions/2026-05-12-brev-fill-screenshot-flow.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff, 109 tests, focused Brev routing/prompt tests, persistent Playwright profile smoke, source-specific Jira/GitLab/Outlook smokes, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-12 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the new Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA is a deterministic local runner that updates `/localhome/local-thaphan/magic-auto/configs.json`, then runs `uv run dtoperator.py sfa --task-owner <exact username> -f` in the `magic-auto` repo and streams terminal output. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard route tests._
 
 ## Phase
 
@@ -26,7 +26,7 @@ approval gate.
 
 | Topic | Choice |
 |---|---|
-| Runtime host | Brev cloud CPU instance (24/7) — Phase 3 |
+| Runtime host | cloud host CPU instance (24/7) — Phase 3 |
 | Primary interface | Personal Slack workspace (Socket Mode bridge) |
 | Config repo | Personal GitHub, **public template** (`thanhpt1110/agent-me`) |
 | Default model | Codex via `codex exec` for reads/chat and `codex debug app-server` for permissioned connector/MCP writes (`CODEX_MODEL`, default `gpt-5.5`) |
@@ -45,7 +45,7 @@ approval gate.
 
 - [x] Project + scaffold + bypassPermissions
 - [x] **GitHub repo public template:** https://github.com/thanhpt1110/agent-me
-- [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, native slash commands (`/brief /brev /mcp /reauth /version /whoami /help`), text-intercept slash, plain-text shortcuts (incl. `brev <org_id>`, `reset` / `clear` / `new`), Block Kit interactive buttons
+- [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, native slash commands (`/brief /mcp /reauth /version /whoami /help`), text-intercept slash, plain-text shortcuts (incl. `reset` / `clear` / `new`), Block Kit interactive buttons
 - [x] **MCP re-auth helpers** — `uv run agent-me-reauth` refreshes the MaaS OAuth token store via the legacy pty + auto-open flow; `uv run agent-me-codex-reauth` is the Codex-facing wrapper for the same token store.
 - [x] **Daily-brief — fan-out v2 (2026-05-10; calendar added 2026-05-11; direct Jira/GitLab/NVBugs fetchers added 2026-05-12; Confluence removed 2026-05-12)** — `uv run agent-me-brief --period day|week|month`. 7 sources in parallel (jira / gitlab / nvbugs / slack / outlook / calendar / github), one root header + threaded reply per source, priority synthesis posted last. Jira, GitLab, and NVBugs read via MaaS MCP JSON-RPC directly so brief reliability is not tied to Codex tool discovery names. GitLab covers authored MRs awaiting review, reviewer-assigned MRs, and recently merged MRs from the last 3 days. Outlook Email uses a list-first prompt that checks recent inbox/mailbox messages before returning empty, then filters for direct/actionable messages. Calendar scope is today / next 7 days / next 30 days and includes time, organizer, location, and a short body/agenda summary when visible.
 - [x] **Slack session persistence (2026-05-10; Codex-backed 2026-05-11)** — `claude_sessions` table maps `thread_ts → session_id` for historical compatibility; bridge now runs `codex exec --json` / `codex exec resume --json <id>`. Cache hits compound across turns. `/reset` (+ plain shortcuts) clears a thread's session.
@@ -81,19 +81,6 @@ approval gate.
   `QAEngineerFullName = "Thanh Phan"` and
   `ActionReqByFullName = "Thanh Phan"`, merges/dedupes by bug id, and
   adds a clickable NVBugs link on every item.
-- [x] **Brev credits fill/screenshot flow (2026-05-12)** — `brev <org_id>`
-  and `/brev <org_id>` start a dedicated interactive Codex session in the
-  Slack thread. The session uses the registered `maas-playwright` MCP with
-  Playwright tool approval configs to navigate
-  `https://nvidia.tfaforms.net/32` with a persistent host Chrome profile at
-  `~/.local/state/agent-me/playwright-profile`, fill reference values from the
-  local `brev/` screenshots (`Thanh Phan`, `thaphan@nvidia.com`, `1000`,
-  `Brev Credit Request - Other`, `Working internal projects`, and the supplied
-  org id), and return a filled-form screenshot for review. The current test
-  stage explicitly does **not** click the final submit button or send the
-  post-submit Slack notification. `brev auth` and the **Brev auth** Slack
-  button check the same persistent browser profile; `scripts/brev-browser-auth.sh`
-  opens that profile from a host GUI/X-forwarded session for manual SSO login.
 - [x] **Model Free Outlook draft standing rule (2026-05-11)** — in
   normal Slack chat only, when the user prompts agent-me to fetch/search/read/check
   email related to them, Codex should inspect matching subjects. If
@@ -116,6 +103,19 @@ approval gate.
   app-server helper. The generic `codex exec` chat prompt is read-first and
   refuses connector/MCP writes that escape the router, avoiding
   hallucinated `user cancelled MCP tool call` outcomes.
+- [x] **Auto SFA (2026-05-12)** — Slack `/help` now includes an
+  **Auto SFA** button and `auto sfa` plain-text shortcut. The Slack flow
+  collects `username`, `devtest_folder_id`, `url_path`, `start`, and
+  `finish` in-thread, preserves the supplied username as the exact
+  `--task-owner` argv value, updates `magic-auto/configs.json`, then runs
+  `uv run dtoperator.py sfa --task-owner <username> -f` from
+  `/localhome/local-thaphan/magic-auto`. The shared runner updates
+  `log_file_base_url`, `source_code_path`, and `code_review_path` from
+  `url_path`; every release config key containing `start` or `finish` gets
+  the shared date. Slack posts only new terminal log lines into the same
+  thread. Dashboard route `/auto-sfa` provides the same input form and an
+  SSE-backed terminal log panel. Advisory locking serializes concurrent
+  Slack/dashboard runs against the shared `magic-auto` config.
 - [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
   vector source is `assets/agent-me-avatar.svg`; the visual is a
   text-free NVIDIA-green autonomous robot with circuit/web3 styling and
@@ -129,7 +129,7 @@ approval gate.
 - [x] **Morning routine** — daily 6am VN-time DM, MCP probe, post-reauth menu in thread
 - [x] **File logging** — `~/.local/state/agent-me/bridge.log` (rotating JSON) + `brief.log`
 - [x] **`scripts/setup-mcps.sh` + `scripts/bootstrap.sh`** — idempotent fresh-host setup; `design/setup-on-fresh-host.md` walks through prerequisites
-- [x] **Deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-host.md` is the step-by-step playbook another Claude session can follow with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets). Targets any internal-NVIDIA systemd Linux host (Colossus is first-class; external clouds like Brev work for the bridge but block on MaaS MCP endpoints).
+- [x] **Deploy artifacts (2026-05-10)** — `deploy/agent-me-bridge.service` + `agent-me-watch.service` (systemd --user), `scripts/agent-me-watch.sh` (60s git-pull-and-restart loop), `scripts/install-systemd.sh` (idempotent installer + linger). `design/deploy-on-host.md` is the step-by-step playbook another Claude session can follow with minimal human input (browser twice for `claude /login` + `agent-me-reauth`, scp once for secrets). Targets any internal-NVIDIA systemd Linux host (Colossus is first-class; external clouds like Cloud host work for the bridge but block on MaaS MCP endpoints).
 - [x] **Mac→host MCP token sync (2026-05-10; Codex env refresh added 2026-05-12)** — `scripts/sync-mcp-creds-to-host.sh`. Extracts the Mac Keychain item `Claude Code-credentials` (plain JSON `{"mcpOAuth":{...}}`), jq-merges with the host's existing `~/.claude/.credentials.json` (which already has `claudeAiOauth` from `claude /login`), scp's back, then runs `scripts/install-codex-mcp-env-on-host.sh` over SSH to write `~/.config/agent-me/codex-mcp-env.sh` and install shell startup hooks for future Codex sessions. **One command instead of 16 browser OAuth flows** when bringing up a new host; idempotent so it doubles as the daily refresh after a Mac-side reauth. Empirically 16/17 maas-* turn ✓ Connected immediately on Colossus this way (only nvbugs needed Mac-side reauth first). Caveat: each token's `redirect_uri` records the Mac's localhost:NNNN, but ECI doesn't enforce redirect_uri match on refresh, so refresh from the host works.
 - [x] **Phase 3 deploy on Colossus 1xA100-40 — steps 1–5 done (2026-05-10)** — Ubuntu 24.04, 16 CPU / 125 GB RAM / 731 GB free; passwordless sudo. Tools installed (uv, claude, gh, node), repo cloned at `~/agent-me`, `bootstrap.sh` registered all 17 MCPs at user scope, secrets vault scp'd + applied to `configs/.env`, `gh auth` linked, `claude /login` done, MCP tokens synced from Mac (16/17 ✓; nvbugs stale on both Mac and Colossus). Steps 6–8 (`scripts/install-systemd.sh` + Slack DM smoke test + auto-deploy verify) handed back to user — they're driving from a claude session on Colossus.
 - [x] **`design/maas-mcp-catalog.md`** — full MaaS MCP catalog reference
@@ -350,12 +350,12 @@ approval gate.
   (e.g. "remember user's name"), if ever needed, lives in bridge
   SQLite — NOT in claude's `~/.claude/projects/.../memory/` .md
   files. That dir is for Claude Code dev agents, not app users.
-- **2026-05-10 — Deploy target: Colossus, not Brev.** First Brev
+- **2026-05-10 — Deploy target: Colossus, not Cloud host.** First Cloud host
   attempt revealed external network can't reach NVIDIA MaaS MCP
   endpoints (`*.nvidia.com`). MaaS MCPs are non-negotiable for the
   bridge to work, so deployment moved to Colossus (internal network).
   Playbook stays generic (`design/deploy-on-host.md`) — works on any
-  internal NVIDIA systemd Linux box; Brev kept as documented
+  internal NVIDIA systemd Linux box; Cloud host kept as documented
   alternative for the future-VPN scenario.
 - **2026-05-10 — All MCPs at user scope.** `setup-mcps.sh` enforces
   `--scope user`. Project-local servers' OAuth flow confused
@@ -467,8 +467,8 @@ approval gate.
   only from host (same security posture as bridge). Trade-off: cost
   one `apt install tailscale` and one Tailscale account signup
   (free, OAuth via Google/GitHub). Worth it. STATE.md "Phase 4 — locked
-  decisions" section's old "Brev port-expose" line is **superseded**
-  by this — Brev was abandoned same morning when MaaS MCPs proved
+  decisions" section's old "provider port-expose" line is **superseded**
+  by this — Cloud host was abandoned same morning when MaaS MCPs proved
   unreachable from external networks.
 - **2026-05-10 — Mac Keychain → host credentials transfer.** Discovered
   the Mac stores all MCP OAuth tokens as plain JSON inside the Keychain
@@ -544,7 +544,7 @@ approval gate.
 - **Action interception mechanism** for Phase 2b: PreToolUse hook
   (cleanest) vs stream-parse (invasive). Investigate hook-blocking
   semantics first.
-- **Brev region** — default us-west-2 unless user prefers otherwise.
+- **Cloud region** — default us-west-2 unless user prefers otherwise.
 - **NVBugs MCP auth** — no Codex first-party app exists, so NVBugs
   remains MaaS MCP-backed. If the copied token store goes stale,
   run `uv run agent-me-codex-reauth` on a machine with browser
@@ -642,7 +642,7 @@ approval gate.
 
 - Memory architecture: keep auto-memory file-based or externalize to
   a DB the agent owns?
-- Secrets management on Brev: scp-once vs 1Password CLI vs sops + age
+- Secrets management on a cloud host: scp-once vs 1Password CLI vs sops + age
   vs HashiCorp Vault. Current stop-gap = `~/agent-me-secrets.md` + scp.
 - Audit log: log every action the agent takes for after-the-fact review.
 - Dashboard auth: bearer token in URL vs Cloudflare Access vs simple basic auth.

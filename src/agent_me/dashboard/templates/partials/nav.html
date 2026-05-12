@@ -28,6 +28,11 @@
           <span aria-hidden="true">📜</span>
           <span class="hidden sm:inline">Logs</span>
         </a>
+        <a href="/auto-sfa"
+           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/auto-sfa' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+          <span aria-hidden="true">SFA</span>
+          <span class="hidden sm:inline">Auto SFA</span>
+        </a>
         <a href="/ops"
            class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/ops' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
           <span aria-hidden="true">⚙</span>

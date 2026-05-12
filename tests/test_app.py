@@ -77,6 +77,13 @@ def test_ops_page_renders(client: TestClient, with_token: str) -> None:
     assert "MCP servers" in r.text
 
 
+def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
+    r = client.get("/auto-sfa", headers=_auth(with_token))
+    assert r.status_code == 200
+    assert "Auto SFA" in r.text
+    assert "devtest_folder_id" in r.text
+
+
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:
     r = client.get("/api/state", headers=_auth(with_token))
     assert r.status_code == 200
@@ -163,3 +170,61 @@ def test_refresh_all_returns_all_jobs(client: TestClient, monkeypatch,
     assert sorted(started) == sorted([
         "calendar", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
     ])
+
+
+def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
+                                     with_token: str) -> None:
+    import uuid
+
+    from agent_me.dashboard import app as app_module
+    from agent_me.dashboard.auto_sfa_runner import AutoSFAJob
+
+    captured = {}
+
+    async def fake_start(self, request):
+        captured["request"] = request
+        return AutoSFAJob(
+            job_id=uuid.uuid4().hex[:8],
+            started_at=int(time.time() * 1000),
+            request=request,
+            status="pending",
+        )
+
+    monkeypatch.setattr(app_module.AUTO_SFA_RUNNER.__class__, "start", fake_start)
+
+    r = client.post(
+        "/api/auto-sfa/run",
+        json={
+            "username": "Thanh Phan",
+            "devtest_folder_id": "1155188",
+            "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
+            "start_date": "2026-04-16",
+            "finish_date": "2026-05-08",
+        },
+        headers=_auth(with_token),
+    )
+
+    assert r.status_code == 202
+    body = r.json()
+    assert body["status"] == "pending"
+    assert captured["request"].username == "Thanh Phan"
+    assert captured["request"].devtest_folder_id == 1155188
+
+
+def test_api_auto_sfa_run_rejects_bad_input(client: TestClient,
+                                            with_token: str) -> None:
+    r = client.post(
+        "/api/auto-sfa/run",
+        json={
+            "username": "Thanh Phan",
+            "devtest_folder_id": "not-a-number",
+            "url_path": "not-a-url",
+            "start_date": "2026-04-16",
+            "finish_date": "2026-05-08",
+        },
+        headers=_auth(with_token),
+    )
+
+    assert r.status_code == 400
+    body = r.json()
+    assert "errors" in body

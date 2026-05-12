@@ -27,7 +27,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
    cd agent-me
    ./scripts/bootstrap.sh
    ```
-   Runs `uv sync`, prepares `configs/.env`, and registers all 17 MaaS MCP servers with Codex idempotently (Jira, GitLab, Confluence, NVBugs, Slack, Outlook, GDrive, OneDrive, SharePoint, Glean, Jama, IPPSEC, MySQL, Nsight-CUDA, NVKS-Prometheus, PagerDuty, Playwright). See `design/setup-on-fresh-host.md` for the long version (incl. Brev specifics).
+   Runs `uv sync`, prepares `configs/.env`, and registers all 17 MaaS MCP servers with Codex idempotently (Jira, GitLab, Confluence, NVBugs, Slack, Outlook, GDrive, OneDrive, SharePoint, Glean, Jama, IPPSEC, MySQL, Nsight-CUDA, NVKS-Prometheus, PagerDuty, Playwright). See `design/setup-on-fresh-host.md` for the long version (incl. cloud-host specifics).
 3. **Three interactive steps** the bootstrap script reminds you to do (browser required):
    - `codex login` — one-time per machine.
    - `uv run agent-me-codex-reauth` — refreshes the MaaS OAuth token store used by Codex bearer-token MCPs and opens/prints NVIDIA-SSO URLs where needed.
@@ -54,17 +54,17 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
    ```bash
    uv run agent-me-bridge
    ```
-   From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`, `/brief`, `/brev <org_id>`.
+   From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`, `/brief`, or the **Auto SFA** help button.
    Briefs invoked from a thread post each platform as a separate message in that thread and mirror a concise digest to `thaphan@nvidia.com` through the Codex Slack connector, not the personal-workspace bot token. Reads use `codex exec`; permissioned connector/MCP writes use Codex app-server auto-review.
-   `/brev <org_id>` currently runs in fill-and-screenshot test mode: it uses `maas-playwright` to fill the Brev credits form with the reference values encoded in the prompt, returns a screenshot for review, and does not submit the form or send the post-submit Slack notification.
-   Brev web SSO is separate from MaaS MCP reauth. `maas-playwright` uses a persistent host Chrome profile at `~/.local/state/agent-me/playwright-profile`; run `scripts/brev-browser-auth.sh` from a host GUI/X-forwarded session to sign in manually, then use `brev auth` or the **Brev auth** button in Slack to verify the cookie before running `/brev <org_id>`.
-6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief`, `/brev`, `/model-free-draft` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
+   Auto SFA collects `username`, `devtest_folder_id`, `url_path`, `start`, and `finish` in a Slack thread, updates `/localhome/local-thaphan/magic-auto/configs.json`, then runs `uv run dtoperator.py sfa --task-owner "<username>" -f` from the `magic-auto` repo while posting new terminal log lines back into the same thread.
+6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief`, `/model-free-draft` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
 7. **(Optional) Deploy on a 24/7 host**: `design/deploy-on-host.md` is the end-to-end playbook (Colossus / any internal-NVIDIA systemd Linux box). Auto-deploys on every git push (60s polling watcher → systemctl restart bridge + dashboard).
 8. **(Optional) Web dashboard at [`https://agent-me.nvidia.com`](https://agent-me.nvidia.com)**: Phase 4 dashboard, **NVIDIA-themed (black + `#76b900` brand green)**, reads bridge state, surfaces pending tasks across 9 platform groups, runs on-demand brief refreshes, and streams live logs.
    - **Overview**: stats row (Threads 24h · Codex sessions · Pending approvals · **Pending across all platforms**), then an expandable card per platform group (Jira / GitLab / Confluence / NVBugs / Slack / Outlook / Outlook Calendar / GitHub + Slack threads + Codex sessions). Each card shows pending count, expand to see deep-linked subtasks with priority / due / age. Pending items are **mock data** today (clearly labelled "mock — Phase 5 real data"); design at `design/dashboard-pending-panel.md`.
    - **Briefs by source**: 7 source cards, click-through to drill in or trigger a single-source brief refresh; SSE-streamed progress badges; "Refresh all" fan-out.
    - **Ops**: bridge stats, MCP health probe (`codex mcp list` parsed), recent brief runs, recent Slack threads, live `bridge.log` + `brief.log` tail.
    - **Logs**: 3-tab live SSE viewer — watcher journal / filtered Slack-interaction events / per-session Codex trace.
+   - **Auto SFA**: form-based runner for the same `magic-auto` flow, with live SSE terminal output.
    - **Two-host setup**:
      - **Backend** runs alongside the bridge on the same host as step 7 — `./scripts/install-dashboard.sh` from the repo root. See `design/deploy-on-host.md` § Step 9.
      - **Reverse proxy** (`https://agent-me.nvidia.com`, NVIDIA-VPN-gated) — handed to whoever operates the proxy server. Self-contained playbook in `design/deploy-proxy-on-host.md`; nginx/caddy/traefik snippets in `design/reverse-proxy-config.md`.
@@ -88,7 +88,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
    │          │          │          │          │
 ┌──▼──┐    ┌──▼──┐    ┌──▼──┐    ┌──▼──┐    ┌──▼──┐
 │Work │    │Know-│    │Code │    │Ops  │    │Life │
-│Jira │    │ledge│    │Git- │    │Brev │    │Cal  │
+│Jira │    │ledge│    │Git- │    │Cloud host │    │Cal  │
 │Bugs │    │Glean│    │Lab  │    │mon  │    │Mail │
 └─────┘    └─────┘    └─────┘    └─────┘    └─────┘
 
@@ -101,7 +101,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
 ┌───────────────────────────────────────────────────────────┐
 │  Runtime host (24/7):                                     │
 │  Option A — user's existing online server (SSH access)    │
-│  Option B — Brev cloud instance (GPU not needed, CPU OK)  │
+│  Option B — cloud host instance (GPU not needed, CPU OK)  │
 │  Option C — launchd local Mac (offline when machine is off)│
 └───────────────────────────────────────────────────────────┘
 ```

@@ -42,50 +42,6 @@ def test_codex_args_accept_extra_configs(monkeypatch, tmp_path) -> None:
     assert args[3] == "exec"
 
 
-def test_brev_status_migration_allows_filled(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
-    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
-
-    app = importlib.import_module("agent_me.slack_bridge.app")
-
-    app.db.execute("DROP TABLE IF EXISTS brev_flows")
-    app.db.execute(
-        """
-        CREATE TABLE brev_flows (
-            thread_ts        TEXT PRIMARY KEY,
-            org_id           TEXT NOT NULL,
-            status           TEXT NOT NULL CHECK(status IN ('active','submitted','cancelled','failed')),
-            last_result      TEXT,
-            created_at       INTEGER NOT NULL,
-            updated_at       INTEGER NOT NULL,
-            FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
-        )
-        """
-    )
-
-    app._migrate_brev_flows_status_check()
-
-    sql = app.db.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'brev_flows'"
-    ).fetchone()[0]
-    assert "'filled'" in sql
-
-    app.db.execute(
-        """INSERT OR IGNORE INTO threads
-           (thread_ts, channel, user_id, created_at, last_active_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        ("1700000000.000009", "D123", "U123", 1, 1),
-    )
-    app.db.execute(
-        """INSERT INTO brev_flows
-           (thread_ts, org_id, status, last_result, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        ("1700000000.000009", "vrdc-maxine", "filled", "ok", 1, 1),
-    )
-
-
 def test_app_server_args_enable_auto_review(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
@@ -218,7 +174,7 @@ def test_permissioned_connector_write_detection(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_brev_command_parsing(monkeypatch, tmp_path) -> None:
+def test_help_blocks_include_auto_sfa(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
@@ -226,101 +182,16 @@ def test_brev_command_parsing(monkeypatch, tmp_path) -> None:
 
     app = importlib.import_module("agent_me.slack_bridge.app")
 
-    assert app.parse_brev_plain_command("brev vrdc-maxine") == "vrdc-maxine"
-    assert app.parse_brev_plain_command("brev auth") == "auth"
-    assert app.is_brev_auth_args("auth")
-    assert app.is_brev_auth_args("browser auth")
-    assert app.is_brev_auth_text("/brev sso")
-    assert app.parse_brev_plain_command("BREV vrdc.maxine_1") == "vrdc.maxine_1"
-    assert app.parse_brev_plain_command("brevard vrdc-maxine") is None
-    assert app.parse_brev_org_id("vrdc-maxine") == ("vrdc-maxine", None)
-    assert app.parse_brev_org_id("cancel") == ("cancel", None)
-    assert app.parse_brev_org_id("vrdc maxine")[0] is None
-
-
-def test_brev_start_uses_playwright_session_prompt(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
-    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
-
-    app = importlib.import_module("agent_me.slack_bridge.app")
-
-    captured: dict[str, str | None] = {}
-
-    async def fake_spawn_codex(prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured["system_prompt"] = kwargs.get("system_prompt")
-        captured["resume_session_id"] = kwargs.get("resume_session_id")
-        captured["extra_configs"] = kwargs.get("extra_configs")
-        return "Bạn cho tôi field `Business justification` nhé.", "brev-session-1"
-
-    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
-
-    import asyncio
-
-    result = asyncio.run(
-        app.cmd_brev_start(
-            "vrdc-maxine",
-            channel="D123",
-            thread_ts="1700000000.000001",
-            user_id="U123",
-        )
-    )
-
-    assert "Business justification" in result
-    assert captured["resume_session_id"] is None
-    assert "https://nvidia.tfaforms.net/32" in str(captured["prompt"])
-    assert "maas-playwright" in str(captured["system_prompt"])
-    assert "Do not send Slack messages yourself" in str(captured["system_prompt"])
-    assert "Current test-stage goal" in str(captured["system_prompt"])
-    assert "Do NOT click the final submit button" in str(captured["system_prompt"])
-    assert "BREV_FILLED org_id=vrdc-maxine" in str(captured["system_prompt"])
-    assert "browser_navigate.approval_mode" in "\n".join(captured["extra_configs"])
-    assert "browser_take_screenshot.approval_mode" in "\n".join(captured["extra_configs"])
-    assert "browser_evaluate.approval_mode" in "\n".join(captured["extra_configs"])
-    flow = asyncio.run(app.get_active_brev_flow("1700000000.000001"))
-    assert flow is not None
-    assert flow["org_id"] == "vrdc-maxine"
-
-
-def test_brev_auth_uses_persistent_profile_prompt(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
-    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
-
-    app = importlib.import_module("agent_me.slack_bridge.app")
-
-    captured: dict[str, object] = {}
-
-    async def fake_spawn_codex(prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured["system_prompt"] = kwargs.get("system_prompt")
-        captured["extra_configs"] = kwargs.get("extra_configs")
-        return "Brev form is blocked by Microsoft/NVIDIA SSO.", None
-
-    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
-
-    import asyncio
-
-    text, blocks = asyncio.run(app.cmd_brev_auth(thread_ts="1700000000.000010"))
-
-    assert "Persistent browser profile" in str(captured["prompt"])
-    assert "playwright-profile" in str(captured["prompt"])
-    assert captured["system_prompt"] == app.BREV_AUTH_SYSTEM_PROMPT
-    assert "browser_take_screenshot.approval_mode" in "\n".join(captured["extra_configs"])
-    assert "browser_evaluate.approval_mode" in "\n".join(captured["extra_configs"])
-    assert "Không paste password/OTP vào Slack" in text
-    assert blocks
+    blocks = app._help_blocks()
     assert any(
-        element.get("action_id") == "menu_brev_auth"
+        element.get("action_id") == "menu_auto_sfa"
         for block in blocks if block.get("type") == "actions"
         for element in block.get("elements", [])
     )
+    assert app.PLAIN_COMMANDS["auto sfa"] == ("/auto-sfa", "")
 
 
-def test_brev_continue_filled_finishes_without_slack_notification(monkeypatch, tmp_path) -> None:
+def test_auto_sfa_start_remembers_thread(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
@@ -328,107 +199,22 @@ def test_brev_continue_filled_finishes_without_slack_notification(monkeypatch, t
 
     app = importlib.import_module("agent_me.slack_bridge.app")
 
-    captured: dict[str, str] = {}
+    import asyncio
 
-    async def fake_spawn_codex(prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured["resume_session_id"] = kwargs.get("resume_session_id")
-        return (
-            "BREV_FILLED org_id=vrdc-maxine screenshot=brev-filled.png\n"
-            "Đã điền form và lưu screenshot.",
-            None,
+    text, blocks = asyncio.run(
+        app.cmd_auto_sfa_start(
+            channel="D123",
+            thread_ts="1700000000.000011",
+            user_id="U123",
         )
+    )
+    flow = asyncio.run(app.get_auto_sfa_flow("1700000000.000011"))
 
-    async def fake_send_brev_slack_notification(org_id):
-        msg = f"unexpected Slack notification for {org_id}"
-        raise AssertionError(msg)
-
-    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
-    monkeypatch.setattr(app, "send_brev_slack_notification",
-                        fake_send_brev_slack_notification)
-
-    import asyncio
-
-    thread_ts = "1700000000.000003"
-    asyncio.run(app.upsert_thread(thread_ts, "D123", "U123"))
-    asyncio.run(app.remember_brev_flow(thread_ts, "vrdc-maxine"))
-    asyncio.run(app.upsert_session(thread_ts, "brev-session-1"))
-
-    result = asyncio.run(app.cmd_brev_continue(thread_ts, "retry"))
-
-    assert captured["resume_session_id"] == "brev-session-1"
-    assert "BREV_FILLED" not in result
-    assert "Đã điền form" in result
-    assert "Do not submit the form in this stage" in captured["prompt"]
-    assert asyncio.run(app.get_active_brev_flow(thread_ts)) is None
-
-
-def test_brev_continue_finalizes_and_notifies_slack(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
-    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
-
-    app = importlib.import_module("agent_me.slack_bridge.app")
-
-    captured: dict[str, str] = {}
-
-    async def fake_spawn_codex(prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured["resume_session_id"] = kwargs.get("resume_session_id")
-        return "BREV_SUBMITTED org_id=vrdc-maxine\nForm submitted successfully.", None
-
-    async def fake_send_brev_slack_notification(org_id):
-        captured["notified_org_id"] = org_id
-        return "sent to thaphan@nvidia.com"
-
-    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
-    monkeypatch.setattr(app, "send_brev_slack_notification",
-                        fake_send_brev_slack_notification)
-
-    import asyncio
-
-    thread_ts = "1700000000.000002"
-    asyncio.run(app.upsert_thread(thread_ts, "D123", "U123"))
-    asyncio.run(app.remember_brev_flow(thread_ts, "vrdc-maxine"))
-    asyncio.run(app.upsert_session(thread_ts, "brev-session-1"))
-
-    result = asyncio.run(app.cmd_brev_continue(thread_ts, "confirm submit"))
-
-    assert captured["resume_session_id"] == "brev-session-1"
-    assert captured["notified_org_id"] == "vrdc-maxine"
-    assert "BREV_SUBMITTED" not in result
-    assert "Form submitted successfully." in result
-    assert "Slack MCP notification" in result
-    assert asyncio.run(app.get_active_brev_flow(thread_ts)) is None
-
-
-def test_brev_slack_notification_prompt_is_user_connector_only(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
-    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
-
-    app = importlib.import_module("agent_me.slack_bridge.app")
-
-    captured: dict[str, str] = {}
-
-    async def fake_spawn_codex_app_server(prompt):
-        captured["prompt"] = prompt
-        return "sent", None
-
-    monkeypatch.setattr(app, "spawn_codex_app_server", fake_spawn_codex_app_server)
-
-    import asyncio
-
-    assert asyncio.run(app.send_brev_slack_notification("vrdc-maxine")) == "sent"
-
-    prompt = captured["prompt"]
-    assert "Destination: Slack DM to `thaphan@nvidia.com`" in prompt
-    assert "@brev-credits requested credits for vrdc-maxine" in prompt
-    assert "maas-slack" in prompt
-    assert "Do not use the agent-me Slack bot token" in prompt
-    assert 'Do not add "sent by ChatGPT"' in prompt
+    assert "Auto SFA" in text
+    assert blocks
+    assert flow is not None
+    assert flow["status"] == "active"
+    assert flow["channel"] == "D123"
 
 
 def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:

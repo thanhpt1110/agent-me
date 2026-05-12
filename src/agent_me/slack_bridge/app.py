@@ -8,7 +8,7 @@ What this owns:
 - AsyncApp + Socket Mode connection to Slack
 - SQLite state DB (threads, messages, pending_approvals — schema in db/)
 - Event handlers: DM messages and channel @mentions
-- Native slash commands: /mcp /version /whoami /help /reauth /brief /brev /model-free-draft
+- Native slash commands: /mcp /version /whoami /help /reauth /brief /model-free-draft
 - Text-prefix slash commands (same set, intercepted from message body)
 - Spawning headless `codex exec` per query with app/MCP read access
 - Routing permissioned connector/MCP writes through Codex app-server auto-review
@@ -48,6 +48,15 @@ from dotenv import load_dotenv
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
+from agent_me.auto_sfa import (
+    AUTO_SFA_FIELD_LABELS,
+    AutoSFARequest,
+    AutoSFAValidationError,
+    build_auto_sfa_request,
+    missing_auto_sfa_fields,
+    parse_auto_sfa_message,
+    run_auto_sfa,
+)
 from agent_me.codex_app_server import (
     codex_app_server_args,
     run_codex_app_server,
@@ -277,10 +286,12 @@ CREATE TABLE IF NOT EXISTS model_free_threads (
     updated_at       INTEGER NOT NULL,
     FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
 );
-CREATE TABLE IF NOT EXISTS brev_flows (
+CREATE TABLE IF NOT EXISTS auto_sfa_flows (
     thread_ts        TEXT PRIMARY KEY,
-    org_id           TEXT NOT NULL,
-    status           TEXT NOT NULL CHECK(status IN ('active','filled','submitted','cancelled','failed')),
+    channel          TEXT NOT NULL,
+    user_id          TEXT,
+    status           TEXT NOT NULL CHECK(status IN ('active','running','done','failed','cancelled')),
+    inputs_json      TEXT NOT NULL DEFAULT '{}',
     last_result      TEXT,
     created_at       INTEGER NOT NULL,
     updated_at       INTEGER NOT NULL,
@@ -321,58 +332,7 @@ def _migrate_pending_approvals() -> None:
     )
 
 
-def _migrate_brev_flows_status_check() -> None:
-    """Rebuild `brev_flows` when it predates the `filled` status.
-
-    SQLite cannot relax a CHECK constraint in place. Existing runtime DBs from
-    the submit-only Brev flow therefore need a small table rebuild before the
-    fill/screenshot state can be stored.
-    """
-    row = db.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'brev_flows'"
-    ).fetchone()
-    create_sql = (row[0] if row else "") or ""
-    if "'filled'" in create_sql:
-        return
-
-    db.execute("PRAGMA foreign_keys=OFF")
-    try:
-        db.execute("BEGIN")
-        db.execute(
-            """
-            CREATE TABLE brev_flows_new (
-                thread_ts        TEXT PRIMARY KEY,
-                org_id           TEXT NOT NULL,
-                status           TEXT NOT NULL CHECK(status IN ('active','filled','submitted','cancelled','failed')),
-                last_result      TEXT,
-                created_at       INTEGER NOT NULL,
-                updated_at       INTEGER NOT NULL,
-                FOREIGN KEY(thread_ts) REFERENCES threads(thread_ts)
-            )
-            """
-        )
-        db.execute(
-            """
-            INSERT INTO brev_flows_new
-                (thread_ts, org_id, status, last_result, created_at, updated_at)
-            SELECT thread_ts, org_id, status, last_result, created_at, updated_at
-            FROM brev_flows
-            """
-        )
-        db.execute("DROP TABLE brev_flows")
-        db.execute("ALTER TABLE brev_flows_new RENAME TO brev_flows")
-        db.execute("COMMIT")
-    except Exception:
-        if db.in_transaction:
-            db.execute("ROLLBACK")
-        raise
-    finally:
-        db.execute("PRAGMA foreign_keys=ON")
-    log.info("schema_migrate_brev_flows_status_check")
-
-
 _migrate_pending_approvals()
-_migrate_brev_flows_status_check()
 log.info("state db ready", db_path=str(DB_PATH))
 
 DB_LOCK = asyncio.Lock()
@@ -494,50 +454,86 @@ async def get_model_free_thread_subject_from_messages(thread_ts: str) -> str | N
     return None
 
 
-async def remember_brev_flow(thread_ts: str, org_id: str, status: str = "active") -> None:
+async def remember_auto_sfa_flow(
+    thread_ts: str,
+    channel: str,
+    user_id: str | None,
+    inputs: dict[str, Any] | None = None,
+    *,
+    status: str = "active",
+) -> None:
     now = int(time.time() * 1000)
     async with DB_LOCK:
         db.execute(
-            """INSERT INTO brev_flows
-                 (thread_ts, org_id, status, last_result, created_at, updated_at)
-               VALUES (?, ?, ?, NULL, ?, ?)
+            """INSERT INTO auto_sfa_flows
+                 (thread_ts, channel, user_id, status, inputs_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(thread_ts) DO UPDATE SET
-                 org_id = excluded.org_id,
+                 channel = excluded.channel,
+                 user_id = excluded.user_id,
                  status = excluded.status,
-                 last_result = NULL,
+                 inputs_json = excluded.inputs_json,
                  updated_at = excluded.updated_at""",
-            (thread_ts, org_id, status, now, now),
+            (
+                thread_ts,
+                channel,
+                user_id,
+                status,
+                json.dumps(inputs or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
         )
 
 
-async def get_active_brev_flow(thread_ts: str) -> dict[str, Any] | None:
+async def get_auto_sfa_flow(thread_ts: str) -> dict[str, Any] | None:
     async with DB_LOCK:
         row = db.execute(
-            """SELECT thread_ts, org_id, status, last_result, created_at, updated_at
-               FROM brev_flows
-               WHERE thread_ts=? AND status='active'""",
+            """SELECT thread_ts, channel, user_id, status, inputs_json, last_result
+               FROM auto_sfa_flows
+               WHERE thread_ts=? AND status IN ('active','running')""",
             (thread_ts,),
         ).fetchone()
-    if not row:
+    if row is None:
         return None
+    try:
+        inputs = json.loads(row[4] or "{}")
+    except json.JSONDecodeError:
+        inputs = {}
     return {
         "thread_ts": row[0],
-        "org_id": row[1],
-        "status": row[2],
-        "last_result": row[3],
-        "created_at": row[4],
-        "updated_at": row[5],
+        "channel": row[1],
+        "user_id": row[2],
+        "status": row[3],
+        "inputs": inputs,
+        "last_result": row[5],
     }
 
 
-async def finish_brev_flow(thread_ts: str, status: str, last_result: str | None = None) -> None:
+async def update_auto_sfa_flow(
+    thread_ts: str,
+    *,
+    inputs: dict[str, Any] | None = None,
+    status: str | None = None,
+    last_result: str | None = None,
+) -> None:
     now = int(time.time() * 1000)
+    assignments = ["updated_at=?"]
+    params: list[Any] = [now]
+    if inputs is not None:
+        assignments.append("inputs_json=?")
+        params.append(json.dumps(inputs, ensure_ascii=False))
+    if status is not None:
+        assignments.append("status=?")
+        params.append(status)
+    if last_result is not None:
+        assignments.append("last_result=?")
+        params.append(last_result)
+    params.append(thread_ts)
     async with DB_LOCK:
         db.execute(
-            """UPDATE brev_flows
-               SET status=?, last_result=?, updated_at=?
-               WHERE thread_ts=?""",
-            (status, last_result, now, thread_ts),
+            f"UPDATE auto_sfa_flows SET {', '.join(assignments)} WHERE thread_ts=?",
+            params,
         )
 
 
@@ -586,128 +582,6 @@ def build_system_prompt() -> str:
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     return SYSTEM_PROMPT_TEMPLATE.format(today=today)
 
-
-BREV_FORM_URL = "https://nvidia.tfaforms.net/32"
-BREV_NOTIFY_EMAIL = "thaphan@nvidia.com"
-BREV_PLAYWRIGHT_PROFILE_DIR = STATE_DIR / "playwright-profile"
-BREV_PLAYWRIGHT_OUTPUT_DIR = STATE_DIR / "playwright-output"
-BREV_ORG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,80}$")
-BREV_FILLED_RE = re.compile(r"(?im)^\s*BREV_FILLED\b.*$")
-BREV_SUBMITTED_RE = re.compile(r"(?im)^\s*BREV_SUBMITTED\b.*$")
-BREV_AUTH_ALIASES = {"auth", "reauth", "login", "sso", "browser-auth", "browser auth"}
-BREV_PLAYWRIGHT_APPROVAL_CONFIGS = (
-    'mcp_servers.maas-playwright.tools.browser_navigate.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_snapshot.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_tabs.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_take_screenshot.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_evaluate.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_click.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_type.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_fill_form.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_select_option.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_check.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_uncheck.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_press_key.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_wait_for.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_handle_dialog.approval_mode="approve"',
-    'mcp_servers.maas-playwright.tools.browser_resize.approval_mode="approve"',
-)
-BREV_PLAYWRIGHT_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-BREV_PLAYWRIGHT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-BREV_SYSTEM_PROMPT_TEMPLATE = """\
-You are agent-me running the operator's Brev credits request flow on Codex.
-This is an interactive, stateful workflow for Slack thread `{thread_ts}`.
-
-Goal:
-- Request Brev credits for org id `{org_id}` using the web form at {form_url}.
-- Use the registered `maas-playwright` MCP server for browser automation.
-- Do not use shell commands, local browser CLIs, or the Slack bot token.
-- Do not send Slack messages yourself.
-
-Current test-stage goal:
-- Fill the Brev form with the reference/sample values below.
-- Take a screenshot of the filled form/review state.
-- Do NOT click the final submit button.
-- Do NOT submit the form in this stage, even if the user says they allow all
-  browser automation. Submit support will be added in a later prompt revision.
-
-Reference/sample values from `brev/` screenshots:
-- Name / Requestor Name: `Thanh Phan`
-- Email / Requestor Email: `thaphan@nvidia.com`
-- Account listed in NVCRM/SFDC: `No Specific Account`
-- Credits requested: `1000`
-- Credit use: `Brev Credit Request - Other`
-- Other reason for credit use: `Working internal projects`
-- Additional details: leave blank unless the live page requires it
-- Brev Credit Coupons needed: leave blank unless the live page requires it
-- Existing Brev org name: `{org_id}`
-- GPU configuration / Launchable / approximate cost: use
-  `data-flywheel launchable, approx. cost $12.07/hr` when the live page asks
-  for this field.
-
-Hard constraints:
-- Do not invent, infer, or auto-approve form answers.
-- You may fill `{org_id}` only into fields that clearly ask for org/project/team
-  id/name. For all other missing fields, ask the user for the exact value.
-- For every form page, inspect the visible fields and options before filling.
-- Fill only the reference/sample values above, values the user explicitly
-  provides in this Slack thread, values visibly prefilled by the page, or the
-  org id where it clearly applies.
-- If a page has required fields that are not answered, stop and ask one concise
-  question listing the exact visible field labels/options you need next.
-- If a select/radio/checkbox choice is required, present the exact visible
-  options and ask the user to choose. Do not choose defaults unless the page
-  has already selected them.
-- If Microsoft/NVIDIA SSO or another login wall appears, stop and say that the
-  browser session needs to be authenticated with `brev auth` or the Brev auth
-  helper. Do not ask for or collect passwords.
-- If a final submit button is visible, do not click it. Instead, take a
-  screenshot of the filled state and return it for review.
-- If the page blocks you, times out, or requires unavailable auth, report the
-  exact blocker and ask for the next user-provided step.
-- If browser state is lost between Slack turns, reopen the form and refill
-  only values already present in this session before continuing.
-
-Completion contract:
-- When the form is filled and a screenshot is captured, make your first
-  final-response line exactly:
-  BREV_FILLED org_id={org_id} screenshot=<path-or-artifact-name>
-- After that marker, add one concise Vietnamese line summarizing what was
-  filled and where the screenshot was saved/returned.
-- In the current test stage, never include `BREV_SUBMITTED`.
-- For future submit-stage support only: when and only when a future prompt
-  explicitly enables submit and the form submit succeeds, make your first
-  final-response
-  line exactly:
-  BREV_SUBMITTED org_id={org_id}
-- If the form is not filled yet, do not include `BREV_FILLED` or
-  `BREV_SUBMITTED`.
-"""
-
-
-def build_brev_system_prompt(org_id: str, thread_ts: str) -> str:
-    return BREV_SYSTEM_PROMPT_TEMPLATE.format(
-        org_id=org_id,
-        thread_ts=thread_ts,
-        form_url=BREV_FORM_URL,
-    )
-
-
-BREV_AUTH_SYSTEM_PROMPT = """\
-You are agent-me checking the operator's Brev browser SSO state.
-
-Use only the registered `maas-playwright` MCP browser tools. Do not use shell
-commands, local browser CLIs, or Slack tools.
-
-Hard constraints:
-- Do not ask for, type, collect, or store usernames, passwords, OTPs, MFA
-  codes, passkeys, or recovery codes.
-- Do not submit any Brev credits request.
-- If Microsoft/NVIDIA SSO or another login wall is visible, stop there and
-  report that the persistent browser profile needs manual authentication.
-- If the Brev form is visible, take a screenshot and report that auth is ready.
-"""
 
 # Legacy Claude approval-gate toggle. Codex is now the default chat
 # orchestrator, so this path only matters if a future operator explicitly
@@ -1149,8 +1023,7 @@ HELP_TEXT = "\n".join((
     "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
-    "• `brev <org_id>` / `/brev <org_id>` — fill the Brev credits form in test mode and return a screenshot",
-    "• `brev auth` / `/brev auth` — check or refresh the persistent Brev browser SSO profile",
+    "• `auto sfa` — collect Auto SFA inputs, update `magic-auto/configs.json`, run `dtoperator.py sfa`, and stream logs",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
@@ -1488,229 +1361,6 @@ Return a concise Vietnamese status:
     return answer.strip() or "_(no output)_"
 
 
-def is_brev_auth_args(args_text: str | None) -> bool:
-    normalized = re.sub(r"\s+", " ", (args_text or "").strip().lower())
-    return normalized in BREV_AUTH_ALIASES
-
-
-def is_brev_auth_text(text: str | None) -> bool:
-    m = re.match(r"^\s*/?brev(?:\s+(.+))?\s*$", text or "", re.IGNORECASE)
-    return bool(m and is_brev_auth_args(m.group(1)))
-
-
-def parse_brev_org_id(args_text: str | None) -> tuple[str | None, str | None]:
-    raw = (args_text or "").strip()
-    if not raw:
-        return None, (
-            "Usage: `/brev <org_id>` hoặc `brev <org_id>`, ví dụ "
-            "`brev vrdc-maxine`. Dùng `brev auth` để check Brev browser SSO."
-        )
-    if raw.lower() in {"cancel", "stop", "huy", "hủy", "huỷ"}:
-        return "cancel", None
-    parts = raw.split()
-    if len(parts) != 1:
-        return None, "Chỉ truyền một `org_id` thôi, ví dụ `brev vrdc-maxine`."
-    org_id = parts[0]
-    if not BREV_ORG_ID_RE.fullmatch(org_id):
-        return None, (
-            "`org_id` chỉ nên gồm chữ/số/dấu `-`, `_`, `.`, "
-            "và bắt đầu bằng chữ hoặc số."
-        )
-    return org_id, None
-
-
-def parse_brev_plain_command(text: str | None) -> str | None:
-    m = re.match(r"^\s*brev(?:\s+(.+))?\s*$", text or "", re.IGNORECASE)
-    if not m:
-        return None
-    return (m.group(1) or "").strip()
-
-
-def is_brev_cancel_text(text: str | None) -> bool:
-    value = (text or "").strip().lower()
-    return value in {
-        "cancel",
-        "stop",
-        "huy",
-        "hủy",
-        "huỷ",
-        "brev cancel",
-        "/brev cancel",
-    }
-
-
-def brev_submission_marker_seen(text: str) -> bool:
-    return BREV_SUBMITTED_RE.search(text or "") is not None
-
-
-def brev_filled_marker_seen(text: str) -> bool:
-    return BREV_FILLED_RE.search(text or "") is not None
-
-
-def strip_brev_submission_marker(text: str) -> str:
-    lines = [
-        line for line in (text or "").splitlines()
-        if not BREV_SUBMITTED_RE.match(line) and not BREV_FILLED_RE.match(line)
-    ]
-    return "\n".join(lines).strip() or "Brev flow completed."
-
-
-async def send_brev_slack_notification(org_id: str) -> str:
-    message = f"@brev-credits requested credits for {org_id}"
-    prompt = f"""The user explicitly authorized this Slack MCP notification after a successful Brev credits form submission.
-
-Destination: Slack DM to `{BREV_NOTIFY_EMAIL}`.
-Message text, exactly:
-{message}
-
-Use the registered `maas-slack` MCP server if its send-message tool is
-available in this turn. If Slack is exposed only through the Codex Slack app
-connector, use that connector. Do not use the agent-me Slack bot token, do not
-post in the current agent-me thread, and do not use shell commands.
-
-Send as the signed-in Slack user. Do not add "sent by ChatGPT", "via Codex",
-"via agent-me", signatures, metadata, blocks, attachments, prefixes, suffixes,
-or any extra text. Do not rewrite the bare `@brev-credits` text.
-
-Return a concise Vietnamese status after the send, including the recipient and
-permalink if the connector returns one. If the connector fails, include the
-exact failure in one short line.
-"""
-    answer, _sid = await spawn_codex_app_server(prompt)
-    return answer.strip() or "_(no output)_"
-
-
-async def finalize_brev_outcome(thread_ts: str, org_id: str, answer: str) -> str:
-    if brev_filled_marker_seen(answer):
-        visible_answer = strip_brev_submission_marker(answer)
-        await finish_brev_flow(thread_ts, "filled", visible_answer)
-        return visible_answer
-
-    if not brev_submission_marker_seen(answer):
-        return answer.strip() or "_(no output)_"
-
-    visible_answer = strip_brev_submission_marker(answer)
-    await finish_brev_flow(thread_ts, "submitted", visible_answer)
-    try:
-        notify_status = await send_brev_slack_notification(org_id)
-    except Exception as exc:
-        return (
-            f"{visible_answer}\n\n"
-            "⚠️ Form đã submit, nhưng Slack MCP notification bị lỗi: "
-            f"`{str(exc)[:600]}`"
-        )
-    return f"{visible_answer}\n\n✅ Slack MCP notification: {notify_status}"
-
-
-async def cmd_brev_start(
-    args_text: str = "",
-    *,
-    channel: str | None = None,
-    thread_ts: str | None = None,
-    user_id: str | None = None,
-    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-) -> str:
-    org_id, err = parse_brev_org_id(args_text)
-    if err:
-        return err
-    if org_id == "cancel":
-        if thread_ts:
-            await finish_brev_flow(thread_ts, "cancelled", "cancelled by user")
-            await clear_session(thread_ts)
-        return "Đã hủy Brev flow trong thread này."
-    if not channel or not thread_ts:
-        return (
-            "Brev flow cần một Slack thread thật để hỏi/đáp từng bước. "
-            "Hãy chạy `brev <org_id>` trong DM với bot, hoặc dùng native `/brev <org_id>`."
-        )
-
-    await upsert_thread(thread_ts, channel, user_id)
-    await clear_session(thread_ts)
-    await remember_brev_flow(thread_ts, org_id)
-
-    prompt = f"""Start the Brev credits request flow.
-
-Org id: `{org_id}`
-Form URL: {BREV_FORM_URL}
-
-Navigate to the form with `maas-playwright`, inspect the first visible page,
-fill the visible fields using the reference/sample values in the system prompt,
-advance through the form until either all known fields are filled or a missing
-required value/authentication blocks progress, then take a screenshot of the
-filled state. Do not click the final submit button.
-"""
-    answer, new_sid = await spawn_codex(
-        prompt,
-        progress_cb=progress_cb,
-        thread_ts=thread_ts,
-        system_prompt=build_brev_system_prompt(org_id, thread_ts),
-        extra_configs=BREV_PLAYWRIGHT_APPROVAL_CONFIGS,
-    )
-    if new_sid:
-        await upsert_session(thread_ts, new_sid)
-    result = await finalize_brev_outcome(thread_ts, org_id, answer)
-    if brev_submission_marker_seen(answer) or brev_filled_marker_seen(answer):
-        return result
-    return f"{result}\n\n_Reply trong thread này với value tiếp theo; gõ `cancel` để hủy._"
-
-
-async def cmd_brev_continue(
-    thread_ts: str,
-    user_response: str,
-    *,
-    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-) -> str:
-    flow = await get_active_brev_flow(thread_ts)
-    if not flow:
-        return "Không có Brev flow active trong thread này. Chạy `brev <org_id>` để bắt đầu."
-
-    if is_brev_cancel_text(user_response):
-        await finish_brev_flow(thread_ts, "cancelled", "cancelled by user")
-        await clear_session(thread_ts)
-        return "Đã hủy Brev flow trong thread này."
-
-    org_id = str(flow["org_id"])
-    existing_sid = await get_session_id(thread_ts)
-    if not existing_sid:
-        await finish_brev_flow(thread_ts, "failed", "missing Codex session")
-        return (
-            "Brev flow bị mất Codex session nên không thể tiếp tục an toàn. "
-            f"Chạy lại `brev {org_id}` để bắt đầu từ đầu."
-        )
-
-    prompt = f"""The user replied with the next Brev form input or confirmation:
-
-{user_response}
-
-Continue the same Brev credits request for org id `{org_id}`. Use only the
-existing user-provided values from this session plus this latest reply. If the
-reply answers a visible field, fill it and move to the next page only when all
-required fields on the current page are answered. If more information is
-needed, ask one concise Vietnamese question with exact visible field labels and
-options. If all known fields are filled, take a screenshot and follow the
-`BREV_FILLED` completion contract. Do not submit the form in this stage.
-"""
-    try:
-        answer, new_sid = await spawn_codex(
-            prompt,
-            resume_session_id=existing_sid,
-            progress_cb=progress_cb,
-            thread_ts=thread_ts,
-            system_prompt=build_brev_system_prompt(org_id, thread_ts),
-            extra_configs=BREV_PLAYWRIGHT_APPROVAL_CONFIGS,
-        )
-    except SessionExpired:
-        await clear_session(thread_ts)
-        await finish_brev_flow(thread_ts, "failed", "expired Codex session")
-        return (
-            "Brev flow bị mất Codex session nên không thể tiếp tục an toàn. "
-            f"Chạy lại `brev {org_id}` để bắt đầu từ đầu."
-        )
-    if new_sid:
-        await upsert_session(thread_ts, new_sid)
-    return await finalize_brev_outcome(thread_ts, org_id, answer)
-
-
 async def cmd_permissioned_app_server_write(user_request: str) -> str:
     prompt = f"""The Slack user explicitly requested a permissioned connector/MCP write action.
 
@@ -1782,68 +1432,270 @@ async def cmd_reauth() -> str:
     )
 
 
-def _brev_auth_blocks(text: str) -> list[dict]:
+AUTO_SFA_LOG_CHUNK_SIZE = 1_900
+AUTO_SFA_LOG_FLUSH_INTERVAL_S = 2.0
+AUTO_SFA_SLACK_TASKS: set[asyncio.Task[None]] = set()
+
+AUTO_SFA_INPUT_TEMPLATE = "\n".join((
+    "username: Thanh Phan",
+    "devtest_folder_id: 1155188",
+    "url_path: https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+    "start: 2026-04-16",
+    "finish: 2026-05-08",
+))
+
+AUTO_SFA_HELP_TEXT = "\n".join((
+    "*Auto SFA*",
+    "",
+    "Reply trong thread này bằng 5 dòng theo template bên dưới. `username` sẽ được truyền y nguyên vào `--task-owner` (không tự sửa tên, không đổi hoa/thường).",
+    "",
+    "```",
+    AUTO_SFA_INPUT_TEMPLATE,
+    "```",
+    "",
+    "- `url_path` sẽ update chung cho `log_file_base_url`, `source_code_path`, `code_review_path`.",
+    "- Mọi key trong `release_configs` có chữ `start` dùng chung `start`; có chữ `finish` dùng chung `finish`.",
+    "- Date format bắt buộc: `yyyy-MM-dd`.",
+    "- Gõ `cancel auto sfa` trong thread này để hủy trước khi chạy.",
+))
+
+
+def _auto_sfa_blocks(text: str) -> list[dict]:
     return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
         {"type": "actions", "elements": [
             {"type": "button",
-             "text": {"type": "plain_text", "text": "🔐 Check Brev auth"},
-             "action_id": "menu_brev_auth", "style": "primary"},
-            {"type": "button",
-             "text": {"type": "plain_text", "text": "🔄 Check MCP status"},
-             "action_id": "menu_mcp_status"},
-            {"type": "button",
-             "text": {"type": "plain_text", "text": "❓ Help"},
-             "action_id": "menu_help"},
+             "text": {"type": "plain_text", "text": "Cancel Auto SFA"},
+             "action_id": "auto_sfa_cancel", "style": "danger"},
         ]},
     ]
 
 
-async def cmd_brev_auth(
+def _auto_sfa_missing_text(values: dict[str, Any]) -> str:
+    missing = missing_auto_sfa_fields(values)
+    labels = ", ".join(f"`{AUTO_SFA_FIELD_LABELS[field]}`" for field in missing)
+    present = [
+        f"- `{AUTO_SFA_FIELD_LABELS[field]}`: `{values[field]}`"
+        for field in ("username", "devtest_folder_id", "url_path", "start_date", "finish_date")
+        if values.get(field)
+    ]
+    body = [
+        f"Auto SFA chưa đủ input. Còn thiếu: {labels}.",
+        "",
+        "Bạn có thể gửi tiếp phần còn thiếu, hoặc gửi lại full template:",
+        "```",
+        AUTO_SFA_INPUT_TEMPLATE,
+        "```",
+    ]
+    if present:
+        body.extend(("", "Đã nhận:", *present))
+    return "\n".join(body)
+
+
+async def cmd_auto_sfa_start(
     *,
-    thread_ts: str | None = None,
-    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-) -> tuple[str, list[dict]]:
-    """Check the persistent Brev browser profile without collecting secrets."""
-    BREV_PLAYWRIGHT_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    BREV_PLAYWRIGHT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    prompt = f"""Check Brev browser authentication state.
+    channel: str | None,
+    thread_ts: str | None,
+    user_id: str | None,
+) -> SlashResult:
+    if not channel or not thread_ts:
+        return (
+            "Auto SFA cần chạy trong một Slack thread để nhận input và stream log. "
+            "DM bot rồi gõ `auto sfa`, hoặc bấm nút Auto SFA trong `/help`.",
+            None,
+        )
+    await upsert_thread(thread_ts, channel, user_id)
+    await remember_auto_sfa_flow(thread_ts, channel, user_id, {})
+    return AUTO_SFA_HELP_TEXT, _auto_sfa_blocks(AUTO_SFA_HELP_TEXT)
 
-Form URL: {BREV_FORM_URL}
-Persistent browser profile on this host:
-{BREV_PLAYWRIGHT_PROFILE_DIR}
-Playwright output directory:
-{BREV_PLAYWRIGHT_OUTPUT_DIR}
 
-Navigate to the form with `maas-playwright`, wait for the first stable page,
-and inspect whether the Brev form is visible or the browser is blocked by
-Microsoft/NVIDIA SSO. Do not enter credentials, MFA, passwords, or submit any
-form.
+async def _post_auto_sfa_log_chunk(
+    client,
+    *,
+    channel: str,
+    thread_ts: str,
+    lines: list[str],
+) -> None:
+    if not lines:
+        return
+    remaining = "\n".join(lines)
+    while remaining:
+        if len(remaining) <= AUTO_SFA_LOG_CHUNK_SIZE:
+            chunk = remaining
+            remaining = ""
+        else:
+            cut = remaining.rfind("\n", 0, AUTO_SFA_LOG_CHUNK_SIZE)
+            if cut < AUTO_SFA_LOG_CHUNK_SIZE // 2:
+                cut = AUTO_SFA_LOG_CHUNK_SIZE
+            chunk = remaining[:cut]
+            remaining = remaining[cut:].lstrip("\n")
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text="```" + chunk + "```",
+        )
 
-If the Brev form is visible, take a screenshot named
-`brev-auth-ok-{thread_ts or "manual"}.png`.
-If a login wall is visible, take a screenshot named
-`brev-auth-needed-{thread_ts or "manual"}.png`.
 
-Return a concise Vietnamese status. Mention that Brev web SSO has no localhost
-callback issue here; the session is stored in the host profile above.
-"""
-    answer, _sid = await spawn_codex(
-        prompt,
-        progress_cb=progress_cb,
+async def _run_auto_sfa_slack_job(
+    client,
+    *,
+    channel: str,
+    thread_ts: str,
+    request: AutoSFARequest,
+) -> None:
+    log.info("auto_sfa_slack_started", thread_ts=thread_ts,
+             folder_id=request.devtest_folder_id, task_owner=request.username)
+    buffer: list[str] = []
+    buffer_chars = 0
+    last_flush = 0.0
+
+    async def flush(force: bool = False) -> None:
+        nonlocal buffer, buffer_chars, last_flush
+        if not buffer:
+            return
+        now = time.monotonic()
+        if not force and buffer_chars < AUTO_SFA_LOG_CHUNK_SIZE and (
+            now - last_flush < AUTO_SFA_LOG_FLUSH_INTERVAL_S
+        ):
+            return
+        lines = buffer
+        buffer = []
+        buffer_chars = 0
+        last_flush = now
+        try:
+            await _post_auto_sfa_log_chunk(
+                client, channel=channel, thread_ts=thread_ts, lines=lines,
+            )
+        except Exception as exc:
+            log.warning("auto_sfa_log_post_failed", err=str(exc), thread_ts=thread_ts)
+
+    async def progress_cb(evt: dict[str, Any]) -> None:
+        nonlocal buffer_chars
+        event = evt.get("event")
+        if event == "config_updated":
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=(
+                    "*Auto SFA config updated* "
+                    f"`{evt.get('config_path')}`\n"
+                    f"- folder: `{evt.get('devtest_folder_id')}`\n"
+                    f"- start: `{evt.get('start_date')}` · finish: `{evt.get('finish_date')}`"
+                ),
+            )
+            return
+        if event == "started":
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text="*Auto SFA command started:*\n```" + str(evt.get("command")) + "```",
+            )
+            return
+        if event == "line":
+            line = str(evt.get("line") or "")
+            buffer.append(line)
+            buffer_chars += len(line) + 1
+            await flush()
+
+    result_text = "Auto SFA finished."
+    try:
+        await run_auto_sfa(request, progress_cb=progress_cb)
+        await flush(force=True)
+        await update_auto_sfa_flow(thread_ts, status="done", last_result=result_text)
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text="Auto SFA finished successfully.",
+        )
+        log.info("auto_sfa_slack_done", thread_ts=thread_ts)
+    except Exception as exc:
+        await flush(force=True)
+        result_text = f"Auto SFA failed: {str(exc)[:600]}"
+        await update_auto_sfa_flow(thread_ts, status="failed", last_result=result_text)
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=f"Auto SFA failed: `{str(exc)[:600]}`",
+        )
+        log.error("auto_sfa_slack_failed", thread_ts=thread_ts, err=str(exc))
+
+
+async def handle_auto_sfa_flow_message(
+    *,
+    client,
+    channel: str,
+    thread_ts: str,
+    user_id: str | None,
+    cleaned: str,
+    event_ts: str | None,
+    flow: dict[str, Any],
+) -> None:
+    await upsert_thread(thread_ts, channel, user_id)
+    await insert_message(thread_ts, "user", cleaned, event_ts)
+
+    lowered = cleaned.strip().lower()
+    if lowered in {"cancel", "cancel auto sfa", "auto sfa cancel", "huy", "hủy"}:
+        await update_auto_sfa_flow(thread_ts, status="cancelled", last_result="cancelled by user")
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text="Auto SFA cancelled. Gõ `auto sfa` để bắt đầu lại.",
+        )
+        return
+
+    if flow.get("status") == "running":
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text="Auto SFA đang chạy trong thread này. Log mới sẽ tiếp tục được post ở đây.",
+        )
+        return
+
+    values = parse_auto_sfa_message(cleaned, flow.get("inputs") or {})
+    missing = missing_auto_sfa_fields(values)
+    if missing:
+        await update_auto_sfa_flow(thread_ts, inputs=values, status="active")
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=_auto_sfa_missing_text(values),
+        )
+        return
+
+    try:
+        request = build_auto_sfa_request(values)
+    except AutoSFAValidationError as exc:
+        await update_auto_sfa_flow(thread_ts, inputs=values, status="active")
+        await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=(
+                "Auto SFA input chưa hợp lệ:\n"
+                + "\n".join(f"- {err}" for err in exc.errors)
+                + "\n\nGửi lại theo format:\n```"
+                + AUTO_SFA_INPUT_TEMPLATE
+                + "```"
+            ),
+        )
+        return
+
+    await update_auto_sfa_flow(thread_ts, inputs=request.as_input_dict(), status="running")
+    await client.chat_postMessage(
+        channel=channel,
         thread_ts=thread_ts,
-        system_prompt=BREV_AUTH_SYSTEM_PROMPT,
-        extra_configs=BREV_PLAYWRIGHT_APPROVAL_CONFIGS,
+        text=(
+            "Auto SFA received all inputs and is starting now.\n"
+            f"- task owner: `{request.username}`\n"
+            f"- folder: `{request.devtest_folder_id}`"
+        ),
     )
-    body = (
-        (answer.strip() or "_(no output)_")
-        + "\n\n"
-        "Profile host đang dùng: "
-        f"`{BREV_PLAYWRIGHT_PROFILE_DIR}`\n"
-        "Nếu vẫn thấy SSO, hãy login bằng browser profile này trên host rồi bấm "
-        "*Check Brev auth* lại. Không paste password/OTP vào Slack."
+    task = asyncio.create_task(
+        _run_auto_sfa_slack_job(
+            client, channel=channel, thread_ts=thread_ts, request=request,
+        )
     )
-    return body, _brev_auth_blocks(body)
+    AUTO_SFA_SLACK_TASKS.add(task)
+    task.add_done_callback(AUTO_SFA_SLACK_TASKS.discard)
 
 
 SlashResult = tuple[str, list[dict] | None]
@@ -1866,14 +1718,14 @@ def _help_blocks() -> list[dict]:
              "text": {"type": "plain_text", "text": "📆 Monthly"},
              "action_id": "menu_brief_month"},
             {"type": "button",
+             "text": {"type": "plain_text", "text": "Auto SFA"},
+             "action_id": "menu_auto_sfa"},
+            {"type": "button",
              "text": {"type": "plain_text", "text": "🔄 Check MCP status"},
-             "action_id": "menu_mcp_status"},
+            "action_id": "menu_mcp_status"},
             {"type": "button",
              "text": {"type": "plain_text", "text": "🔧 Reauth MCPs"},
              "action_id": "brief_reauth"},
-            {"type": "button",
-             "text": {"type": "plain_text", "text": "🔐 Brev auth"},
-             "action_id": "menu_brev_auth"},
         ]},
     ]
 
@@ -1897,15 +1749,11 @@ async def handle_slash(
         return await cmd_reauth()
     if cmd == "/brief":
         return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
-    if cmd == "/brev":
-        if is_brev_auth_args(args_text):
-            return await cmd_brev_auth(thread_ts=thread_ts, progress_cb=progress_cb)
-        return await cmd_brev_start(
-            args_text,
+    if cmd == "/auto-sfa":
+        return await cmd_auto_sfa_start(
             channel=channel,
             thread_ts=thread_ts,
             user_id=user_id,
-            progress_cb=progress_cb,
         )
     if cmd == "/model-free-draft":
         return await cmd_model_free_draft(
@@ -2008,6 +1856,10 @@ PLAIN_COMMANDS: dict[str, tuple[str, str]] = {
     "brief monthly":  ("/brief", "month"),
     "monthly":        ("/brief", "month"),
     "this month":     ("/brief", "month"),
+    # Auto SFA
+    "auto sfa":       ("/auto-sfa", ""),
+    "autosfa":        ("/auto-sfa", ""),
+    "sfa":            ("/auto-sfa", ""),
     # outlook automation shortcuts
     "model free draft":       ("/model-free-draft", ""),
     "draft model free":       ("/model-free-draft", ""),
@@ -2069,44 +1921,21 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             await update_progress(client, channel, placeholder_ts,
                                   f"⚠️ `{cmd}` failed: `{exc}`")
 
-    # Allow Brev browser auth checks even inside an active Brev form thread.
     plain_key = cleaned.strip().lower()
-    if is_brev_auth_text(cleaned):
-        await _dispatch("/brev", "auth", "plain")
-        return
-
-    active_brev = await get_active_brev_flow(thread_ts)
-    if active_brev:
-        await upsert_thread(thread_ts, channel, user_id)
-        await insert_message(thread_ts, "user", cleaned, event_ts)
-        placeholder_ts = await post_thinking(client, channel, thread_ts)
-        progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
-        try:
-            result = await cmd_brev_continue(
-                thread_ts,
-                cleaned,
-                progress_cb=progress_cb,
-            )
-            await update_progress(client, channel, placeholder_ts, result)
-            await insert_message(thread_ts, "assistant", result, placeholder_ts)
-            log.info(
-                "brev_flow_continued",
-                thread_ts=thread_ts,
-                org_id=active_brev.get("org_id"),
-            )
-        except Exception as exc:
-            log.error("brev_flow_failed", err=str(exc), thread_ts=thread_ts)
-            await update_progress(
-                client, channel, placeholder_ts,
-                f"⚠️ Brev flow failed: `{str(exc)[:600]}`",
-            )
+    active_auto_sfa = await get_auto_sfa_flow(thread_ts)
+    if active_auto_sfa:
+        await handle_auto_sfa_flow_message(
+            client=client,
+            channel=channel,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            cleaned=cleaned,
+            event_ts=event_ts,
+            flow=active_auto_sfa,
+        )
         return
 
     # Plain-text command intercept (exact match): "brief", "brief week", "mcp", etc.
-    brev_args = parse_brev_plain_command(cleaned)
-    if brev_args is not None:
-        await _dispatch("/brev", brev_args, "plain")
-        return
     if plain_key in PLAIN_COMMANDS:
         cmd, args_text = PLAIN_COMMANDS[plain_key]
         await _dispatch(cmd, args_text, "plain")
@@ -2366,50 +2195,6 @@ async def slash_brief(ack, respond, command):
     await _native_slash(ack, respond, command, "/brief")
 
 
-@app.command("/brev")
-async def slash_brev(ack, respond, command, client):
-    await ack()
-    args_text = (command.get("text") or "").strip()
-    channel = command.get("channel_id")
-    user_id = command.get("user_id")
-    log.info("native_slash", cmd="/brev", user=user_id,
-             channel=channel, args=args_text)
-    if not channel:
-        await respond(response_type="ephemeral", text="⚠️ `/brev` missing Slack channel.")
-        return
-    try:
-        intro = (
-            "🔐 Checking Brev browser auth profile…"
-            if is_brev_auth_args(args_text)
-            else "🔄 Starting Brev credits fill/screenshot flow… reply in this thread with each requested value."
-        )
-        root = await client.chat_postMessage(
-            channel=channel,
-            text=intro,
-        )
-        thread_ts = root["ts"]
-        progress_cb = make_slack_progress_callback(client, channel, thread_ts)
-        if is_brev_auth_args(args_text):
-            result = await cmd_brev_auth(thread_ts=thread_ts, progress_cb=progress_cb)
-            text, blocks = _split_result(result)
-            await client.chat_update(
-                channel=channel, ts=thread_ts,
-                text=text or "(see blocks)", blocks=blocks or [],
-            )
-        else:
-            result = await cmd_brev_start(
-                args_text,
-                channel=channel,
-                thread_ts=thread_ts,
-                user_id=user_id,
-                progress_cb=progress_cb,
-            )
-            await update_progress(client, channel, thread_ts, result)
-    except Exception as exc:
-        log.error("native_slash_failed", cmd="/brev", err=str(exc))
-        await respond(response_type="ephemeral", text=f"⚠️ `/brev` failed: `{exc}`")
-
-
 @app.command("/model-free-draft")
 async def slash_model_free_draft(ack, respond, command):
     await _native_slash(ack, respond, command, "/model-free-draft")
@@ -2537,24 +2322,54 @@ async def on_menu_mcp_status(ack, body, client):
     await _reply_in_thread(client, body, body_text)
 
 
-@app.action("menu_brev_auth")
-async def on_menu_brev_auth(ack, body, client):
+@app.action("menu_auto_sfa")
+async def on_menu_auto_sfa(ack, body, client):
     await ack()
-    log.info("button_menu_brev_auth", user=body.get("user", {}).get("id"))
+    user_id = (body.get("user") or {}).get("id")
+    log.info("button_menu_auto_sfa", user=user_id)
+    channel, thread_ts = _button_thread_context(body)
+    if not channel:
+        channel = await ensure_dm_channel(client)
+    if not channel or not thread_ts:
+        await _reply_in_thread(
+            client,
+            body,
+            "Auto SFA cần một Slack thread để nhận input. DM bot rồi gõ `auto sfa`.",
+        )
+        return
+    await upsert_thread(thread_ts, channel, user_id)
+    await remember_auto_sfa_flow(thread_ts, channel, user_id, {})
+    await client.chat_postMessage(
+        channel=channel,
+        thread_ts=thread_ts,
+        text=AUTO_SFA_HELP_TEXT,
+        blocks=_auto_sfa_blocks(AUTO_SFA_HELP_TEXT),
+    )
+
+
+@app.action("auto_sfa_cancel")
+async def on_auto_sfa_cancel(ack, body, client):
+    await ack()
+    log.info("button_auto_sfa_cancel", user=body.get("user", {}).get("id"))
     _channel, thread_ts = _button_thread_context(body)
-    try:
-        result = await cmd_brev_auth(thread_ts=thread_ts)
-        text, blocks = _split_result(result)
-    except Exception as exc:
-        text, blocks = f"⚠️ Brev auth check failed: `{str(exc)[:600]}`", None
-    await _reply_in_thread(client, body, text, blocks=blocks)
+    if thread_ts:
+        await update_auto_sfa_flow(
+            thread_ts,
+            status="cancelled",
+            last_result="cancelled by button",
+        )
+    await _reply_in_thread(
+        client,
+        body,
+        "Auto SFA cancelled. Gõ `auto sfa` để bắt đầu lại.",
+    )
 
 
 @app.action("menu_help")
 async def on_menu_help(ack, body, client):
     await ack()
     log.info("button_menu_help", user=body.get("user", {}).get("id"))
-    await _reply_in_thread(client, body, HELP_TEXT)
+    await _reply_in_thread(client, body, HELP_TEXT, blocks=_help_blocks())
 
 
 # ── Periodic MCP-auth health check ──────────────────────────────────────
@@ -2668,9 +2483,6 @@ def _morning_menu_blocks(intro_text: str) -> list[dict]:
             {"type": "button",
              "text": {"type": "plain_text", "text": "🔄 Verify MCPs"},
              "action_id": "menu_mcp_status"},
-            {"type": "button",
-             "text": {"type": "plain_text", "text": "🔐 Brev auth"},
-             "action_id": "menu_brev_auth"},
             {"type": "button",
              "text": {"type": "plain_text", "text": "❓ Help"},
              "action_id": "menu_help"},

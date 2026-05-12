@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}Auto SFA · agent-me dashboard{% endblock %}
+
+{% block content %}
+<div x-data="autoSfaPage({{ active_job | tojson }})" x-init="init()">
+
+<section class="mb-6 flex items-end justify-between flex-wrap gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold text-slate-100">Auto SFA</h1>
+    <p class="text-slate-400 text-sm mt-1">
+      Update magic-auto config, run DevTest SFA, and stream terminal output here.
+    </p>
+  </div>
+  <div class="text-xs text-slate-500 font-mono">
+    /localhome/local-thaphan/magic-auto
+  </div>
+</section>
+
+<section class="grid grid-cols-1 lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)] gap-4">
+  <form @submit.prevent="run()"
+        class="rounded-lg border border-ink-700 bg-ink-900 p-4 space-y-4">
+    <div>
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-username">username</label>
+      <input id="sfa-username" x-model="form.username" type="text" required
+             class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+             placeholder="Thanh Phan" />
+    </div>
+
+    <div>
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-folder">devtest_folder_id</label>
+      <input id="sfa-folder" x-model="form.devtest_folder_id" type="number" min="1" required
+             class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+             placeholder="1155188" />
+    </div>
+
+    <div>
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-url">url_path</label>
+      <input id="sfa-url" x-model="form.url_path" type="url" required
+             class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+             placeholder="https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123" />
+      <p class="mt-1 text-xs text-slate-500">
+        Shared by log_file_base_url, source_code_path, and code_review_path.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-start">start</label>
+        <input id="sfa-start" x-model="form.start_date" type="date" required
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100" />
+      </div>
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-finish">finish</label>
+        <input id="sfa-finish" x-model="form.finish_date" type="date" required
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100" />
+      </div>
+    </div>
+
+    <button type="submit" :disabled="busy"
+            class="w-full rounded bg-accent-600 hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-2 text-sm font-semibold">
+      <span x-show="!busy">Run Auto SFA</span>
+      <span x-show="busy" x-cloak>Running...</span>
+    </button>
+
+    <template x-if="error">
+      <div class="rounded border border-rose-800 bg-rose-950/30 p-3 text-sm text-rose-200" x-text="error"></div>
+    </template>
+  </form>
+
+  <section class="rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
+    <header class="px-4 py-3 border-b border-ink-700 bg-ink-800 flex items-center justify-between gap-3">
+      <div class="min-w-0">
+        <h2 class="font-semibold text-slate-100">Terminal log</h2>
+        <p class="text-xs text-slate-500 font-mono truncate" x-text="jobLabel()"></p>
+      </div>
+      <div class="flex items-center gap-3 text-xs shrink-0">
+        <label class="flex items-center gap-1 text-slate-400">
+          <input type="checkbox" x-model="autoScroll" class="accent-accent-500" /> auto-scroll
+        </label>
+        <button @click="lines = []" type="button" class="text-slate-400 hover:text-accent-400">clear</button>
+      </div>
+    </header>
+    <pre class="p-3 text-xs font-mono h-[36rem] overflow-y-auto text-slate-300 bg-ink-950"
+         x-ref="logBox"><template x-for="(line, idx) in lines" :key="idx"><div class="whitespace-pre-wrap" x-text="line"></div></template><template x-if="lines.length === 0"><div class="text-slate-500 italic">(no Auto SFA run started)</div></template></pre>
+  </section>
+</section>
+
+{% if recent_jobs %}
+<section class="mt-6 rounded-lg border border-ink-700 bg-ink-900">
+  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800">
+    <h2 class="font-semibold text-slate-100">Recent Auto SFA jobs</h2>
+  </header>
+  <ul class="divide-y divide-ink-700">
+    {% for job in recent_jobs %}
+    <li class="px-4 py-2 text-sm flex items-center justify-between gap-3">
+      <span class="font-mono text-xs text-slate-400">{{ job.job_id }}</span>
+      <span class="text-slate-300 truncate">{{ job.request.username }} · folder {{ job.request.devtest_folder_id }}</span>
+      <span class="text-xs px-2 py-0.5 rounded
+        {% if job.status == 'done' %}bg-emerald-900/40 text-emerald-300
+        {% elif job.status == 'error' %}bg-rose-900/50 text-rose-300
+        {% else %}bg-accent-600/30 text-accent-400{% endif %}">
+        {{ job.status }}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function autoSfaPage(activeJob) {
+    return {
+      form: {
+        username: "",
+        devtest_folder_id: "",
+        url_path: "",
+        start_date: "",
+        finish_date: "",
+      },
+      busy: false,
+      error: null,
+      job: null,
+      lines: [],
+      autoScroll: true,
+      _es: null,
+      MAX: 1000,
+
+      init() {
+        if (activeJob) {
+          this.job = activeJob;
+          this.busy = activeJob.status === "pending" || activeJob.status === "running";
+          this.append(`[resume] Auto SFA job ${activeJob.job_id} is ${activeJob.status}`);
+          if (this.busy) this.subscribe(activeJob.job_id);
+        }
+      },
+
+      jobLabel() {
+        if (!this.job) return "idle";
+        const status = this.job.status || "pending";
+        const id = this.job.job_id || "";
+        const lines = this.job.line_count || this.lines.length;
+        return `${status} · ${id} · ${lines} line(s)`;
+      },
+
+      append(line) {
+        this.lines.push(String(line || ""));
+        if (this.lines.length > this.MAX) {
+          this.lines.splice(0, this.lines.length - this.MAX);
+        }
+        if (this.autoScroll) {
+          this.$nextTick(() => {
+            const box = this.$refs.logBox;
+            if (box) box.scrollTop = box.scrollHeight;
+          });
+        }
+      },
+
+      async run() {
+        if (this.busy) return;
+        this.busy = true;
+        this.error = null;
+        this.lines = [];
+        this.job = null;
+        try {
+          const r = await fetch("/api/auto-sfa/run", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify(this.form),
+          });
+          const data = await r.json();
+          if (!r.ok) {
+            const detail = data.errors ? data.errors.join("; ") : data.error;
+            throw new Error(detail || `HTTP ${r.status}`);
+          }
+          this.job = data;
+          this.append(`[start] job ${data.job_id}`);
+          this.subscribe(data.job_id);
+        } catch (err) {
+          this.error = String(err.message || err);
+          this.append(`[error] ${this.error}`);
+          this.busy = false;
+        }
+      },
+
+      subscribe(jobId) {
+        if (this._es) this._es.close();
+        const es = new EventSource(`/api/sse/auto-sfa/${jobId}`);
+        this._es = es;
+        const onEvent = (e) => {
+          let data = {};
+          try { data = JSON.parse(e.data); } catch (_) {}
+          if (data.event === "line") {
+            this.append(data.line || "");
+          } else if (data.event === "config_updated") {
+            this.append(`[config] updated ${data.config_path}`);
+          } else if (data.event === "started") {
+            this.append(`[command] ${data.command}`);
+          } else if (data.event === "snapshot" || data.event === "running") {
+            this.job = { ...this.job, ...data, status: "running" };
+          } else if (data.event === "done") {
+            this.job = { ...this.job, ...data, status: "done" };
+            this.append(`[done] return_code=0 seconds=${data.seconds || 0}`);
+            this.busy = false;
+            es.close();
+            this._es = null;
+          } else if (data.event === "error") {
+            this.job = { ...this.job, ...data, status: "error" };
+            this.error = data.error || "Auto SFA failed";
+            this.append(`[error] ${this.error}`);
+            this.busy = false;
+            es.close();
+            this._es = null;
+          } else if (data.event === "timeout") {
+            this.append(`[timeout] ${data.note || "no progress event"}`);
+          }
+        };
+        ["message", "snapshot", "running", "config_updated", "started", "line", "done", "error", "timeout"].forEach(
+          evt => es.addEventListener(evt, onEvent)
+        );
+        es.onerror = () => {
+          if (this._es === es) this._es = null;
+          es.close();
+          if (this.busy) {
+            this.append("[sse] disconnected; refresh the page to reconnect");
+          }
+        };
+      },
+    };
+  }
+</script>
+{% endblock %}
