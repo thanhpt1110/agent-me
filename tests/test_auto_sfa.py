@@ -52,6 +52,56 @@ def test_auto_sfa_parse_keyed_message_preserves_task_owner() -> None:
     assert request.finish_date == "2026-05-08"
 
 
+def test_auto_sfa_parse_slack_mention_multiline_message() -> None:
+    values = parse_auto_sfa_message(
+        """
+        @agent-me
+        username: Thanh Phan
+        devtest_folder_id: 1138081
+        url_path: https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160
+        start: 2026-04-16
+        finish: 2026-04-25
+        """
+    )
+    request = build_auto_sfa_request(values)
+
+    assert request.username == "Thanh Phan"
+    assert request.devtest_folder_id == 1138081
+    assert request.url_path.endswith("/merge_requests/160")
+    assert request.start_date == "2026-04-16"
+    assert request.finish_date == "2026-04-25"
+
+
+def test_auto_sfa_parse_inline_followup_fields() -> None:
+    values = parse_auto_sfa_message(
+        "@agent-me username: Thanh Phan, finish date: 2026-04-28",
+        existing={
+            "devtest_folder_id": "1155188",
+            "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+            "start_date": "2026-04-16",
+        },
+    )
+    request = build_auto_sfa_request(values)
+
+    assert request.username == "Thanh Phan"
+    assert request.finish_date == "2026-04-28"
+
+
+def test_auto_sfa_parse_slack_link_url() -> None:
+    values = parse_auto_sfa_message(
+        """
+        username: Thanh Phan
+        devtest_folder_id: 1155188
+        url_path: <https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123|https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123>
+        start: 2026-04-16
+        finish: 2026-05-08
+        """
+    )
+    request = build_auto_sfa_request(values)
+
+    assert request.url_path == "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123"
+
+
 def test_auto_sfa_parse_ordered_message() -> None:
     values = parse_auto_sfa_message(
         "\n".join(

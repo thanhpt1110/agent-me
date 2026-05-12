@@ -1445,18 +1445,21 @@ AUTO_SFA_INPUT_TEMPLATE = "\n".join((
 ))
 
 AUTO_SFA_HELP_TEXT = "\n".join((
-    "*Auto SFA*",
+    "*Auto SFA* — mình sẽ chuẩn bị config và chạy SFA giúp bạn.",
     "",
-    "Reply trong thread này bằng 5 dòng theo template bên dưới. `username` sẽ được truyền y nguyên vào `--task-owner` (không tự sửa tên, không đổi hoa/thường).",
+    "Mình cần 5 thông tin. Bạn có thể gửi cùng một lúc trong thread này:",
+    "• *username* — tên Task Owner trong DevTest, mình sẽ truyền y nguyên vào `--task-owner`.",
+    "• *devtest_folder_id* — folder chứa task cần release.",
+    "• *url_path* — link log/MR dùng chung cho log, source code, và code review.",
+    "• *start* và *finish* — ngày theo format `yyyy-MM-dd`.",
     "",
+    "Ví dụ nhanh:",
     "```",
     AUTO_SFA_INPUT_TEMPLATE,
     "```",
     "",
-    "- `url_path` sẽ update chung cho `log_file_base_url`, `source_code_path`, `code_review_path`.",
-    "- Mọi key trong `release_configs` có chữ `start` dùng chung `start`; có chữ `finish` dùng chung `finish`.",
-    "- Date format bắt buộc: `yyyy-MM-dd`.",
-    "- Gõ `cancel auto sfa` trong thread này để hủy trước khi chạy.",
+    "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa --task-owner <username> -f`, rồi stream log lại ngay trong thread này.",
+    "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
 ))
 
 
@@ -1480,15 +1483,16 @@ def _auto_sfa_missing_text(values: dict[str, Any]) -> str:
         if values.get(field)
     ]
     body = [
-        f"Auto SFA chưa đủ input. Còn thiếu: {labels}.",
+        "Mình nhận được một phần thông tin rồi.",
+        f"Còn thiếu: {labels}.",
         "",
-        "Bạn có thể gửi tiếp phần còn thiếu, hoặc gửi lại full template:",
+        "Bạn chỉ cần gửi tiếp phần còn thiếu, ví dụ `finish: 2026-05-08`, hoặc paste lại đủ 5 dòng như mẫu này:",
         "```",
         AUTO_SFA_INPUT_TEMPLATE,
         "```",
     ]
     if present:
-        body.extend(("", "Đã nhận:", *present))
+        body.extend(("", "Phần mình đã ghi nhận:", *present))
     return "\n".join(body)
 
 
@@ -1670,9 +1674,9 @@ async def handle_auto_sfa_flow_message(
             channel=channel,
             thread_ts=thread_ts,
             text=(
-                "Auto SFA input chưa hợp lệ:\n"
+                "Mình đọc được đủ field, nhưng có giá trị chưa hợp lệ:\n"
                 + "\n".join(f"- {err}" for err in exc.errors)
-                + "\n\nGửi lại theo format:\n```"
+                + "\n\nBạn gửi lại field sai hoặc paste lại đủ mẫu này nhé:\n```"
                 + AUTO_SFA_INPUT_TEMPLATE
                 + "```"
             ),
@@ -1684,9 +1688,10 @@ async def handle_auto_sfa_flow_message(
         channel=channel,
         thread_ts=thread_ts,
         text=(
-            "Auto SFA received all inputs and is starting now.\n"
-            f"- task owner: `{request.username}`\n"
-            f"- folder: `{request.devtest_folder_id}`"
+            "Đã đủ thông tin. Mình bắt đầu chạy Auto SFA ngay bây giờ.\n"
+            f"- Task owner: `{request.username}`\n"
+            f"- DevTest folder: `{request.devtest_folder_id}`\n"
+            "Log terminal sẽ được gửi tiếp trong thread này."
         ),
     )
     task = asyncio.create_task(

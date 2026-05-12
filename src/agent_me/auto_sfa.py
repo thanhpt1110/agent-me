@@ -33,7 +33,20 @@ AUTO_SFA_FIELD_LABELS = {
 }
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DATE_SEARCH_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 KEY_VALUE_RE = re.compile(r"^\s*(?:[-*]\s*)?([A-Za-z0-9_\- ]+)\s*[:=]\s*(.*?)\s*$")
+BOT_PREFIX_RE = re.compile(r"^\s*(?:<@[A-Z0-9]+>|@agent-me)\s*", re.IGNORECASE)
+SLACK_LINK_RE = re.compile(r"^<(?P<url>https?://[^>|]+)(?:\|[^>]+)?>$")
+INLINE_KEY_RE = re.compile(
+    r"(?im)(^|[\n,;])\s*(?:[-*]\s*)?"
+    r"(?P<key>"
+    r"username|user|owner|task[-_ ]?owner|taskowner|"
+    r"devtest[-_ ]?folder[-_ ]?id|folder[-_ ]?id|folder|devtest[-_ ]?folder|"
+    r"url[-_ ]?path|url|log[-_ ]?url|log[-_ ]?link|link|"
+    r"log[-_ ]?file[-_ ]?base[-_ ]?url|source[-_ ]?code[-_ ]?path|code[-_ ]?review[-_ ]?path|"
+    r"start(?:[-_ ]?date)?|finish(?:[-_ ]?date)?|end(?:[-_ ]?date)?"
+    r")\s*[:=\uff1a]\s*",
+)
 
 
 class AutoSFAValidationError(ValueError):
@@ -141,6 +154,40 @@ def _strip_code_fence(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _clean_auto_sfa_body(text: str | None) -> str:
+    body = _strip_code_fence(text or "")
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
+    return BOT_PREFIX_RE.sub("", body).strip()
+
+
+def _clean_auto_sfa_value(field: str, value: str) -> str:
+    cleaned = value.strip().strip(",;")
+    cleaned = BOT_PREFIX_RE.sub("", cleaned).strip()
+    if field == "url_path":
+        match = SLACK_LINK_RE.match(cleaned)
+        if match:
+            cleaned = match.group("url")
+    if field in {"start_date", "finish_date"}:
+        match = DATE_SEARCH_RE.search(cleaned)
+        if match:
+            cleaned = match.group(0)
+    return cleaned
+
+
+def _parse_inline_key_values(body: str) -> dict[str, str]:
+    matches = list(INLINE_KEY_RE.finditer(body))
+    if not matches:
+        return {}
+    keyed: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        canonical = canonical_auto_sfa_key(match.group("key"))
+        if canonical is None:
+            continue
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        keyed[canonical] = _clean_auto_sfa_value(canonical, body[match.end():end])
+    return keyed
+
+
 def parse_auto_sfa_message(
     text: str | None,
     existing: dict[str, Any] | None = None,
@@ -151,10 +198,15 @@ def parse_auto_sfa_message(
     username, devtest_folder_id, url_path, start_date, finish_date.
     """
     values = dict(existing or {})
-    body = _strip_code_fence(text or "")
+    body = _clean_auto_sfa_body(text)
+
+    keyed = _parse_inline_key_values(body)
+    if keyed:
+        values.update(keyed)
+        return values
+
     lines = [line.strip() for line in body.splitlines() if line.strip()]
 
-    keyed: dict[str, str] = {}
     ordered: list[str] = []
     for line in lines:
         match = KEY_VALUE_RE.match(line)
@@ -165,15 +217,11 @@ def parse_auto_sfa_message(
         if canonical is None:
             ordered.append(line)
             continue
-        keyed[canonical] = match.group(2).strip()
-
-    if keyed:
-        values.update(keyed)
-        return values
+        values[canonical] = _clean_auto_sfa_value(canonical, match.group(2))
 
     missing = [field for field in AUTO_SFA_FIELD_ORDER if not values.get(field)]
     for field, value in zip(missing, ordered, strict=False):
-        values[field] = value.strip()
+        values[field] = _clean_auto_sfa_value(field, value)
     return values
 
 
@@ -207,15 +255,15 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
         devtest_folder_id = 0
         errors.append("devtest_folder_id must be a positive integer")
 
-    url_path = str(values.get("url_path") or "").strip()
+    url_path = _clean_auto_sfa_value("url_path", str(values.get("url_path") or ""))
     if not (url_path.startswith("http://") or url_path.startswith("https://")):
         errors.append("url_path must start with http:// or https://")
 
-    start_date = str(values.get("start_date") or "").strip()
+    start_date = _clean_auto_sfa_value("start_date", str(values.get("start_date") or ""))
     if not _valid_ymd(start_date):
         errors.append("start date must use yyyy-MM-dd")
 
-    finish_date = str(values.get("finish_date") or "").strip()
+    finish_date = _clean_auto_sfa_value("finish_date", str(values.get("finish_date") or ""))
     if not _valid_ymd(finish_date):
         errors.append("finish date must use yyyy-MM-dd")
 
