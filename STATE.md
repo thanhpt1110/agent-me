@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-11 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, and a generalized permissioned connector/MCP write route. Runtime decision: reads/chat use `codex exec --json`; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: compile, ruff, 92 tests, Codex app-server helper smoke, and `agent-me-brief --period day --dry-run` smoke._
+_Last updated: 2026-05-12 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, and a generalized permissioned connector/MCP write route. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff, 101 tests, source-specific Jira/GitLab/Outlook smokes, and `agent-me-brief --period day --dry-run` smoke._
 
 ## Phase
 
@@ -9,6 +9,8 @@ dashboard live + Codex-first runtime.** Bridge is Python+uv; daily-brief
 uses Codex CLI per-source fan-out. Slack DM ↔ Codex session
 persistence shipped (DB table name remains `claude_sessions` for
 compatibility). Morning routine fires daily at 6am Vietnam time.
+Jira, GitLab, and NVBugs brief reads now bypass Codex tool discovery and call
+the registered MaaS MCP HTTP endpoints directly with refreshed bearer tokens.
 **Phase 4 dashboard scaffold landed 2026-05-10:**
 Starlette + Jinja2 + Alpine.js + Tailwind CDN; reads bridge SQLite
 read-only; on-demand brief refresh per source with single-flight
@@ -45,7 +47,7 @@ approval gate.
 - [x] **GitHub repo public template:** https://github.com/thanhpt1110/agent-me
 - [x] **Bridge live (Python + slack-bolt async)** — DM, app_mention, native slash commands (`/brief /mcp /reauth /version /whoami /help`), text-intercept slash, plain-text shortcuts (incl. `reset` / `clear` / `new`), Block Kit interactive buttons
 - [x] **MCP re-auth helpers** — `uv run agent-me-reauth` refreshes the MaaS OAuth token store via the legacy pty + auto-open flow; `uv run agent-me-codex-reauth` is the Codex-facing wrapper for the same token store.
-- [x] **Daily-brief — fan-out v2 (2026-05-10; calendar added 2026-05-11)** — `uv run agent-me-brief --period day|week|month`. 8 subagents in parallel (jira / gitlab / confluence / nvbugs / slack / outlook / calendar / github), one root header + threaded reply per source, priority synthesis posted last. Calendar scope is today / next 7 days / next 30 days and includes time, organizer, location, and a short body/agenda summary when visible.
+- [x] **Daily-brief — fan-out v2 (2026-05-10; calendar added 2026-05-11; direct Jira/GitLab/NVBugs fetchers added 2026-05-12; Confluence removed 2026-05-12)** — `uv run agent-me-brief --period day|week|month`. 7 sources in parallel (jira / gitlab / nvbugs / slack / outlook / calendar / github), one root header + threaded reply per source, priority synthesis posted last. Jira, GitLab, and NVBugs read via MaaS MCP JSON-RPC directly so brief reliability is not tied to Codex tool discovery names. GitLab covers authored MRs awaiting review, reviewer-assigned MRs, and recently merged MRs from the last 3 days. Outlook Email uses a list-first prompt that checks recent inbox/mailbox messages before returning empty, then filters for direct/actionable messages. Calendar scope is today / next 7 days / next 30 days and includes time, organizer, location, and a short body/agenda summary when visible.
 - [x] **Slack session persistence (2026-05-10; Codex-backed 2026-05-11)** — `claude_sessions` table maps `thread_ts → session_id` for historical compatibility; bridge now runs `codex exec --json` / `codex exec resume --json <id>`. Cache hits compound across turns. `/reset` (+ plain shortcuts) clears a thread's session.
 - [x] **Slack chat Codex trust-dir fix (2026-05-11)** — bridge chat runs
   from `~/.local/state/agent-me/chat-cwd` on purpose so repo dev
@@ -62,7 +64,8 @@ approval gate.
   headless `codex exec` can cancel app write tools. Bridge parses Codex JSONL events, resumes Codex
   sessions per Slack thread, streams tool progress, and injects MaaS
   bearer-token env vars at spawn time. Daily brief uses the same
-  Codex JSONL path for each source. `scripts/setup-codex-mcps.sh`
+  Codex JSONL path for each Codex-backed source; Jira, GitLab, and NVBugs now
+  use direct MaaS MCP JSON-RPC for deterministic read-only searches. `scripts/setup-codex-mcps.sh`
   registers all 17 MaaS MCPs in Codex, with HTTP servers configured
   as bearer-token env-var MCPs. `uv run agent-me-codex-reauth`
   refreshes the existing MaaS OAuth token store; Codex consumes those
@@ -74,10 +77,10 @@ approval gate.
   `thaphan@nvidia.com` via the Codex Slack connector (not the
   personal-workspace bot token). The mirror send uses the shared Codex
   app-server auto-review helper because it is an explicit connector write.
-  NVBugs fetch prompt now asks for
-  the full open set where QA Eng/QA owner is `thaphan`, `Thanh Phan`,
-  or any open ARB-related bug involving those identities, with a
-  clickable NVBugs link on every item.
+  NVBugs fetch now runs exactly two structured searches:
+  `QAEngineerFullName = "Thanh Phan"` and
+  `ActionReqByFullName = "Thanh Phan"`, merges/dedupes by bug id, and
+  adds a clickable NVBugs link on every item.
 - [x] **Model Free Outlook draft standing rule (2026-05-11)** — in
   normal Slack chat only, when the user prompts agent-me to fetch/search/read/check
   email related to them, Codex should inspect matching subjects. If
@@ -212,7 +215,7 @@ approval gate.
   bridge activity" (low signal) to **"Pending across all
   platforms"** with the total count rendered in NVIDIA green
   (`#76b900`). New section above "Briefs by source" shows 9
-  expandable platform-group cards — the 7 brief sources (jira,
+  expandable platform-group cards — the platform groups (jira,
   gitlab, confluence, nvbugs, slack, outlook, github) **plus two
   new groups**: `threads` (operator-handled Slack threads, linking
   into `/logs?thread_ts=...`) and `sessions` (Codex sessions
@@ -533,17 +536,13 @@ approval gate.
   remains MaaS MCP-backed. If the copied token store goes stale,
   run `uv run agent-me-codex-reauth` on a machine with browser
   access, then verify `maas-nvbugs` through Codex.
-- **Daily brief source-level smoke status (2026-05-11)** —
-  `uv run agent-me-brief --period day --dry-run` proved the new
-  Outlook Calendar source works (3 meetings with time/organizer/location/body
-  summaries). Remaining source failures surfaced explicitly, not as
-  "nothing pending": Jira/Confluence/NVBugs MaaS tools are listed by
-  `codex mcp list` but not exposed as callable tools inside
-  `codex exec` in the current host session; direct bearer-token MCP
-  `tools/list` smoke for Jira returned HTTP 401 `invalid_token`.
-  GitLab no longer fails the whole source when the issue tool requires
-  `project_id`, but it may return only MRs unless a project-scoped
-  issue query path is added.
+- **Daily brief source-level smoke status (2026-05-12)** —
+  `uv run agent-me-brief --period day --dry-run` now completes with
+  zero source errors across the 7 active brief sources. Jira, GitLab,
+  and NVBugs use direct MaaS MCP JSON-RPC; Slack/Outlook/Calendar use
+  Codex app connectors; GitHub uses `gh`. Confluence is intentionally
+  removed from the brief fan-out, though its MCP registration remains
+  available for normal chat/write routing.
 - **Model Free Outlook draft route (2026-05-11)** — Slack prompts
   that fetch/search/read/check email for `Model Free 2.0.x` use a
   dedicated Outlook helper instead of the generic chat path. The helper

@@ -47,7 +47,7 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "agent-me-avatar.svg" in body
     assert "Overview" in body
     # All brief sources should appear in the nav at minimum
-    for label in ("Jira", "GitLab", "Confluence", "NVBugs",
+    for label in ("Jira", "GitLab", "NVBugs",
                   "Slack", "Outlook", "Outlook Calendar", "GitHub"):
         assert label in body
 
@@ -82,9 +82,9 @@ def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) ->
     assert r.status_code == 200
     body = r.json()
     assert "uptime_s" in body
-    assert len(body["snapshots"]) == 8
+    assert len(body["snapshots"]) == 7
     sources = {s["source"] for s in body["snapshots"]}
-    assert sources == {"jira", "gitlab", "confluence", "nvbugs",
+    assert sources == {"jira", "gitlab", "nvbugs",
                        "slack", "outlook", "calendar", "github"}
 
 
@@ -156,10 +156,10 @@ def test_refresh_all_returns_all_jobs(client: TestClient, monkeypatch,
     r = client.post("/api/refresh/_all", headers=_auth(with_token))
     assert r.status_code == 202
     body = r.json()
-    assert len(body["jobs"]) == 8
+    assert len(body["jobs"]) == 7
     assert sorted(j["source"] for j in body["jobs"]) == sorted([
-        "calendar", "confluence", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
+        "calendar", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
     ])
     assert sorted(started) == sorted([
-        "calendar", "confluence", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
+        "calendar", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
     ])

@@ -905,7 +905,7 @@ HELP_TEXT = "\n".join((
     "",
     "Type any of these as `/cmd`, plain text (`brief`, `mcp`, `reauth`…), or click buttons in posted messages — all three work.",
     "",
-    "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Confluence + Outlook + Calendar)",
+    "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
@@ -1102,9 +1102,7 @@ def looks_like_nvbugs_read_request(text: str | None) -> bool:
         return False
     if not re.search(r"\b(nvbugs|bug|bugs)\b", lowered):
         return False
-    if any(pattern.search(lowered) for pattern in READONLY_CONNECTOR_QUERY_PATTERNS):
-        return True
-    return False
+    return any(pattern.search(lowered) for pattern in READONLY_CONNECTOR_QUERY_PATTERNS)
 
 
 async def cmd_nvbugs_read() -> str:

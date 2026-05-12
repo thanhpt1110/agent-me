@@ -65,7 +65,6 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SOURCES: tuple[tuple[str, str, str], ...] = (
     ("jira", "Jira", "📋"),
     ("gitlab", "GitLab", "🦊"),
-    ("confluence", "Confluence", "📚"),
     ("nvbugs", "NVBugs", "🐛"),
     ("slack", "Slack", "💬"),
     ("outlook", "Outlook", "📧"),

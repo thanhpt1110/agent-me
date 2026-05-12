@@ -20,7 +20,7 @@ def test_parse_nvbugs_builds_clickable_bug_url() -> None:
                 }
             ]
         },
-        daily_brief.SOURCES[3],
+        next(s for s in daily_brief.SOURCES if s.id == "nvbugs"),
     )
 
     assert len(items) == 1
@@ -45,7 +45,7 @@ def test_parse_nvbugs_accepts_raw_nvbugs_fields() -> None:
                 }
             ]
         },
-        daily_brief.SOURCES[3],
+        next(s for s in daily_brief.SOURCES if s.id == "nvbugs"),
     )
 
     assert len(items) == 1
@@ -88,6 +88,104 @@ def test_nvbugs_direct_fetcher_normalizes_structured_rows() -> None:
     assert item["status"] == "Dev - Open - To fix"
     assert item["group"] == "Maxine NIM"
     assert item["reason"] == "arb"
+
+
+def test_jira_direct_fetcher_normalizes_search_rows() -> None:
+    payload = {
+        "data": {
+            "issues": [
+                {
+                    "key": "DGXCAT-32217",
+                    "fields": {
+                        "summary": "Validate worker shutdown cleanup",
+                        "status": {"name": "Open"},
+                        "priority": {"name": "P0 - Must have"},
+                        "duedate": None,
+                        "updatedDate": "2026-05-12T04:00:00.000-0700",
+                        "project": {"key": "DGXCAT"},
+                    },
+                }
+            ]
+        }
+    }
+
+    rows = daily_brief._jira_rows(payload)
+    item = daily_brief._normalize_jira(rows[0], "assignee")
+
+    assert item["key"] == "DGXCAT-32217"
+    assert item["url"] == "https://jirasw.nvidia.com/browse/DGXCAT-32217"
+    assert item["summary"] == "Validate worker shutdown cleanup"
+    assert item["status"] == "Open"
+    assert item["priority"] == "P0 - Must have"
+    assert item["group"] == "DGXCAT"
+    assert item["reason"] == "assignee"
+
+
+def test_jira_source_uses_direct_fetcher() -> None:
+    spec = next(s for s in daily_brief.SOURCES if s.id == "jira")
+
+    assert spec.fetcher is daily_brief.jira_fetcher
+
+
+def test_gitlab_direct_fetcher_normalizes_merge_requests() -> None:
+    payload = {
+        "merge_requests": [
+            {
+                "iid": 42,
+                "title": "Add release checklist",
+                "state": "opened",
+                "web_url": "https://gitlab.example/project/-/merge_requests/42",
+                "merged_at": "2026-05-12T05:00:00Z",
+                "project": {"path_with_namespace": "swqa/release"},
+            }
+        ]
+    }
+
+    rows = daily_brief._gitlab_mrs(payload)
+    item = daily_brief._normalize_gitlab_mr(rows[0], "authored_waiting_review")
+
+    assert item["iid"] == 42
+    assert item["title"] == "Add release checklist"
+    assert item["web_url"] == "https://gitlab.example/project/-/merge_requests/42"
+    assert item["updated_at"] == "2026-05-12T05:00:00Z"
+    assert item["group"] == "swqa/release"
+    assert item["reason"] == "authored_waiting_review"
+
+
+def test_gitlab_source_uses_direct_fetcher() -> None:
+    spec = next(s for s in daily_brief.SOURCES if s.id == "gitlab")
+
+    assert spec.fetcher is daily_brief.gitlab_fetcher
+
+
+def test_gitlab_prompt_covers_requested_review_groups() -> None:
+    assert "authored that are awaiting review" in daily_brief.GITLAB_PROMPT
+    assert "assigned as reviewer" in daily_brief.GITLAB_PROMPT
+    assert "merged in the last 3 days" in daily_brief.GITLAB_PROMPT
+    assert 'role="author"' in daily_brief.GITLAB_PROMPT
+    assert 'role="reviewer"' in daily_brief.GITLAB_PROMPT
+
+
+def test_brief_sources_exclude_confluence() -> None:
+    source_ids = {s.id for s in daily_brief.SOURCES}
+
+    assert source_ids == {"jira", "gitlab", "nvbugs", "slack", "outlook", "calendar", "github"}
+
+
+def test_outlook_prompt_requires_recent_list_before_empty() -> None:
+    prompt = daily_brief.OUTLOOK_PROMPT.format(
+        user="thaphan",
+        full_name="Thanh Phan",
+        period_days=1,
+        **daily_brief.period_window(1),
+    )
+
+    assert "Start with a plain recent message list" in prompt
+    assert "Never return an empty list until" in prompt
+    assert "Do NOT use Outlook search tools" in prompt
+    assert "filter argument omitted" in prompt
+    spec = next(s for s in daily_brief.SOURCES if s.id == "outlook")
+    assert spec.fetcher is daily_brief.outlook_fetcher
 
 
 def test_parse_calendar_preserves_meeting_context() -> None:
@@ -152,7 +250,7 @@ def test_resolve_cli_bin_finds_local_bin(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_build_connector_mirror_text_contains_source_links() -> None:
-    spec = daily_brief.SOURCES[3]
+    spec = next(s for s in daily_brief.SOURCES if s.id == "nvbugs")
     result = daily_brief.SubagentResult(
         spec=spec,
         items=[

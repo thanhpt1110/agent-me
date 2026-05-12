@@ -11,11 +11,10 @@ Architecture (2026-05-10 refactor):
 
     Python orchestrator
       ├── post root header DM ("📅 Daily Brief — running…")
-      └── asyncio.gather (8 subagents in parallel):
-            ├── jira       → codex exec (maas-jira)
-            ├── gitlab     → codex exec (maas-gitlab)
-            ├── confluence → codex exec (maas-confluence)
-            ├── nvbugs     → codex exec (maas-nvbugs)
+      └── asyncio.gather (7 subagents in parallel):
+            ├── jira       → direct MCP JSON-RPC (maas-jira)
+            ├── gitlab     → direct MCP JSON-RPC (maas-gitlab)
+            ├── nvbugs     → direct MCP JSON-RPC (maas-nvbugs)
             ├── slack      → codex exec (Slack app tools)
             ├── outlook    → codex exec (Outlook Email app tools)
             ├── calendar   → codex exec (Outlook Calendar app tools)
@@ -117,6 +116,14 @@ def resolve_cli_bin(env_var: str, name: str) -> str:
 
 
 CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
+JIRA_MCP_URL = os.environ.get(
+    "AGENT_ME_JIRA_MCP_URL",
+    "https://nvaihub.nvidia.com/maas/jira/mcp/",
+)
+GITLAB_MCP_URL = os.environ.get(
+    "AGENT_ME_GITLAB_MCP_URL",
+    "https://nvaihub.nvidia.com/maas/gitlab/mcp/",
+)
 NVBUGS_MCP_URL = os.environ.get(
     "AGENT_ME_NVBUGS_MCP_URL",
     "https://nvaihub.nvidia.com/maas/nvbugs/mcp/",
@@ -136,7 +143,7 @@ READONLY_MAAS_APPROVAL_CONFIGS = (
 
 @dataclass
 class BriefItem:
-    source: str        # "jira" | "gitlab" | "github" | "nvbugs" | "confluence" | "slack" | "outlook" | "calendar"
+    source: str        # "jira" | "gitlab" | "github" | "nvbugs" | "slack" | "outlook" | "calendar"
     icon: str
     item_id: str
     title: str
@@ -303,6 +310,53 @@ def parse_jira(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     return out
 
 
+def _jira_rows(payload: dict) -> list[dict]:
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("issues") or data.get("results") or data.get("items") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _jira_name(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("name", "displayName", "value", "key"):
+            if value.get(key):
+                return str(value[key])
+    if value:
+        return str(value)
+    return ""
+
+
+def _normalize_jira(issue: dict, reason: str) -> dict:
+    fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+    key = str(issue.get("key") or fields.get("key") or issue.get("id") or "")
+    project = fields.get("project") if isinstance(fields.get("project"), dict) else {}
+    group = str(
+        project.get("key") or (key.split("-")[0] if "-" in key else "uncategorized")
+    )
+    return {
+        "key": key,
+        "summary": fields.get("summary") or issue.get("summary") or "",
+        "status": _jira_name(fields.get("status") or issue.get("status")),
+        "priority": _jira_name(fields.get("priority") or issue.get("priority")),
+        "duedate": fields.get("duedate") or issue.get("duedate"),
+        "url": issue.get("url") or (
+            f"https://jirasw.nvidia.com/browse/{key}" if key else ""
+        ),
+        "updated": (
+            fields.get("updatedDate")
+            or fields.get("updated")
+            or issue.get("updatedDate")
+            or issue.get("updated")
+        ),
+        "group": group,
+        "reason": reason,
+    }
+
+
 def parse_gitlab(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     out: list[BriefItem] = []
     for m in data.get("mrs", []) or []:
@@ -334,19 +388,38 @@ def parse_gitlab(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     return out
 
 
-def parse_confluence(data: dict, _spec: SourceSpec) -> list[BriefItem]:
-    out: list[BriefItem] = []
-    for c in data.get("items", []) or []:
-        out.append(BriefItem(
-            source="confluence", icon="📚",
-            item_id="",
-            title=str(c.get("title", ""))[:200],
-            url=str(c.get("url", "")),
-            group=_g(c, "group", "uncategorized"),
-            reason=c.get("reason"),
-            last_activity=c.get("updated"),
-        ))
-    return out
+def _gitlab_mrs(payload: dict) -> list[dict]:
+    rows = payload.get("merge_requests") or payload.get("mrs") or payload.get("items") or []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _normalize_gitlab_mr(row: dict, reason: str) -> dict:
+    project = row.get("project") if isinstance(row.get("project"), dict) else {}
+    project_path = (
+        row.get("project_path")
+        or row.get("path_with_namespace")
+        or project.get("path_with_namespace")
+        or project.get("name_with_namespace")
+        or project.get("name")
+        or "uncategorized"
+    )
+    updated = (
+        row.get("merged_at")
+        or row.get("mergedAt")
+        or row.get("updated_at")
+        or row.get("updated")
+        or row.get("updatedAt")
+    )
+    return {
+        "iid": row.get("iid") or row.get("id") or "?",
+        "title": row.get("title") or "",
+        "state": row.get("state") or "opened",
+        "web_url": row.get("web_url") or row.get("url") or "",
+        "milestone_due_date": row.get("milestone_due_date") or row.get("due_date"),
+        "updated_at": updated,
+        "group": str(project_path),
+        "reason": reason,
+    }
 
 
 def parse_nvbugs(data: dict, _spec: SourceSpec) -> list[BriefItem]:
@@ -476,9 +549,9 @@ JIRA_PROMPT = """Return ONLY a JSON object: {{"items": [...]}}. No prose, no mar
 User shortname: `{user}`. Find every Jira issue where this user is involved
 AND statusCategory != Done.
 
-Use the registered Codex MCP server `maas-jira`; call
-`mcp__maas-jira__jira_search` directly. Do not use `tool_search` to discover
-Jira tools; the MCP server is already registered for this run.
+Use only the registered `maas-jira` Jira search capability. Do not call Jira
+write tools. Do not broaden into semantic/text search unless a project key is
+already known from the structured searches below.
 
 Run these searches separately, merge, and dedupe by key:
   1. assignee = currentUser() AND statusCategory != Done
@@ -510,15 +583,19 @@ Do not report errors as "nothing pending". JSON ONLY, no commentary."""
 
 GITLAB_PROMPT = """Return ONLY a JSON object: {{"mrs": [...], "issues": [...]}}. No prose, no fences.
 
-User: `{user}` (NVIDIA). Find GitLab MRs + issues where I'm involved AND state=opened.
+User: `{user}` (NVIDIA). Find GitLab MRs and code reviews in these groups:
+1. open MRs I authored that are awaiting review
+2. open MRs where I'm assigned as reviewer
+3. MRs involving me that merged in the last 3 days
 
-Use the registered Codex MCP server `maas-gitlab`. Tools to call:
+Use only the registered `maas-gitlab` read tools. Do not call GitLab write
+tools. The current MaaS GitLab MR tool accepts `scope="me"` for user-related
+merge requests.
 
-1. mcp__maas-gitlab__gitlab_list_merge_requests — call THREE TIMES, merge results
-   deduping by (project_id, iid):
-   - scope=assigned_to_me state=opened, max 25
-   - scope=created_by_me state=opened, max 25
-   - scope=review_requested state=opened, max 25 (skip if not supported)
+Use `gitlab_list_merge_requests` with `scope="me"`:
+  - `state="opened"`, `role="author"` for authored awaiting review
+  - `state="opened"`, `role="reviewer"` for review requests
+  - `state="merged"`, `role="author"|"reviewer"|"assignee"` for recently merged
 
 2. Issues are optional. Only call mcp__maas-gitlab__gitlab_list_issues if
    you already have a concrete `project_id` accepted by the tool schema. If
@@ -528,7 +605,8 @@ Use the registered Codex MCP server `maas-gitlab`. Tools to call:
 For each MR:
   {{"iid": ..., "title": "...", "state": "opened",
     "web_url": "...", "milestone_due_date": null, "updated_at": "...",
-    "group": "<project_path>", "reason": "assignee|author|reviewer"}}
+    "group": "<project_path>",
+    "reason": "authored_waiting_review|review_requested|recently_merged"}}
 
 For each issue:
   {{"iid": ..., "title": "...", "state": "opened", "web_url": "...",
@@ -537,24 +615,6 @@ For each issue:
 
 If a tool errors, include {{"error": "<exact tool error>", "mrs": [], "issues": []}}.
 Do not report errors as "nothing pending". JSON ONLY, no commentary."""
-
-
-CONFLUENCE_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
-
-User: `{user}` (NVIDIA). Find Confluence pages updated in the last
-{period_days} day(s) where I'm mentioned.
-
-Use the registered Codex MCP server `maas-confluence`; call its Confluence search tool.
-
-Try query: `"{user}" updated >= -{period_days}d` (or the closest equivalent
-the tool accepts), top 15.
-
-Each item:
-  {{"title": "...", "url": "...", "updated": "...",
-    "group": "<space-key>", "reason": "mentioned|updated|watched"}}
-
-If errors, return {{"error": "<exact tool error>", "items": []}}.
-Do not report errors as "nothing pending". JSON ONLY."""
 
 
 NVBUGS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
@@ -628,17 +688,32 @@ Do not report errors as "nothing pending". JSON ONLY."""
 OUTLOOK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 You are READ-ONLY. Do NOT call any tool that sends, replies, drafts,
-deletes, or modifies emails or calendar events. Use Codex Outlook Email
-app read tools directly: `microsoft outlook email_list_messages`,
-`microsoft outlook email_search_messages`, and fetch only if needed.
-Prefer simple search/list calls and filter the results yourself. Avoid complex
-OData `$filter` expressions with OR clauses; if a list/search call returns
-`ErrorInvalidUrlQueryFilter`, retry with a simpler query or a plain recent
-message list before reporting an error.
+deletes, or modifies emails or calendar events.
 
-User: `{user}@nvidia.com`. Find unread emails in the last {period_days}
-day(s) where I'm in to/cc OR sender expects a reply (not a noreply / list /
-automation address).
+Use only Codex Outlook Email read tools:
+  - `microsoft outlook email_list_messages`
+  - `microsoft outlook email_fetch_message` only if the list result lacks a
+    usable snippet/body preview
+
+Do NOT use Outlook search tools for this source. Do NOT pass any `filter`,
+`$filter`, OData expression, OR clause, receivedDateTime predicate,
+toRecipients predicate, ccRecipients predicate, or isRead predicate. The first
+data call MUST be a plain recent message list with `top=40`,
+`order_by="receivedDateTime desc"`, and the filter argument omitted. If the
+tool returns `ErrorInvalidUrlQueryFilter`, that attempt is invalid; retry with
+the same plain list call and no filter instead of returning the error.
+
+User: `{user}@nvidia.com`. Fetch recent inbox/mailbox messages first, then
+filter locally for the brief. Start with a plain recent message list sorted by
+received time desc (top 40).
+
+Primary target: messages received in the last {period_days} day(s) where I'm in
+to/cc OR sender expects a reply/action. Include read messages too if they are
+recent and actionable. For a daily brief, if the strict 1-day window has fewer
+than 3 useful items, expand to the most recent 3 days and return the latest
+direct/actionable messages so the source proves the connector is fetching data.
+Never return an empty list until you have successfully checked a recent message
+list.
 
 Each item:
   {{"subject": "...", "from": "<email or display name>",
@@ -646,7 +721,7 @@ Each item:
     "snippet": "<first 200 chars of body>",
     "url": "<deeplink or web_link if available>",
     "group": "<sender domain (e.g. nvidia.com) or 'external'>",
-    "reason": "to|cc|reply_expected"}}
+    "reason": "to|cc|reply_expected|action_required|recent_direct"}}
 
 Skip: noreply@*, do-not-reply@*, list@*, automated build/CI notifications,
 calendar invitations (those go in a separate calendar fetch later).
@@ -776,18 +851,7 @@ def _strip_to_json(text: str) -> dict:
     return json.loads(t)
 
 
-async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
-    """Generic fetcher for an MCP-backed SourceSpec.
-
-    Spawns one `codex exec` subprocess, rendering the prompt with
-    {user, period_days}, returning the parsed JSON.
-    """
-    prompt = spec.prompt_template.format(
-        user=USER,
-        full_name=USER_FULL_NAME,
-        period_days=period_days,
-        **period_window(period_days),
-    )
+async def _codex_fetch_prompt(spec: SourceSpec, prompt: str) -> dict:
     started = time.time()
     log.info("subagent_start", source=spec.id, backend="codex", hint=spec.allowed_tools)
     raw = await _run_codex(prompt, AGENT_TIMEOUT_S)
@@ -805,6 +869,302 @@ async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
                        len(data.get("mrs", []) or []) +
                        len(data.get("issues", []) or []))
     return data
+
+
+def _render_source_prompt(spec: SourceSpec, period_days: int) -> str:
+    return spec.prompt_template.format(
+        user=USER,
+        full_name=USER_FULL_NAME,
+        period_days=period_days,
+        **period_window(period_days),
+    )
+
+
+async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
+    """Generic fetcher for a Codex/app-backed SourceSpec."""
+    return await _codex_fetch_prompt(spec, _render_source_prompt(spec, period_days))
+
+
+async def outlook_fetcher(spec: SourceSpec, period_days: int) -> dict:
+    """Fetch Outlook with a list-only retry for invalid OData filter drift."""
+    prompt = _render_source_prompt(spec, period_days)
+    try:
+        return await _codex_fetch_prompt(spec, prompt)
+    except RuntimeError as exc:
+        msg = str(exc)
+        retryable = (
+            "ErrorInvalidUrlQueryFilter",
+            "INVALID_ARGUMENT",
+            "Transport send error",
+            "Unexpected content type",
+            "upstream connect error",
+            "connection timeout",
+        )
+        if not any(term in msg for term in retryable):
+            raise
+        log.warning("outlook_retry_list_only", err=msg[:300])
+        retry_prompt = (
+            "The previous Outlook attempt failed because it used an invalid "
+            "filter/OData query. Retry from scratch. Use only "
+            "`microsoft outlook email_list_messages` with `top=40`, "
+            '`order_by="receivedDateTime desc"`, and NO filter argument. '
+            "Do not call search tools. Do not return the previous error.\n\n"
+            + prompt
+        )
+        return await _codex_fetch_prompt(spec, retry_prompt)
+
+
+async def _jira_search(
+    client: httpx.AsyncClient,
+    token: str,
+    jql: str,
+    reason: str,
+) -> tuple[str, dict]:
+    res = await client.post(
+        JIRA_MCP_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": reason,
+            "method": "tools/call",
+            "params": {
+                "name": "jira_search",
+                "arguments": {
+                    "jql": jql,
+                    "top_k": 50,
+                    "fields": [
+                        "summary",
+                        "status",
+                        "priority",
+                        "duedate",
+                        "updated",
+                        "updatedDate",
+                        "project",
+                    ],
+                    "expand_comments": False,
+                    "expand_changelog": False,
+                    "full_text": False,
+                },
+            },
+        },
+        timeout=90.0,
+    )
+    if res.status_code == 401:
+        raise RuntimeError(
+            "Jira MCP auth token expired or invalid; run "
+            "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
+            "then retry."
+        )
+    res.raise_for_status()
+    rpc = res.json()
+    if "error" in rpc:
+        raise RuntimeError(str(rpc["error"])[:500])
+    content = ((rpc.get("result") or {}).get("content") or [{}])[0]
+    payload = json.loads(content.get("text") or "{}")
+    if not payload.get("success"):
+        raise RuntimeError(str(payload.get("error") or payload)[:500])
+    return reason, payload
+
+
+async def jira_fetcher(_spec: SourceSpec, _period_days: int) -> dict:
+    """Fetch Jira directly via MCP JSON-RPC to avoid Codex toolset drift."""
+    started = time.time()
+    token = (
+        codex_mcp_token_env().get("AGENT_ME_MCP_TOKEN_MAAS_JIRA")
+        or os.environ.get("AGENT_ME_MCP_TOKEN_MAAS_JIRA")
+    )
+    if not token:
+        raise RuntimeError("AGENT_ME_MCP_TOKEN_MAAS_JIRA is not available")
+
+    log.info("subagent_start", source="jira", backend="mcp-jsonrpc",
+             hint="maas-jira")
+    searches = [
+        (
+            "assignee",
+            "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+        ),
+        (
+            "assignee",
+            f'assignee = "{USER}" AND statusCategory != Done ORDER BY updated DESC',
+        ),
+        (
+            "reporter",
+            "reporter = currentUser() AND statusCategory != Done ORDER BY updated DESC",
+        ),
+        (
+            "reporter",
+            f'reporter = "{USER}" AND statusCategory != Done ORDER BY updated DESC',
+        ),
+        ("watcher", 'watcher = currentUser() AND statusCategory != Done ORDER BY updated DESC'),
+    ]
+    items_by_key: dict[str, dict] = {}
+    errors: list[str] = []
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            *(_jira_search(client, token, jql, reason) for reason, jql in searches),
+            return_exceptions=True,
+        )
+    for result in results:
+        if isinstance(result, Exception):
+            errors.append(str(result)[:200])
+            continue
+        reason, payload = result
+        for row in _jira_rows(payload):
+            item = _normalize_jira(row, reason)
+            key = str(item.get("key") or "")
+            if not key:
+                continue
+            if key in items_by_key:
+                existing = str(items_by_key[key].get("reason") or "")
+                if reason not in existing.split("|"):
+                    items_by_key[key]["reason"] = f"{existing}|{reason}" if existing else reason
+                continue
+            items_by_key[key] = item
+
+    if errors:
+        log.warning("jira_search_partial_errors", count=len(errors),
+                    first=errors[0])
+    if errors and not items_by_key:
+        raise RuntimeError("; ".join(errors)[:500])
+
+    items = list(items_by_key.values())
+    items.sort(key=lambda item: str(item.get("updated") or ""), reverse=True)
+    elapsed = int(time.time() - started)
+    log.info("subagent_done", source="jira", seconds=elapsed,
+             item_count=len(items))
+    return {"items": items}
+
+
+async def _gitlab_list_merge_requests(
+    client: httpx.AsyncClient,
+    token: str,
+    *,
+    reason: str,
+    role: str,
+    state: str,
+    updated_after: str | None = None,
+) -> tuple[str, dict]:
+    arguments: dict[str, str] = {
+        "scope": "me",
+        "state": state,
+        "role": role,
+    }
+    if updated_after:
+        arguments["updated_after"] = updated_after
+    res = await client.post(
+        GITLAB_MCP_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": role,
+            "method": "tools/call",
+            "params": {
+                "name": "gitlab_list_merge_requests",
+                "arguments": arguments,
+            },
+        },
+        timeout=90.0,
+    )
+    if res.status_code == 401:
+        raise RuntimeError(
+            "GitLab MCP auth token expired or invalid; run "
+            "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
+            "then retry."
+        )
+    res.raise_for_status()
+    rpc = res.json()
+    if "error" in rpc:
+        raise RuntimeError(str(rpc["error"])[:500])
+    result = rpc.get("result") or {}
+    if result.get("isError"):
+        text = ((result.get("content") or [{}])[0]).get("text") or result
+        raise RuntimeError(str(text)[:500])
+    content = (result.get("content") or [{}])[0]
+    payload = json.loads(content.get("text") or "{}")
+    if payload.get("error"):
+        raise RuntimeError(str(payload["error"])[:500])
+    return reason, payload
+
+
+async def gitlab_fetcher(_spec: SourceSpec, _period_days: int) -> dict:
+    """Fetch GitLab MRs directly via MCP JSON-RPC using the server's real schema."""
+    started = time.time()
+    token = (
+        codex_mcp_token_env().get("AGENT_ME_MCP_TOKEN_MAAS_GITLAB")
+        or os.environ.get("AGENT_ME_MCP_TOKEN_MAAS_GITLAB")
+    )
+    if not token:
+        raise RuntimeError("AGENT_ME_MCP_TOKEN_MAAS_GITLAB is not available")
+
+    log.info("subagent_start", source="gitlab", backend="mcp-jsonrpc",
+             hint="maas-gitlab")
+    mrs_by_key: dict[tuple[str, str], dict] = {}
+    errors: list[str] = []
+    cutoff = local_now() - timedelta(days=3)
+    updated_after = cutoff.astimezone(ZoneInfo("UTC")).isoformat(timespec="seconds")
+    searches = [
+        ("authored_waiting_review", "author", "opened", None),
+        ("review_requested", "reviewer", "opened", None),
+        ("recently_merged", "author", "merged", updated_after),
+        ("recently_merged", "reviewer", "merged", updated_after),
+        ("recently_merged", "assignee", "merged", updated_after),
+    ]
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            *(
+                _gitlab_list_merge_requests(
+                    client,
+                    token,
+                    reason=reason,
+                    role=role,
+                    state=state,
+                    updated_after=updated_after_value,
+                )
+                for reason, role, state, updated_after_value in searches
+            ),
+            return_exceptions=True,
+        )
+    for result in results:
+        if isinstance(result, Exception):
+            errors.append(str(result)[:200])
+            continue
+        reason, payload = result
+        for row in _gitlab_mrs(payload):
+            item = _normalize_gitlab_mr(row, reason)
+            if reason == "recently_merged":
+                merged_dt = parse_datetime(str(item.get("updated_at") or ""))
+                if not merged_dt or merged_dt < cutoff:
+                    continue
+            key = (str(item.get("group") or ""), str(item.get("iid") or ""))
+            if key in mrs_by_key:
+                existing = str(mrs_by_key[key].get("reason") or "")
+                if reason not in existing.split("|"):
+                    mrs_by_key[key]["reason"] = (
+                        f"{existing}|{reason}" if existing else reason
+                    )
+                continue
+            mrs_by_key[key] = item
+
+    if errors:
+        log.warning("gitlab_mr_partial_errors", count=len(errors),
+                    first=errors[0])
+    if errors and not mrs_by_key:
+        raise RuntimeError("; ".join(errors)[:500])
+
+    mrs = list(mrs_by_key.values())
+    mrs.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    elapsed = int(time.time() - started)
+    log.info("subagent_done", source="gitlab", seconds=elapsed,
+             item_count=len(mrs))
+    return {"mrs": mrs, "issues": []}
 
 
 async def _nvbugs_search_v2(client: httpx.AsyncClient, token: str, query: str) -> dict:
@@ -964,17 +1324,13 @@ def parse_github(data: dict, _spec: SourceSpec) -> list[BriefItem]:
 
 SOURCES: list[SourceSpec] = [
     SourceSpec(id="jira", label="Jira", icon="📋",
-               fetcher=codex_fetcher, parser=parse_jira,
+               fetcher=jira_fetcher, parser=parse_jira,
                allowed_tools="maas-jira",
                prompt_template=JIRA_PROMPT),
     SourceSpec(id="gitlab", label="GitLab", icon="🦊",
-               fetcher=codex_fetcher, parser=parse_gitlab,
+               fetcher=gitlab_fetcher, parser=parse_gitlab,
                allowed_tools="maas-gitlab",
                prompt_template=GITLAB_PROMPT),
-    SourceSpec(id="confluence", label="Confluence", icon="📚",
-               fetcher=codex_fetcher, parser=parse_confluence,
-               allowed_tools="maas-confluence",
-               prompt_template=CONFLUENCE_PROMPT),
     SourceSpec(id="nvbugs", label="NVBugs", icon="🐛",
                fetcher=nvbugs_fetcher, parser=parse_nvbugs,
                allowed_tools="maas-nvbugs",
@@ -984,7 +1340,7 @@ SOURCES: list[SourceSpec] = [
                allowed_tools="codex-slack-app",
                prompt_template=SLACK_PROMPT),
     SourceSpec(id="outlook", label="Outlook", icon="📧",
-               fetcher=codex_fetcher, parser=parse_outlook,
+               fetcher=outlook_fetcher, parser=parse_outlook,
                allowed_tools="codex-outlook-email-app",
                prompt_template=OUTLOOK_PROMPT),
     SourceSpec(id="calendar", label="Outlook Calendar", icon="📅",
@@ -1351,7 +1707,7 @@ async def main_async(
         root_text = (
             f"📅 *{preset['title']} — {local_today().isoformat()}*\n"
             f"🔄 _Fanning out {len(SOURCES)} subagents in parallel "
-            "(jira / gitlab / confluence / nvbugs / slack / outlook / calendar / github)…_\n"
+            "(jira / gitlab / nvbugs / slack / outlook / calendar / github)…_\n"
             "_Each platform will post as its own message._"
         )
         try:

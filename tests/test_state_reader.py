@@ -138,7 +138,7 @@ def test_all_snapshots_returns_all_sources(temp_state_dir: Path) -> None:
     from agent_me.dashboard.state_reader import SOURCES, StateReader
 
     snaps = StateReader.all_snapshots()
-    assert len(snaps) == len(SOURCES) == 8
+    assert len(snaps) == len(SOURCES) == 7
     assert {s.source for s in snaps} == {
-        "jira", "gitlab", "confluence", "nvbugs", "slack", "outlook", "calendar", "github"
+        "jira", "gitlab", "nvbugs", "slack", "outlook", "calendar", "github"
     }
