@@ -227,6 +227,10 @@ def test_brev_command_parsing(monkeypatch, tmp_path) -> None:
     app = importlib.import_module("agent_me.slack_bridge.app")
 
     assert app.parse_brev_plain_command("brev vrdc-maxine") == "vrdc-maxine"
+    assert app.parse_brev_plain_command("brev auth") == "auth"
+    assert app.is_brev_auth_args("auth")
+    assert app.is_brev_auth_args("browser auth")
+    assert app.is_brev_auth_text("/brev sso")
     assert app.parse_brev_plain_command("BREV vrdc.maxine_1") == "vrdc.maxine_1"
     assert app.parse_brev_plain_command("brevard vrdc-maxine") is None
     assert app.parse_brev_org_id("vrdc-maxine") == ("vrdc-maxine", None)
@@ -273,9 +277,47 @@ def test_brev_start_uses_playwright_session_prompt(monkeypatch, tmp_path) -> Non
     assert "Do NOT click the final submit button" in str(captured["system_prompt"])
     assert "BREV_FILLED org_id=vrdc-maxine" in str(captured["system_prompt"])
     assert "browser_navigate.approval_mode" in "\n".join(captured["extra_configs"])
+    assert "browser_take_screenshot.approval_mode" in "\n".join(captured["extra_configs"])
+    assert "browser_evaluate.approval_mode" in "\n".join(captured["extra_configs"])
     flow = asyncio.run(app.get_active_brev_flow("1700000000.000001"))
     assert flow is not None
     assert flow["org_id"] == "vrdc-maxine"
+
+
+def test_brev_auth_uses_persistent_profile_prompt(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    captured: dict[str, object] = {}
+
+    async def fake_spawn_codex(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = kwargs.get("system_prompt")
+        captured["extra_configs"] = kwargs.get("extra_configs")
+        return "Brev form is blocked by Microsoft/NVIDIA SSO.", None
+
+    monkeypatch.setattr(app, "spawn_codex", fake_spawn_codex)
+
+    import asyncio
+
+    text, blocks = asyncio.run(app.cmd_brev_auth(thread_ts="1700000000.000010"))
+
+    assert "Persistent browser profile" in str(captured["prompt"])
+    assert "playwright-profile" in str(captured["prompt"])
+    assert captured["system_prompt"] == app.BREV_AUTH_SYSTEM_PROMPT
+    assert "browser_take_screenshot.approval_mode" in "\n".join(captured["extra_configs"])
+    assert "browser_evaluate.approval_mode" in "\n".join(captured["extra_configs"])
+    assert "Không paste password/OTP vào Slack" in text
+    assert blocks
+    assert any(
+        element.get("action_id") == "menu_brev_auth"
+        for block in blocks if block.get("type") == "actions"
+        for element in block.get("elements", [])
+    )
 
 
 def test_brev_continue_filled_finishes_without_slack_notification(monkeypatch, tmp_path) -> None:

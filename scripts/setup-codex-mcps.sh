@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+PLAYWRIGHT_PROFILE_DIR="${AGENT_ME_PLAYWRIGHT_PROFILE_DIR:-${AGENT_ME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-me}/playwright-profile}"
+PLAYWRIGHT_OUTPUT_DIR="${AGENT_ME_PLAYWRIGHT_OUTPUT_DIR:-${AGENT_ME_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-me}/playwright-output}"
+mkdir -p "$PLAYWRIGHT_PROFILE_DIR" "$PLAYWRIGHT_OUTPUT_DIR"
+
 SERVERS=(
     "maas-confluence|http|https://nvaihub.nvidia.com/maas/confluence/mcp/"
     "maas-gitlab|http|https://nvaihub.nvidia.com/maas/gitlab/mcp/"
@@ -29,7 +33,7 @@ SERVERS=(
     "maas-pagerduty|http|https://nvaihub.nvidia.com/maas/pagerduty/mcp/"
     "maas-sharepoint|http|https://nvaihub.nvidia.com/maas/sharepoint/mcp/"
     "maas-slack|http|https://maas.prd.astra.nvidia.com/maas/slack/mcp"
-    "maas-playwright|stdio|npx -y @playwright/mcp@latest"
+    "maas-playwright|stdio|npx -y @playwright/mcp@latest --browser chrome --user-data-dir ${PLAYWRIGHT_PROFILE_DIR} --output-dir ${PLAYWRIGHT_OUTPUT_DIR} --save-session"
 )
 
 if ! command -v codex >/dev/null 2>&1; then
@@ -68,9 +72,28 @@ for entry in "${SERVERS[@]}"; do
                 exit 3
             fi
         else
-            printf "✓ %-26s already registered\n" "$name"
-            skipped=$((skipped + 1))
-            continue
+            config_json="$(codex mcp get "$name" --json 2>/dev/null || true)"
+            if [[ "$name" == "maas-playwright" ]] &&
+               printf '%s\n' "$config_json" | grep -Fq -- "$PLAYWRIGHT_PROFILE_DIR" &&
+               printf '%s\n' "$config_json" | grep -Fq -- "$PLAYWRIGHT_OUTPUT_DIR"; then
+                printf "✓ %-26s already registered (persistent profile)\n" "$name"
+                skipped=$((skipped + 1))
+                continue
+            fi
+            if [[ "$name" == "maas-playwright" ]]; then
+                if codex mcp remove "$name" >/dev/null; then
+                    printf "↻ %-26s updating persistent browser profile\n" "$name"
+                    updated=$((updated + 1))
+                else
+                    printf "✗ %-26s FAILED to remove old registration\n" "$name" >&2
+                    exit 3
+                fi
+                # fall through to registration below
+            else
+                printf "✓ %-26s already registered\n" "$name"
+                skipped=$((skipped + 1))
+                continue
+            fi
         fi
     fi
 

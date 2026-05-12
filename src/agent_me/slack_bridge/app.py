@@ -589,13 +589,18 @@ def build_system_prompt() -> str:
 
 BREV_FORM_URL = "https://nvidia.tfaforms.net/32"
 BREV_NOTIFY_EMAIL = "thaphan@nvidia.com"
+BREV_PLAYWRIGHT_PROFILE_DIR = STATE_DIR / "playwright-profile"
+BREV_PLAYWRIGHT_OUTPUT_DIR = STATE_DIR / "playwright-output"
 BREV_ORG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{1,80}$")
 BREV_FILLED_RE = re.compile(r"(?im)^\s*BREV_FILLED\b.*$")
 BREV_SUBMITTED_RE = re.compile(r"(?im)^\s*BREV_SUBMITTED\b.*$")
+BREV_AUTH_ALIASES = {"auth", "reauth", "login", "sso", "browser-auth", "browser auth"}
 BREV_PLAYWRIGHT_APPROVAL_CONFIGS = (
     'mcp_servers.maas-playwright.tools.browser_navigate.approval_mode="approve"',
     'mcp_servers.maas-playwright.tools.browser_snapshot.approval_mode="approve"',
     'mcp_servers.maas-playwright.tools.browser_tabs.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_take_screenshot.approval_mode="approve"',
+    'mcp_servers.maas-playwright.tools.browser_evaluate.approval_mode="approve"',
     'mcp_servers.maas-playwright.tools.browser_click.approval_mode="approve"',
     'mcp_servers.maas-playwright.tools.browser_type.approval_mode="approve"',
     'mcp_servers.maas-playwright.tools.browser_fill_form.approval_mode="approve"',
@@ -607,6 +612,8 @@ BREV_PLAYWRIGHT_APPROVAL_CONFIGS = (
     'mcp_servers.maas-playwright.tools.browser_handle_dialog.approval_mode="approve"',
     'mcp_servers.maas-playwright.tools.browser_resize.approval_mode="approve"',
 )
+BREV_PLAYWRIGHT_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+BREV_PLAYWRIGHT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 BREV_SYSTEM_PROMPT_TEMPLATE = """\
 You are agent-me running the operator's Brev credits request flow on Codex.
@@ -653,7 +660,8 @@ Hard constraints:
   options and ask the user to choose. Do not choose defaults unless the page
   has already selected them.
 - If Microsoft/NVIDIA SSO or another login wall appears, stop and say that the
-  browser session needs to be authenticated. Do not ask for or collect passwords.
+  browser session needs to be authenticated with `brev auth` or the Brev auth
+  helper. Do not ask for or collect passwords.
 - If a final submit button is visible, do not click it. Instead, take a
   screenshot of the filled state and return it for review.
 - If the page blocks you, times out, or requires unavailable auth, report the
@@ -684,6 +692,22 @@ def build_brev_system_prompt(org_id: str, thread_ts: str) -> str:
         thread_ts=thread_ts,
         form_url=BREV_FORM_URL,
     )
+
+
+BREV_AUTH_SYSTEM_PROMPT = """\
+You are agent-me checking the operator's Brev browser SSO state.
+
+Use only the registered `maas-playwright` MCP browser tools. Do not use shell
+commands, local browser CLIs, or Slack tools.
+
+Hard constraints:
+- Do not ask for, type, collect, or store usernames, passwords, OTPs, MFA
+  codes, passkeys, or recovery codes.
+- Do not submit any Brev credits request.
+- If Microsoft/NVIDIA SSO or another login wall is visible, stop there and
+  report that the persistent browser profile needs manual authentication.
+- If the Brev form is visible, take a screenshot and report that auth is ready.
+"""
 
 # Legacy Claude approval-gate toggle. Codex is now the default chat
 # orchestrator, so this path only matters if a future operator explicitly
@@ -1126,6 +1150,7 @@ HELP_TEXT = "\n".join((
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
     "• `brev <org_id>` / `/brev <org_id>` — fill the Brev credits form in test mode and return a screenshot",
+    "• `brev auth` / `/brev auth` — check or refresh the persistent Brev browser SSO profile",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
@@ -1463,10 +1488,23 @@ Return a concise Vietnamese status:
     return answer.strip() or "_(no output)_"
 
 
+def is_brev_auth_args(args_text: str | None) -> bool:
+    normalized = re.sub(r"\s+", " ", (args_text or "").strip().lower())
+    return normalized in BREV_AUTH_ALIASES
+
+
+def is_brev_auth_text(text: str | None) -> bool:
+    m = re.match(r"^\s*/?brev(?:\s+(.+))?\s*$", text or "", re.IGNORECASE)
+    return bool(m and is_brev_auth_args(m.group(1)))
+
+
 def parse_brev_org_id(args_text: str | None) -> tuple[str | None, str | None]:
     raw = (args_text or "").strip()
     if not raw:
-        return None, "Usage: `/brev <org_id>` hoặc `brev <org_id>`, ví dụ `brev vrdc-maxine`."
+        return None, (
+            "Usage: `/brev <org_id>` hoặc `brev <org_id>`, ví dụ "
+            "`brev vrdc-maxine`. Dùng `brev auth` để check Brev browser SSO."
+        )
     if raw.lower() in {"cancel", "stop", "huy", "hủy", "huỷ"}:
         return "cancel", None
     parts = raw.split()
@@ -1744,6 +1782,70 @@ async def cmd_reauth() -> str:
     )
 
 
+def _brev_auth_blocks(text: str) -> list[dict]:
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}},
+        {"type": "actions", "elements": [
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔐 Check Brev auth"},
+             "action_id": "menu_brev_auth", "style": "primary"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔄 Check MCP status"},
+             "action_id": "menu_mcp_status"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "❓ Help"},
+             "action_id": "menu_help"},
+        ]},
+    ]
+
+
+async def cmd_brev_auth(
+    *,
+    thread_ts: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+) -> tuple[str, list[dict]]:
+    """Check the persistent Brev browser profile without collecting secrets."""
+    BREV_PLAYWRIGHT_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    BREV_PLAYWRIGHT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    prompt = f"""Check Brev browser authentication state.
+
+Form URL: {BREV_FORM_URL}
+Persistent browser profile on this host:
+{BREV_PLAYWRIGHT_PROFILE_DIR}
+Playwright output directory:
+{BREV_PLAYWRIGHT_OUTPUT_DIR}
+
+Navigate to the form with `maas-playwright`, wait for the first stable page,
+and inspect whether the Brev form is visible or the browser is blocked by
+Microsoft/NVIDIA SSO. Do not enter credentials, MFA, passwords, or submit any
+form.
+
+If the Brev form is visible, take a screenshot named
+`brev-auth-ok-{thread_ts or "manual"}.png`.
+If a login wall is visible, take a screenshot named
+`brev-auth-needed-{thread_ts or "manual"}.png`.
+
+Return a concise Vietnamese status. Mention that Brev web SSO has no localhost
+callback issue here; the session is stored in the host profile above.
+"""
+    answer, _sid = await spawn_codex(
+        prompt,
+        progress_cb=progress_cb,
+        thread_ts=thread_ts,
+        system_prompt=BREV_AUTH_SYSTEM_PROMPT,
+        extra_configs=BREV_PLAYWRIGHT_APPROVAL_CONFIGS,
+    )
+    body = (
+        (answer.strip() or "_(no output)_")
+        + "\n\n"
+        "Profile host đang dùng: "
+        f"`{BREV_PLAYWRIGHT_PROFILE_DIR}`\n"
+        "Nếu vẫn thấy SSO, hãy login bằng browser profile này trên host rồi bấm "
+        "*Check Brev auth* lại. Không paste password/OTP vào Slack."
+    )
+    return body, _brev_auth_blocks(body)
+
+
 SlashResult = tuple[str, list[dict] | None]
 
 
@@ -1769,6 +1871,9 @@ def _help_blocks() -> list[dict]:
             {"type": "button",
              "text": {"type": "plain_text", "text": "🔧 Reauth MCPs"},
              "action_id": "brief_reauth"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔐 Brev auth"},
+             "action_id": "menu_brev_auth"},
         ]},
     ]
 
@@ -1793,6 +1898,8 @@ async def handle_slash(
     if cmd == "/brief":
         return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
     if cmd == "/brev":
+        if is_brev_auth_args(args_text):
+            return await cmd_brev_auth(thread_ts=thread_ts, progress_cb=progress_cb)
         return await cmd_brev_start(
             args_text,
             channel=channel,
@@ -1962,6 +2069,12 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             await update_progress(client, channel, placeholder_ts,
                                   f"⚠️ `{cmd}` failed: `{exc}`")
 
+    # Allow Brev browser auth checks even inside an active Brev form thread.
+    plain_key = cleaned.strip().lower()
+    if is_brev_auth_text(cleaned):
+        await _dispatch("/brev", "auth", "plain")
+        return
+
     active_brev = await get_active_brev_flow(thread_ts)
     if active_brev:
         await upsert_thread(thread_ts, channel, user_id)
@@ -1990,7 +2103,6 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         return
 
     # Plain-text command intercept (exact match): "brief", "brief week", "mcp", etc.
-    plain_key = cleaned.strip().lower()
     brev_args = parse_brev_plain_command(cleaned)
     if brev_args is not None:
         await _dispatch("/brev", brev_args, "plain")
@@ -2266,20 +2378,33 @@ async def slash_brev(ack, respond, command, client):
         await respond(response_type="ephemeral", text="⚠️ `/brev` missing Slack channel.")
         return
     try:
+        intro = (
+            "🔐 Checking Brev browser auth profile…"
+            if is_brev_auth_args(args_text)
+            else "🔄 Starting Brev credits fill/screenshot flow… reply in this thread with each requested value."
+        )
         root = await client.chat_postMessage(
             channel=channel,
-            text="🔄 Starting Brev credits fill/screenshot flow… reply in this thread with each requested value.",
+            text=intro,
         )
         thread_ts = root["ts"]
         progress_cb = make_slack_progress_callback(client, channel, thread_ts)
-        result = await cmd_brev_start(
-            args_text,
-            channel=channel,
-            thread_ts=thread_ts,
-            user_id=user_id,
-            progress_cb=progress_cb,
-        )
-        await update_progress(client, channel, thread_ts, result)
+        if is_brev_auth_args(args_text):
+            result = await cmd_brev_auth(thread_ts=thread_ts, progress_cb=progress_cb)
+            text, blocks = _split_result(result)
+            await client.chat_update(
+                channel=channel, ts=thread_ts,
+                text=text or "(see blocks)", blocks=blocks or [],
+            )
+        else:
+            result = await cmd_brev_start(
+                args_text,
+                channel=channel,
+                thread_ts=thread_ts,
+                user_id=user_id,
+                progress_cb=progress_cb,
+            )
+            await update_progress(client, channel, thread_ts, result)
     except Exception as exc:
         log.error("native_slash_failed", cmd="/brev", err=str(exc))
         await respond(response_type="ephemeral", text=f"⚠️ `/brev` failed: `{exc}`")
@@ -2412,6 +2537,19 @@ async def on_menu_mcp_status(ack, body, client):
     await _reply_in_thread(client, body, body_text)
 
 
+@app.action("menu_brev_auth")
+async def on_menu_brev_auth(ack, body, client):
+    await ack()
+    log.info("button_menu_brev_auth", user=body.get("user", {}).get("id"))
+    _channel, thread_ts = _button_thread_context(body)
+    try:
+        result = await cmd_brev_auth(thread_ts=thread_ts)
+        text, blocks = _split_result(result)
+    except Exception as exc:
+        text, blocks = f"⚠️ Brev auth check failed: `{str(exc)[:600]}`", None
+    await _reply_in_thread(client, body, text, blocks=blocks)
+
+
 @app.action("menu_help")
 async def on_menu_help(ack, body, client):
     await ack()
@@ -2530,6 +2668,9 @@ def _morning_menu_blocks(intro_text: str) -> list[dict]:
             {"type": "button",
              "text": {"type": "plain_text", "text": "🔄 Verify MCPs"},
              "action_id": "menu_mcp_status"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "🔐 Brev auth"},
+             "action_id": "menu_brev_auth"},
             {"type": "button",
              "text": {"type": "plain_text", "text": "❓ Help"},
              "action_id": "menu_help"},

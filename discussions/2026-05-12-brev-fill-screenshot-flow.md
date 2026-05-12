@@ -17,12 +17,20 @@ before a real form fill can complete.
 Keep `/brev <org_id>` in a test stage for now:
 
 - Use a dedicated Codex session with `maas-playwright`.
-- Pass Playwright tool approval configs into `codex exec` for the Brev flow.
+- Pass Playwright tool approval configs into `codex exec` for the Brev flow,
+  including screenshot capture.
+- Register `maas-playwright` with a persistent host Chrome profile at
+  `~/.local/state/agent-me/playwright-profile` and output directory
+  `~/.local/state/agent-me/playwright-output`.
 - Fill only reference/sample values from the local `brev/` screenshots plus the
   supplied org id.
 - Capture and return a screenshot of the filled state.
 - Do not click the final submit button.
 - Do not send the post-submit Slack notification.
+- Provide `brev auth` plus a Slack **Brev auth** button to re-check the same
+  persistent browser profile. Manual Microsoft/NVIDIA SSO login must happen in
+  that host browser profile, never by pasting passwords or MFA codes into
+  Slack/Codex.
 
 The submit path remains in code behind the existing `BREV_SUBMITTED` marker for
 a later prompt revision, but the active Brev prompt now emits `BREV_FILLED`
