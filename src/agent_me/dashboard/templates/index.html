@@ -12,6 +12,10 @@
     </p>
   </div>
   <div class="flex items-center gap-2">
+    <a href="/auto-sfa"
+       class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 text-white font-semibold">
+      Auto SFA
+    </a>
     <select x-model="period"
             class="text-sm bg-ink-800 border border-ink-700 rounded px-2 py-1.5 text-slate-200">
       <option value="day">Day</option>
@@ -24,6 +28,23 @@
       <span x-show="busy" x-cloak x-text="`${doneCount}/${totalCount} sources…`"></span>
     </button>
   </div>
+</section>
+
+<section class="mb-6">
+  <a href="/auto-sfa"
+     class="block rounded-lg border border-accent-600/50 bg-ink-900 p-4 hover:border-accent-400 transition">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div>
+        <h2 class="text-lg font-semibold text-slate-100">Auto SFA</h2>
+        <p class="mt-1 text-sm text-slate-400">
+          Update magic-auto config, run DevTest SFA, and watch live terminal progress.
+        </p>
+      </div>
+      <span class="inline-flex w-fit items-center rounded bg-accent-600 px-3 py-1.5 text-sm font-semibold text-white">
+        Auto SFA
+      </span>
+    </div>
+  </a>
 </section>
 
 <section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6"

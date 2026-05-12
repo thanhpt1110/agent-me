@@ -46,6 +46,8 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "agent-me" in body
     assert "agent-me-avatar.svg" in body
     assert "Overview" in body
+    assert 'href="/auto-sfa"' in body
+    assert "Auto SFA" in body
     # All brief sources should appear in the nav at minimum
     for label in ("Jira", "GitLab", "NVBugs",
                   "Slack", "Outlook", "Outlook Calendar", "GitHub"):
