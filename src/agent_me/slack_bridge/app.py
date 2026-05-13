@@ -1496,7 +1496,7 @@ AUTO_SFA_LOG_FLUSH_INTERVAL_S = 2.0
 AUTO_SFA_SLACK_TASKS: set[asyncio.Task[None]] = set()
 
 AUTO_SFA_INPUT_TEMPLATE = "\n".join((
-    "username_email: thaphan@nvidia.com",
+    "username: thaphan",
     "destination_folder_id: 1138081",
     "url_path: https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
     "start: 2026-04-16",
@@ -1507,9 +1507,9 @@ AUTO_SFA_HELP_TEXT = "\n".join((
     "*Auto SFA* — mình sẽ chuẩn bị config và chạy SFA giúp bạn.",
     "",
     "Mình cần 5 thông tin. Các field dùng chung sẽ được tự map vào config `magic-auto`:",
-    "• *username_email* — ví dụ `thaphan@nvidia.com`; mình sẽ lấy `thaphan` để truyền vào `--user-login`.",
+    "• *username* — NVIDIA account, ví dụ `thaphan`; nếu bạn gửi email thì mình lấy phần trước `@`.",
     "• *destination_folder_id* — DevTest release folder id, ví dụ folder week `05-2026/Week3-4`.",
-    "• *url_path* — link Merge Request / MR dùng chung cho log, source code, và code review.",
+    "• *url_path* — link dùng chung cho log, source code, và code review.",
     "• *start* và *end* — ngày theo format `yyyy-MM-dd`.",
     "",
     "Ví dụ nhanh:",

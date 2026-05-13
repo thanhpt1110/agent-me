@@ -215,7 +215,7 @@ def test_auto_sfa_validation_rejects_display_name_login() -> None:
     with pytest.raises(AutoSFAValidationError) as exc:
         build_auto_sfa_request(_full_values(username_email="Thanh Phan"))
 
-    assert "username_email must be an email like thaphan@nvidia.com or a short login" in exc.value.errors
+    assert "username must be an NVIDIA account like thaphan" in exc.value.errors
 
 
 def test_auto_sfa_missing_fields_requires_compact_fields() -> None:

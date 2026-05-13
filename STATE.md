@@ -105,10 +105,10 @@ approval gate.
   hallucinated `user cancelled MCP tool call` outcomes.
 - [x] **Auto SFA (2026-05-12; refreshed 2026-05-13)** — Slack `/help` now includes an
   **Auto SFA** button and `auto sfa` plain-text shortcut. The Slack flow
-  collects five required fields in-thread: `username_email`,
+  collects five required fields in-thread: `username`,
   `destination_folder_id`, `url_path`, `start`, and `end`. The runner maps
-  `thaphan@nvidia.com` to `--user-login thaphan`, treats `url_path` as the
-  GitLab Merge Request / MR link for log/source/review fields, maps `start`
+  the NVIDIA account to `--user-login`, treats `url_path` as the shared
+  log/source/review URL, maps `start`
   and `end` across the required Dev/QA date fields, preserves
   `source_folder_id` from the existing `magic-auto` config, updates
   `magic-auto/configs.json`, then runs
@@ -117,6 +117,10 @@ approval gate.
   lines into the same thread. Dashboard route `/auto-sfa` provides the same
   compact form and an SSE-backed terminal log panel. Advisory locking
   serializes concurrent Slack/dashboard runs against the shared config.
+- [x] **Dashboard operator action guard (2026-05-13)** — public team dashboard
+  viewers can browse read surfaces, but `Refresh all` and `Refresh MCP auth`
+  now open an operator-check modal and the corresponding POST endpoints require
+  the case-sensitive `X-Agent-Me-Action-Code` passcode header before running.
 - [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
   vector source is `assets/agent-me-avatar.svg`; the visual is a
   text-free NVIDIA-green autonomous robot with circuit/web3 styling and

@@ -25,7 +25,7 @@ AUTO_SFA_FIELD_ORDER = (
 )
 
 AUTO_SFA_FIELD_LABELS = {
-    "username_email": "username email",
+    "username_email": "username",
     "user_login": "user_login",
     "devtest_project_id": "devtest_project_id",
     "source_folder_id": "source_folder_id",
@@ -418,7 +418,7 @@ def parse_auto_sfa_message(
     """Parse Slack/chat input as keyed fields or ordered values.
 
     Ordered fallback maps non-empty lines to the compact Slack/dashboard
-    fields: username email, destination folder, URL path, start, and end.
+    fields: username, destination folder, URL path, start, and end.
     """
     values = dict(existing or {})
     body = _clean_auto_sfa_body(text)
@@ -474,13 +474,13 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
 
     username_email = str(values.get("username_email") or "").strip()
     if not username_email:
-        errors.append("username_email is required")
+        errors.append("username is required")
 
     user_login = str(values.get("user_login") or "").strip()
     if not user_login:
-        errors.append("username_email must include a DevTest login or email local part")
+        errors.append("username must include a DevTest login or email local part")
     elif not re.match(r"^[A-Za-z0-9._-]+$", user_login):
-        errors.append("username_email must be an email like thaphan@nvidia.com or a short login")
+        errors.append("username must be an NVIDIA account like thaphan")
 
     project_raw = str(values.get("devtest_project_id") or "").strip()
     try:

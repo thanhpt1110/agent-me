@@ -87,11 +87,22 @@ STATIC_DIR = PKG_DIR / "static"
 START_TS = time.time()
 RUNNER = BriefRunner()
 AUTO_SFA_RUNNER = AutoSFARunner()
+OPERATOR_ACTION_CODE_HEADER = "x-agent-me-action-code"
 
 # Cached MCP probe — `codex mcp list` takes ~1s and we don't want
 # every page hit to trigger one.
 _MCP_CACHE: dict[str, Any] = {"servers": [], "checked_at": 0}
 _MCP_CACHE_TTL_S = 30
+
+
+def _operator_action_code() -> str:
+    return os.environ.get("DASHBOARD_OPERATOR_ACTION_CODE", "")
+
+
+def _operator_action_denied(request: Request) -> JSONResponse | None:
+    if request.headers.get(OPERATOR_ACTION_CODE_HEADER) == _operator_action_code():
+        return None
+    return JSONResponse({"error": "operator passcode required"}, status_code=403)
 
 
 # ── Template helpers ─────────────────────────────────────────────────────
@@ -361,6 +372,9 @@ async def api_refresh_all(request: Request):
     existing job. Returns the list of job descriptors so the browser
     can subscribe to each one.
     """
+    if denied := _operator_action_denied(request):
+        return denied
+
     period = request.query_params.get("period", "day")
     period_days = {"day": 1, "week": 7, "month": 30}.get(period, 1)
     jobs: list[dict[str, Any]] = []
@@ -389,8 +403,11 @@ async def api_mcp_refresh(_request: Request):
     })
 
 
-async def api_mcp_auth_refresh(_request: Request):
+async def api_mcp_auth_refresh(request: Request):
     """Refresh MaaS OAuth tokens, rewrite Codex env exports, then probe MCPs."""
+    if denied := _operator_action_denied(request):
+        return denied
+
     report = await asyncio.to_thread(partial(refresh_mcp_tokens, force=True))
     env_count = await asyncio.to_thread(
         partial(refresh_codex_mcp_env_file, refresh_tokens=False)
@@ -436,10 +453,14 @@ async def api_auto_sfa_run(request: Request):
         return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
 
     values = dict(payload)
+    if "destination_folder_id" in payload and "devtest_folder_id" not in values:
+        values["devtest_folder_id"] = payload.get("destination_folder_id")
     if "start" in payload and "start_date" not in values:
         values["start_date"] = payload.get("start")
     if "finish" in payload and "finish_date" not in values:
         values["finish_date"] = payload.get("finish")
+    if "end" in payload and "finish_date" not in values:
+        values["finish_date"] = payload.get("end")
     try:
         sfa_request = build_auto_sfa_request(values)
     except AutoSFAValidationError as exc:

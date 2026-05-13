@@ -15,8 +15,9 @@ from starlette.testclient import TestClient
 
 
 @pytest.fixture
-def client(temp_state_dir: Path, with_token: str) -> TestClient:
+def client(temp_state_dir: Path, with_token: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Reset the cached MCP probe + return a TestClient bound to the live app."""
+    monkeypatch.setenv("DASHBOARD_OPERATOR_ACTION_CODE", "test-operator-code")
     from agent_me.dashboard import app as app_module
     app_module._MCP_CACHE["servers"] = []
     app_module._MCP_CACHE["checked_at"] = 0
@@ -25,6 +26,10 @@ def client(temp_state_dir: Path, with_token: str) -> TestClient:
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _operator_auth(token: str) -> dict[str, str]:
+    return {**_auth(token), "X-Agent-Me-Action-Code": "test-operator-code"}
 
 
 def test_healthz_unauth_ok(temp_state_dir: Path) -> None:
@@ -48,6 +53,7 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "agent-me-avatar.svg" in body
     assert "Overview" in body
     assert 'href="/auto-sfa"' in body
+    assert "Hey hey hey, this button is for Thanh Phan only :)" in body
     assert "Auto SFA" in body
     assert "Operator actions" in body
     assert "Refresh MCP auth" in body
@@ -118,9 +124,11 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     r = client.get("/auto-sfa", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Auto SFA" in r.text
-    assert "username email" in r.text
+    assert "username (NVIDIA account)" in r.text
+    assert "placeholder=\"thaphan\"" in r.text
     assert "destination_folder_id" in r.text
     assert "05-2026/Week3-4" in r.text
+    assert "Merge Request / MR link" not in r.text
     assert "required templates already exist in SFA" in r.text
     assert "dashboard-date-input" in r.text
     assert "dashboard-date-field" in r.text
@@ -185,7 +193,7 @@ def test_api_mcp_auth_refresh_returns_report(client: TestClient, monkeypatch,
     monkeypatch.setattr(app_module, "refresh_codex_mcp_env_file", fake_refresh_env)
     monkeypatch.setattr(app_module, "check_mcp_health", fake_check_mcp_health)
 
-    r = client.post("/api/mcp/auth-refresh", headers=_auth(with_token))
+    r = client.post("/api/mcp/auth-refresh", headers=_operator_auth(with_token))
 
     assert r.status_code == 200
     body = r.json()
@@ -243,7 +251,7 @@ def test_refresh_all_returns_all_jobs(client: TestClient, monkeypatch,
     monkeypatch.setattr(app_module.RUNNER.__class__, "start", fake_start)
     # active_job_for stays default (returns None) so nothing coalesces.
 
-    r = client.post("/api/refresh/_all", headers=_auth(with_token))
+    r = client.post("/api/refresh/_all", headers=_operator_auth(with_token))
     assert r.status_code == 202
     body = r.json()
     assert len(body["jobs"]) == 7
@@ -278,7 +286,7 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     r = client.post(
         "/api/auto-sfa/run",
         json={
-            "username_email": "thaphan@nvidia.com",
+            "username": "thaphan",
             "devtest_folder_id": "1155188",
             "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
             "start_date": "2026-04-16",
@@ -292,6 +300,19 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     assert body["status"] == "pending"
     assert captured["request"].user_login == "thaphan"
     assert captured["request"].devtest_folder_id == 1155188
+
+
+def test_operator_action_endpoints_require_passcode(client: TestClient,
+                                                    with_token: str) -> None:
+    r = client.post("/api/refresh/_all", headers=_auth(with_token))
+    assert r.status_code == 403
+    assert r.json()["error"] == "operator passcode required"
+
+    r = client.post("/api/mcp/auth-refresh", headers={
+        **_auth(with_token),
+        "X-Agent-Me-Action-Code": "pumpk!n",
+    })
+    assert r.status_code == 403
 
 
 def test_api_auto_sfa_run_rejects_bad_input(client: TestClient,

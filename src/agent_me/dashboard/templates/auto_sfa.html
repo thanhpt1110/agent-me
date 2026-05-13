@@ -17,10 +17,10 @@
   <form @submit.prevent="run()"
         class="rounded-lg border border-ink-700 bg-ink-900 p-4 space-y-4">
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-username-email">username email</label>
-      <input id="sfa-username-email" x-model="form.username_email" type="email" required
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-username">username (NVIDIA account)</label>
+      <input id="sfa-username" x-model="form.username_email" type="text" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-             placeholder="thaphan@nvidia.com" />
+             placeholder="thaphan" />
     </div>
 
     <div>
@@ -34,7 +34,7 @@
     </div>
 
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-url">URL_PATH · Merge Request / MR link</label>
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-url">URL_PATH</label>
       <input id="sfa-url" x-model="form.url_path" type="url" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
              placeholder="https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123" />

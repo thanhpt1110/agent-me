@@ -18,7 +18,7 @@
       <option value="week">Week</option>
       <option value="month">Month</option>
     </select>
-    <button @click="refreshAll()" :disabled="busy"
+    <button @click="requestOperatorAction('refresh_all')" :disabled="busy"
             class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed text-white">
       <span x-show="!busy">⟲ Refresh all</span>
       <span x-show="busy" x-cloak x-text="`${doneCount}/${totalCount} sources…`"></span>
@@ -62,7 +62,7 @@
         </p>
       </div>
       <div class="space-y-3">
-        <button @click="authRefresh()" :disabled="authBusy"
+        <button @click="requestOperatorAction('mcp_auth')" :disabled="authBusy"
                 class="inline-flex w-fit items-center rounded bg-accent-600 px-4 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed">
           <span x-show="!authBusy">Refresh MCP auth</span>
           <span x-show="authBusy" x-cloak>Refreshing…</span>
@@ -222,6 +222,38 @@
   </div>
 </section>
 
+<div x-show="operatorGate.open" x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+  <form @submit.prevent="submitOperatorAction()"
+        class="w-full max-w-md rounded-lg border border-ink-700 bg-ink-900 p-5 shadow-2xl">
+    <h2 class="text-lg font-semibold text-slate-100">Operator check</h2>
+    <p class="mt-2 text-sm text-slate-300">
+      Hey hey hey, this button is for Thanh Phan only :)
+    </p>
+    <label class="mt-4 block text-xs uppercase tracking-wide text-slate-500" for="operator-passcode">
+      Passcode
+    </label>
+    <input id="operator-passcode" x-model="operatorGate.code" type="password" autocomplete="off"
+           class="mt-1 w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+           autofocus />
+    <template x-if="operatorGate.error">
+      <div class="mt-3 rounded border border-rose-800 bg-rose-950/30 px-3 py-2 text-sm text-rose-200"
+           x-text="operatorGate.error"></div>
+    </template>
+    <div class="mt-5 flex justify-end gap-2">
+      <button type="button" @click="closeOperatorGate()"
+              class="rounded border border-ink-600 px-3 py-2 text-sm text-slate-200 hover:border-accent-600">
+        Close
+      </button>
+      <button type="submit" :disabled="operatorGate.busy"
+              class="rounded bg-accent-600 px-3 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50">
+        <span x-show="!operatorGate.busy">Continue</span>
+        <span x-show="operatorGate.busy" x-cloak>Checking...</span>
+      </button>
+    </div>
+  </form>
+</div>
+
 </div>
 {% endblock %}
 
@@ -252,6 +284,7 @@
       authBusy: false,
       authResult: null,
       authError: "",
+      operatorGate: { open: false, action: "", code: "", error: "", busy: false },
       jobStatus: {},   // { source: "running" | "done" | "error" }
       jobMeta: {},     // { source: { item_count, seconds, error } }
       _es: {},
@@ -285,40 +318,82 @@
         return "";
       },
 
-      async refreshAll() {
+      requestOperatorAction(action) {
+        this.operatorGate = { open: true, action, code: "", error: "", busy: false };
+        this.$nextTick(() => {
+          const input = document.getElementById("operator-passcode");
+          if (input) input.focus();
+        });
+      },
+
+      closeOperatorGate() {
+        if (this.operatorGate.busy) return;
+        this.operatorGate = { open: false, action: "", code: "", error: "", busy: false };
+      },
+
+      async submitOperatorAction() {
+        if (this.operatorGate.busy) return;
+        this.operatorGate.busy = true;
+        this.operatorGate.error = "";
+        const action = this.operatorGate.action;
+        const code = this.operatorGate.code;
+        const ok = action === "refresh_all"
+          ? await this.refreshAll(code)
+          : await this.authRefresh(code);
+        if (ok) {
+          this.operatorGate = { open: false, action: "", code: "", error: "", busy: false };
+        } else {
+          this.operatorGate.busy = false;
+        }
+      },
+
+      async refreshAll(actionCode) {
         if (this.busy) return;
         this.busy = true;
         this.jobStatus = {};
         this.jobMeta = {};
         try {
           const r = await fetch(`/api/refresh/_all?period=${this.period}`,
-                                { method: "POST", headers: { "Accept": "application/json" } });
+                                { method: "POST", headers: {
+                                  "Accept": "application/json",
+                                  "X-Agent-Me-Action-Code": actionCode || "",
+                                } });
           const data = await r.json();
+          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
           for (const job of (data.jobs || [])) {
             this.jobStatus[job.source] = "running";
             this.jobMeta[job.source] = {};
             this.subscribe(job.source, job.job_id);
           }
+          return true;
         } catch (err) {
           this.busy = false;
+          this.operatorGate.error = `Access denied or refresh failed: ${err.message || err}`;
           console.error("refreshAll failed", err);
+          return false;
         }
       },
 
-      async authRefresh() {
+      async authRefresh(actionCode) {
         if (this.authBusy) return;
         this.authBusy = true;
         this.authError = "";
         try {
           const r = await fetch("/api/mcp/auth-refresh", {
             method: "POST",
-            headers: { "Accept": "application/json" },
+            headers: {
+              "Accept": "application/json",
+              "X-Agent-Me-Action-Code": actionCode || "",
+            },
           });
           const data = await r.json();
           if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
           this.authResult = data;
+          return true;
         } catch (err) {
           this.authError = `MCP auth refresh failed: ${err.message || err}`;
+          this.operatorGate.error = `Access denied or auth refresh failed: ${err.message || err}`;
+          return false;
         } finally {
           this.authBusy = false;
         }

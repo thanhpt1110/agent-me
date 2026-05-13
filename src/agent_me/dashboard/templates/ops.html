@@ -41,7 +41,7 @@
     </div>
     <div class="flex flex-wrap items-center justify-end gap-2 text-sm">
       <span class="mr-1 text-xs text-slate-500" x-text="checkedAtLabel()"></span>
-      <button @click="authRefresh()" :disabled="authBusy"
+      <button @click="requestOperatorAction()" :disabled="authBusy"
               class="rounded bg-accent-600 px-3 py-2 font-semibold text-white hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed">
         <span x-show="!authBusy">Refresh auth</span>
         <span x-show="authBusy" x-cloak>Refreshing...</span>
@@ -112,6 +112,38 @@
         </template>
       </div>
     </template>
+  </div>
+
+  <div x-show="operatorGate.open" x-cloak
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+    <form @submit.prevent="submitOperatorAction()"
+          class="w-full max-w-md rounded-lg border border-ink-700 bg-ink-900 p-5 shadow-2xl">
+      <h2 class="text-lg font-semibold text-slate-100">Operator check</h2>
+      <p class="mt-2 text-sm text-slate-300">
+        Hey hey hey, this button is for Thanh Phan only :)
+      </p>
+      <label class="mt-4 block text-xs uppercase tracking-wide text-slate-500" for="ops-operator-passcode">
+        Passcode
+      </label>
+      <input id="ops-operator-passcode" x-model="operatorGate.code" type="password" autocomplete="off"
+             class="mt-1 w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+             autofocus />
+      <template x-if="operatorGate.error">
+        <div class="mt-3 rounded border border-rose-800 bg-rose-950/30 px-3 py-2 text-sm text-rose-200"
+             x-text="operatorGate.error"></div>
+      </template>
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" @click="closeOperatorGate()"
+                class="rounded border border-ink-600 px-3 py-2 text-sm text-slate-200 hover:border-accent-600">
+          Close
+        </button>
+        <button type="submit" :disabled="operatorGate.busy"
+                class="rounded bg-accent-600 px-3 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50">
+          <span x-show="!operatorGate.busy">Continue</span>
+          <span x-show="operatorGate.busy" x-cloak>Checking...</span>
+        </button>
+      </div>
+    </form>
   </div>
 </section>
 
@@ -207,6 +239,7 @@
       authBusy: false,
       authResult: null,
       authError: "",
+      operatorGate: { open: false, code: "", error: "", busy: false },
 
       checkedAtLabel() {
         if (!this.checkedAt) return "never probed";
@@ -236,18 +269,49 @@
         }
       },
 
-      async authRefresh() {
+      requestOperatorAction() {
+        this.operatorGate = { open: true, code: "", error: "", busy: false };
+        this.$nextTick(() => {
+          const input = document.getElementById("ops-operator-passcode");
+          if (input) input.focus();
+        });
+      },
+
+      closeOperatorGate() {
+        if (this.operatorGate.busy) return;
+        this.operatorGate = { open: false, code: "", error: "", busy: false };
+      },
+
+      async submitOperatorAction() {
+        if (this.operatorGate.busy) return;
+        this.operatorGate.busy = true;
+        this.operatorGate.error = "";
+        const ok = await this.authRefresh(this.operatorGate.code);
+        if (ok) {
+          this.operatorGate = { open: false, code: "", error: "", busy: false };
+        } else {
+          this.operatorGate.busy = false;
+        }
+      },
+
+      async authRefresh(actionCode) {
         this.authBusy = true;
         this.authError = "";
         try {
-          const r = await fetch("/api/mcp/auth-refresh", { method: "POST" });
+          const r = await fetch("/api/mcp/auth-refresh", {
+            method: "POST",
+            headers: { "X-Agent-Me-Action-Code": actionCode || "" },
+          });
           const data = await r.json();
           if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
           this.authResult = data;
           this.servers = data.servers || [];
           this.checkedAt = data.checked_at || Date.now();
+          return true;
         } catch (err) {
           this.authError = `Auth refresh failed: ${err.message || err}`;
+          this.operatorGate.error = `Access denied or auth refresh failed: ${err.message || err}`;
+          return false;
         } finally {
           this.authBusy = false;
         }
