@@ -11,16 +11,30 @@ persistence shipped (DB table name remains `claude_sessions` for
 compatibility). Morning routine fires daily at 6am Vietnam time.
 Jira, GitLab, and NVBugs brief reads now bypass Codex tool discovery and call
 the registered MaaS MCP HTTP endpoints directly with refreshed bearer tokens.
-**Phase 4 dashboard scaffold landed 2026-05-10:**
-Starlette + Jinja2 + Alpine.js + Tailwind CDN; reads bridge SQLite
-read-only; on-demand brief refresh per source with single-flight
-locks; SSE log tail; bearer-token auth; **Tailscale Funnel chosen for
-public URL** (no DNS, no bandwidth/request cap, no interstitial).
-Smoke test passed locally — code compiles, all 14 routes respond,
-auth enforces. **Not yet deployed** — pending Phase 3 Colossus host
-ready (MCP reauth verify in flight). Next: user-driven prompt tuning
-→ finish Phase 3 deploy → install dashboard on Colossus → Phase 2b
-approval gate.
+**Phase 4 dashboard is live (latest checked 2026-05-13):**
+Starlette + Jinja2 + Alpine.js + Tailwind CDN; reads bridge SQLite state,
+runs source refreshes with single-flight locks, and streams logs via SSE.
+The public team URL is served by Caddy at `agent-me.nvidia.com`, proxying
+to the dashboard service on port 8765. Current live services:
+`agent-me-dashboard.service` active, `agent-me-bridge.service` active.
+Latest Auto SFA deployment commit is `6c8aa18 Add Auto SFA trigger history`.
+
+## Current Auto SFA State — 2026-05-13
+
+- Dashboard `/auto-sfa` uses the compact form: `display_name`,
+  `source_folder_id`, `destination_folder_id`, `url_path`, `start`, `end`,
+  optional task IDs, and optional host-default credentials.
+- `source_folder_id` no longer has a `use default` checkbox. It is a required
+  text field pre-filled with `50722` and a short note telling users to keep
+  that default unless they need another source folder.
+- Dashboard and Slack Auto SFA triggers are persisted in SQLite table
+  `auto_sfa_runs` with run id, trigger time, display name, status, and trigger
+  source. The dashboard renders that history at the bottom of `/auto-sfa` in a
+  scrollable table and refreshes it after runs start or finish.
+- Auto SFA terminal output on the dashboard is styled as a real server log
+  panel, backed by SSE from the dashboard runner.
+- Verification for the deployed state: `uv run ruff check .` passed and
+  `uv run pytest` passed with `146 passed`.
 
 ## Decisions locked
 
@@ -117,9 +131,10 @@ approval gate.
   from `/localhome/local-thaphan/magic-auto`. Slack posts only new terminal
   log lines into the same thread. Dashboard route `/auto-sfa` provides the
   same compact form, DevTest credentials visible by default with a host-default
-  checkbox, source-folder default toggle, and an
-  SSE-backed terminal log panel. Advisory locking serializes concurrent
-  Slack/dashboard runs against the shared config.
+  checkbox, `source_folder_id` pre-filled as `50722`, and an SSE-backed
+  terminal log panel. Dashboard and Slack triggers are persisted in
+  `auto_sfa_runs` for the dashboard trigger-history table. Advisory locking
+  serializes concurrent Slack/dashboard runs against the shared config.
 - [x] **Dashboard operator action guard (2026-05-13)** — public team dashboard
   viewers can browse read surfaces, but `Refresh all` and `Refresh MCP auth`
   now open an operator-check modal and the corresponding POST endpoints require
