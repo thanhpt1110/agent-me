@@ -17,6 +17,7 @@ AUTO_SFA_HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_sfa_runs (
     run_id         TEXT PRIMARY KEY,
     triggered_at   INTEGER NOT NULL,
+    flow_type      TEXT NOT NULL DEFAULT 'release',
     display_name   TEXT NOT NULL,
     status         TEXT NOT NULL,
     trigger_source TEXT NOT NULL DEFAULT 'dashboard',
@@ -39,6 +40,17 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(AUTO_SFA_HISTORY_SCHEMA)
+    rows = conn.execute("PRAGMA table_info(auto_sfa_runs)").fetchall()
+    columns = {str(row["name"]) for row in rows}
+    if "flow_type" not in columns:
+        conn.execute(
+            "ALTER TABLE auto_sfa_runs "
+            "ADD COLUMN flow_type TEXT NOT NULL DEFAULT 'release'"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS auto_sfa_runs_flow_triggered_idx "
+        "ON auto_sfa_runs(flow_type, triggered_at DESC)"
+    )
 
 
 def _time_label(ms: int) -> str:
@@ -52,20 +64,23 @@ def record_auto_sfa_run(
     triggered_at_ms: int,
     display_name: str,
     status: str,
+    flow_type: str = "release",
     trigger_source: str = "dashboard",
     updated_at_ms: int | None = None,
 ) -> None:
     """Insert or update one Auto SFA trigger row."""
     now_ms = updated_at_ms or int(time.time() * 1000)
+    normalized_flow = "create" if str(flow_type).strip().lower() == "create" else "release"
     conn = _connect(db_path)
     try:
         _ensure_schema(conn)
         conn.execute(
             """
             INSERT INTO auto_sfa_runs
-                (run_id, triggered_at, display_name, status, trigger_source, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (run_id, triggered_at, flow_type, display_name, status, trigger_source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
+                flow_type=excluded.flow_type,
                 display_name=excluded.display_name,
                 status=excluded.status,
                 trigger_source=excluded.trigger_source,
@@ -74,6 +89,7 @@ def record_auto_sfa_run(
             (
                 run_id,
                 triggered_at_ms,
+                normalized_flow,
                 display_name.strip() or "(unknown)",
                 status,
                 trigger_source,
@@ -86,21 +102,40 @@ def record_auto_sfa_run(
         conn.close()
 
 
-def recent_auto_sfa_runs(db_path: Path, *, limit: int = 100) -> list[dict[str, Any]]:
+def recent_auto_sfa_runs(
+    db_path: Path, *, limit: int = 100, flow_type: str | None = None
+) -> list[dict[str, Any]]:
     """Return the latest Auto SFA trigger rows for dashboard rendering."""
     safe_limit = max(1, min(int(limit), 500))
+    normalized_flow = None
+    if flow_type is not None:
+        normalized_flow = "create" if str(flow_type).strip().lower() == "create" else "release"
     conn = _connect(db_path)
     try:
         _ensure_schema(conn)
-        rows = conn.execute(
-            """
-            SELECT run_id, triggered_at, display_name, status, trigger_source, updated_at
-            FROM auto_sfa_runs
-            ORDER BY triggered_at DESC
-            LIMIT ?
-            """,
-            (safe_limit,),
-        ).fetchall()
+        if normalized_flow:
+            rows = conn.execute(
+                """
+                SELECT run_id, triggered_at, flow_type, display_name, status,
+                       trigger_source, updated_at
+                FROM auto_sfa_runs
+                WHERE flow_type = ?
+                ORDER BY triggered_at DESC
+                LIMIT ?
+                """,
+                (normalized_flow, safe_limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT run_id, triggered_at, flow_type, display_name, status,
+                       trigger_source, updated_at
+                FROM auto_sfa_runs
+                ORDER BY triggered_at DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
         runs: list[dict[str, Any]] = []
         for row in rows:
             triggered_at = int(row["triggered_at"])
@@ -108,6 +143,7 @@ def recent_auto_sfa_runs(db_path: Path, *, limit: int = 100) -> list[dict[str, A
                 "run_id": row["run_id"],
                 "triggered_at": triggered_at,
                 "triggered_at_label": _time_label(triggered_at),
+                "flow_type": row["flow_type"],
                 "display_name": row["display_name"],
                 "status": row["status"],
                 "trigger_source": row["trigger_source"],

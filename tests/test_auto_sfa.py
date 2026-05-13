@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -8,10 +9,15 @@ from agent_me.auto_sfa import (
     AutoSFAValidationError,
     auto_sfa_command,
     build_auto_sfa_request,
+    build_update_template_request,
     missing_auto_sfa_fields,
+    missing_update_template_fields,
     parse_auto_sfa_message,
+    parse_update_template_message,
     run_auto_sfa,
+    run_update_template,
     update_magic_auto_config,
+    update_template_command,
 )
 
 
@@ -61,6 +67,60 @@ def _full_values(**overrides) -> dict:
     }
     values.update(overrides)
     return values
+
+
+def test_update_template_parse_and_build_folder_mode() -> None:
+    values = parse_update_template_message(
+        """
+        display_name: Thanh Phan
+        folder_id: 494139
+        """
+    )
+    request = build_update_template_request(values)
+
+    assert missing_update_template_fields(values) == []
+    assert request.flow_type == "create"
+    assert request.template_project_id == 1072
+    assert request.display_name == "Thanh Phan"
+    assert request.folder_id == 494139
+    assert request.template_ids is None
+
+
+def test_update_template_template_ids_are_optional_command_mode() -> None:
+    request = build_update_template_request({
+        "display_name": "Thanh Phan",
+        "folder_id": "494139",
+        "template_ids_enabled": True,
+        "template_ids": "5996784, 5996785\n5996786",
+    })
+
+    args = update_template_command(request, uv_bin="/usr/bin/uv")
+
+    assert request.template_ids == "5996784,5996785,5996786"
+    assert args == [
+        "/usr/bin/uv",
+        "run",
+        "dtoperator.py",
+        "update-template",
+        "-u",
+        "Thanh Phan",
+        "-i",
+        "5996784,5996785,5996786",
+        "--folder-id",
+        "494139",
+        "-f",
+    ]
+
+
+def test_update_template_rejects_non_template_project() -> None:
+    with pytest.raises(AutoSFAValidationError) as exc:
+        build_update_template_request({
+            "display_name": "Thanh Phan",
+            "folder_id": "494139",
+            "project_id": "1074",
+        })
+
+    assert "project_id must be 1072 for Create SFA Tasks" in exc.value.errors
 
 
 def test_auto_sfa_parse_full_keyed_message() -> None:
@@ -442,6 +502,71 @@ async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_env(
 
     await run_auto_sfa(request, repo_dir=repo, uv_bin="/usr/bin/uv")
 
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["DEVTEST_USERNAME"] == "thaphan"
+    assert env["DEVTEST_PASSWORD"] == "dummy-password"
+    args = captured["args"]
+    assert isinstance(args, tuple)
+    assert "-c" in args
+    temp_config_path = Path(str(args[args.index("-c") + 1]))
+    assert not temp_config_path.exists()
+    base_config = json.loads((repo / "configs.json").read_text())
+    assert base_config["devtest_folder_id"] == 1155188
+    assert base_config["source_folder_id"] == 50722
+
+
+@pytest.mark.asyncio
+async def test_update_template_run_passes_custom_credentials_to_magic_auto_env(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    request = build_update_template_request({
+        "display_name": "Thanh Phan",
+        "folder_id": "494139",
+        "use_personal_credentials": True,
+        "auth_username": "thaphan@nvidia.com",
+        "auth_password": "dummy-password",
+    })
+    captured: dict[str, object] = {}
+
+    class FakeStdout:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            captured["killed"] = True
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    await run_update_template(request, repo_dir=repo, uv_bin="/usr/bin/uv")
+
+    assert captured["args"] == (
+        "/usr/bin/uv",
+        "run",
+        "dtoperator.py",
+        "update-template",
+        "-u",
+        "Thanh Phan",
+        "--folder-id",
+        "494139",
+        "-f",
+    )
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["DEVTEST_USERNAME"] == "thaphan"

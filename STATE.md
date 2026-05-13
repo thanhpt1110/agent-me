@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-13 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the refreshed Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA is a deterministic local runner that updates `/localhome/local-thaphan/magic-auto/configs.json`, including runtime destination folder and optional source folder overrides, then runs `uv run dtoperator.py sfa [--task-ids <ids>] --user-login <display_name> -f` in the `magic-auto` repo and streams terminal output. Dashboard users enter per-run DevTest credentials by default so `magic-auto` authenticates as that user and extracts that user's `loginid`; checking "use default" falls back to host credentials. The password is not written to server config or public job history. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard route tests._
+_Last updated: 2026-05-13 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the refreshed two-flow Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has `Create SFA Tasks` and `Release SFA Tasks` under one dashboard entry point. Create updates project-1072 templates by `display_name`, `folder_id`, and optional `template_ids`; Release uses the existing SFA release fields. Dashboard jobs run independently with one child process and one temp config per run, per-process DevTest credentials, SSE terminal output, cancel support, and flow-separated trigger history. The password is not written to server config or public job history. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard route tests._
 
 ## Phase
 
@@ -21,20 +21,32 @@ Latest Auto SFA deployment commit is `6c8aa18 Add Auto SFA trigger history`.
 
 ## Current Auto SFA State — 2026-05-13
 
-- Dashboard `/auto-sfa` uses the compact form: `display_name`,
-  `source_folder_id`, `destination_folder_id`, `url_path`, `start`, `end`,
-  optional task IDs, and optional host-default credentials.
-- `source_folder_id` no longer has a `use default` checkbox. It is a required
-  text field pre-filled with `50722` and a short note telling users to keep
-  that default unless they need another source folder.
+- Dashboard `/auto-sfa` is the single Auto SFA entry point with two tabs:
+  `Create SFA Tasks` and `Release SFA Tasks`.
+- `Create SFA Tasks` is the template-prep step for `magic-auto`
+  `update-template`. The only required user inputs are `display_name` and
+  `folder_id`; `template_ids` is optional for specific-ID mode. Agent-me keeps
+  DevTest project id fixed at `1072` internally and does not ask users to fill
+  release-only fields.
+- `Release SFA Tasks` keeps the existing SFA release form:
+  `display_name`, `source_folder_id`, `destination_folder_id`, `url_path`,
+  `start`, `end`, optional task IDs, and optional host-default credentials.
+  The dashboard defaults `end` to the browser's current day and `start` to
+  seven days before `end`.
 - Dashboard and Slack Auto SFA triggers are persisted in SQLite table
-  `auto_sfa_runs` with run id, trigger time, display name, status, and trigger
-  source. The dashboard renders that history at the bottom of `/auto-sfa` in a
-  scrollable table and refreshes it after runs start or finish.
-- Auto SFA terminal output on the dashboard is styled as a real server log
-  panel, backed by SSE from the dashboard runner.
-- Verification for the deployed state: `uv run ruff check .` passed and
-  `uv run pytest` passed with `146 passed`.
+  `auto_sfa_runs` with `flow_type` (`create` or `release`), run id, trigger
+  time, display name, status, and trigger source. The dashboard shows
+  flow-separated scrollable history tables: Create history on the Create tab
+  and Release history on the Release tab.
+- Dashboard jobs are concurrent by design. Each run gets its own job id,
+  subprocess, SSE stream, per-process DevTest credentials, and temp
+  `magic-auto` config file for release runs. Cancelling a job terminates only
+  that job's subprocess and logs a cancelled terminal state.
+- Auto SFA terminal output on the dashboard is compact, black, monospace,
+  timestamped, and SSE-backed. The header includes cancel, clear, autoscroll,
+  and "new terminal" controls.
+- Verification for this state: `uv run ruff check .` passed and
+  `uv run pytest -q` passed.
 
 ## Decisions locked
 
@@ -117,24 +129,20 @@ Latest Auto SFA deployment commit is `6c8aa18 Add Auto SFA trigger history`.
   app-server helper. The generic `codex exec` chat prompt is read-first and
   refuses connector/MCP writes that escape the router, avoiding
   hallucinated `user cancelled MCP tool call` outcomes.
-- [x] **Auto SFA (2026-05-12; refreshed 2026-05-13)** — Slack `/help` now includes an
-  **Auto SFA** button and `auto sfa` plain-text shortcut. The Slack flow
-  collects five required fields in-thread: `display_name`,
-  `destination_folder_id`, `url_path`, `start`, and `end`, plus optional
-  `source_folder_id` and `task_ids`. The runner passes the DevTest
-  `Automation Dev Linux` display name to `--user-login`, adds `-i <task_ids>`
-  for specific-ID mode, treats `url_path` as the shared log/source/review URL,
-  maps `start` and `end` across the required Dev/QA date fields, overwrites
-  destination folder ID and optionally source folder ID in
-  `magic-auto/configs.json`, then runs
-  `uv run dtoperator.py sfa [-i <task_ids>] --user-login <display_name> -f`
-  from `/localhome/local-thaphan/magic-auto`. Slack posts only new terminal
-  log lines into the same thread. Dashboard route `/auto-sfa` provides the
-  same compact form, DevTest credentials visible by default with a host-default
-  checkbox, `source_folder_id` pre-filled as `50722`, and an SSE-backed
-  terminal log panel. Dashboard and Slack triggers are persisted in
-  `auto_sfa_runs` for the dashboard trigger-history table. Advisory locking
-  serializes concurrent Slack/dashboard runs against the shared config.
+- [x] **Auto SFA (2026-05-12; refreshed 2026-05-13)** — Slack `/help` and dashboard
+  `/auto-sfa` expose two workflows under the same Auto SFA entry point:
+  `Create SFA Tasks` and `Release SFA Tasks`. Create runs `magic-auto`
+  `update-template` for project `1072` from `display_name`, `folder_id`, and
+  optional `template_ids`, updating `Automation Dev Linux`,
+  `Automation Status Linux`, and `Win_Linux` on matching templates. Release
+  runs the existing `dtoperator.py sfa` path from `display_name`,
+  `source_folder_id`, `destination_folder_id`, `url_path`, `start`, `end`, and
+  optional task IDs. Release runs use a per-job temp config passed with `-c`
+  instead of mutating the shared `magic-auto/configs.json`; credentials are
+  per-process env vars. The dashboard runner supports concurrent jobs, cancel,
+  new terminal, SSE log streaming, and flow-separated trigger history persisted
+  in `auto_sfa_runs.flow_type`. Slack instructions/buttons route users to the
+  correct create or release flow.
 - [x] **Dashboard operator action guard (2026-05-13)** — public team dashboard
   viewers can browse read surfaces, but `Refresh all` and `Refresh MCP auth`
   now open an operator-check modal and the corresponding POST endpoints require

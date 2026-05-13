@@ -51,12 +51,19 @@ from slack_bolt.async_app import AsyncApp
 from agent_me.auto_sfa import (
     AUTO_SFA_FIELD_LABELS,
     AUTO_SFA_FIELD_ORDER,
+    UPDATE_TEMPLATE_FIELD_LABELS,
+    UPDATE_TEMPLATE_FIELD_ORDER,
     AutoSFARequest,
     AutoSFAValidationError,
+    TemplateSFARequest,
     build_auto_sfa_request,
+    build_update_template_request,
     missing_auto_sfa_fields,
+    missing_update_template_fields,
     parse_auto_sfa_message,
+    parse_update_template_message,
     run_auto_sfa,
+    run_update_template,
 )
 from agent_me.auto_sfa_history import record_auto_sfa_run
 from agent_me.codex_app_server import (
@@ -1042,7 +1049,8 @@ HELP_TEXT = "\n".join((
     "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
-    "• `auto sfa` — collect DevTest SFA config, run `dtoperator.py sfa` by display name or optional task IDs, and stream logs",
+    "• `create sfa tasks` — update project 1072 templates before release by Template Owner or optional template IDs",
+    "• `release sfa tasks` / `auto sfa` — release existing SFA tasks by display name or optional task IDs",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `mcp refresh` / `/mcp refresh` — force-refresh MaaS OAuth tokens, rewrite persistent Codex MCP env, and verify",
@@ -1496,7 +1504,7 @@ AUTO_SFA_LOG_CHUNK_SIZE = 1_900
 AUTO_SFA_LOG_FLUSH_INTERVAL_S = 2.0
 AUTO_SFA_SLACK_TASKS: set[asyncio.Task[None]] = set()
 
-AUTO_SFA_INPUT_TEMPLATE = "\n".join((
+AUTO_SFA_RELEASE_INPUT_TEMPLATE = "\n".join((
     "display_name: Thanh Phan",
     "destination_folder_id: 1138081",
     "url_path: https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
@@ -1504,8 +1512,13 @@ AUTO_SFA_INPUT_TEMPLATE = "\n".join((
     "end: 2026-04-27",
 ))
 
-AUTO_SFA_HELP_TEXT = "\n".join((
-    "*Auto SFA* — mình sẽ chuẩn bị config và chạy SFA giúp bạn.",
+AUTO_SFA_CREATE_INPUT_TEMPLATE = "\n".join((
+    "display_name: Thanh Phan",
+    "folder_id: 494139",
+))
+
+AUTO_SFA_RELEASE_HELP_TEXT = "\n".join((
+    "*Release SFA Tasks* — mình sẽ chuẩn bị config và release các task đã có trong SFA.",
     "",
     "Mình cần 5 thông tin bắt buộc. Các field dùng chung sẽ được tự map vào config `magic-auto`:",
     "• *display_name* — DevTest `Automation Dev Linux` display name, ví dụ `Thanh Phan`. Bắt buộc cả khi chạy theo task ID.",
@@ -1517,7 +1530,7 @@ AUTO_SFA_HELP_TEXT = "\n".join((
     "",
     "Ví dụ nhanh:",
     "```",
-    AUTO_SFA_INPUT_TEMPLATE,
+    AUTO_SFA_RELEASE_INPUT_TEMPLATE,
     "```",
     "Ví dụ chạy task IDs cụ thể: thêm dòng `task_ids: 824423,824424` vào mẫu trên.",
     "",
@@ -1526,6 +1539,41 @@ AUTO_SFA_HELP_TEXT = "\n".join((
     "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa [-i <task_ids>] --user-login <display_name> -f`, rồi stream log lại ngay trong thread này.",
     "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
 ))
+
+AUTO_SFA_CREATE_HELP_TEXT = "\n".join((
+    "*Create SFA Tasks* — bước chuẩn bị template trước khi release task.",
+    "",
+    "Flow này gọi `magic-auto` command `update-template` trên project `1072` và update 3 field:",
+    "• `Automation Dev Linux` = `display_name`",
+    "• `Automation Status Linux` = `In A&T`",
+    "• `Win_Linux` = `Linux_Only`",
+    "",
+    "Mình cần 2 thông tin bắt buộc:",
+    "• *display_name* — bắt buộc là Template Owner theo Display Name, ví dụ `Thanh Phan`.",
+    "• *folder_id* — template folder ID trong project `1072`.",
+    "• *template_ids* — optional. Thêm `template_ids: 5996784,5996785` nếu muốn update đúng danh sách template ID; bỏ trống thì filter theo Template Owner trong folder.",
+    "",
+    "Ví dụ nhanh:",
+    "```",
+    AUTO_SFA_CREATE_INPUT_TEMPLATE,
+    "```",
+    "Ví dụ chạy template IDs cụ thể: thêm dòng `template_ids: 5996784,5996785` vào mẫu trên.",
+    "",
+    "Slack dùng DevTest credentials mặc định trên host. Nếu cần credential riêng, dùng dashboard Auto SFA để tránh paste password vào Slack.",
+    "Khi đủ dữ liệu, mình sẽ chạy `uv run dtoperator.py update-template -u <display_name> --folder-id <folder_id> [-i <template_ids>] -f`, rồi stream log lại ngay trong thread này.",
+    "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
+))
+
+AUTO_SFA_INPUT_TEMPLATE = AUTO_SFA_RELEASE_INPUT_TEMPLATE
+AUTO_SFA_HELP_TEXT = AUTO_SFA_RELEASE_HELP_TEXT
+
+
+def _auto_sfa_help_text(flow_type: str) -> str:
+    return AUTO_SFA_CREATE_HELP_TEXT if flow_type == "create" else AUTO_SFA_RELEASE_HELP_TEXT
+
+
+def _auto_sfa_input_template(flow_type: str) -> str:
+    return AUTO_SFA_CREATE_INPUT_TEMPLATE if flow_type == "create" else AUTO_SFA_RELEASE_INPUT_TEMPLATE
 
 
 def _auto_sfa_blocks(text: str) -> list[dict]:
@@ -1540,20 +1588,30 @@ def _auto_sfa_blocks(text: str) -> list[dict]:
 
 
 def _auto_sfa_missing_text(values: dict[str, Any]) -> str:
-    missing = missing_auto_sfa_fields(values)
-    labels = ", ".join(f"`{AUTO_SFA_FIELD_LABELS[field]}`" for field in missing)
+    flow_type = str(values.get("flow_type") or "release")
+    if flow_type == "create":
+        missing = missing_update_template_fields(values)
+        labels = ", ".join(f"`{UPDATE_TEMPLATE_FIELD_LABELS[field]}`" for field in missing)
+        field_order = UPDATE_TEMPLATE_FIELD_ORDER
+        field_labels = UPDATE_TEMPLATE_FIELD_LABELS
+    else:
+        missing = missing_auto_sfa_fields(values)
+        labels = ", ".join(f"`{AUTO_SFA_FIELD_LABELS[field]}`" for field in missing)
+        field_order = AUTO_SFA_FIELD_ORDER
+        field_labels = AUTO_SFA_FIELD_LABELS
     present = [
-        f"- `{AUTO_SFA_FIELD_LABELS[field]}`: `{values[field]}`"
-        for field in AUTO_SFA_FIELD_ORDER
+        f"- `{field_labels[field]}`: `{values[field]}`"
+        for field in field_order
         if values.get(field)
     ]
+    example = "folder_id: 494139" if flow_type == "create" else "end: 2026-04-27"
     body = [
         "Mình nhận được một phần thông tin rồi.",
         f"Còn thiếu: {labels}.",
         "",
-        "Bạn chỉ cần gửi tiếp phần còn thiếu, ví dụ `end: 2026-04-27`, hoặc paste lại đủ mẫu này:",
+        f"Bạn chỉ cần gửi tiếp phần còn thiếu, ví dụ `{example}`, hoặc paste lại đủ mẫu này:",
         "```",
-        AUTO_SFA_INPUT_TEMPLATE,
+        _auto_sfa_input_template(flow_type),
         "```",
     ]
     if present:
@@ -1566,7 +1624,9 @@ async def cmd_auto_sfa_start(
     channel: str | None,
     thread_ts: str | None,
     user_id: str | None,
+    flow_type: str = "release",
 ) -> SlashResult:
+    flow_type = "create" if flow_type == "create" else "release"
     if not channel or not thread_ts:
         return (
             "Auto SFA cần chạy trong một Slack thread để nhận input và stream log. "
@@ -1574,8 +1634,9 @@ async def cmd_auto_sfa_start(
             None,
         )
     await upsert_thread(thread_ts, channel, user_id)
-    await remember_auto_sfa_flow(thread_ts, channel, user_id, {})
-    return AUTO_SFA_HELP_TEXT, _auto_sfa_blocks(AUTO_SFA_HELP_TEXT)
+    await remember_auto_sfa_flow(thread_ts, channel, user_id, {"flow_type": flow_type})
+    help_text = _auto_sfa_help_text(flow_type)
+    return help_text, _auto_sfa_blocks(help_text)
 
 
 async def _post_auto_sfa_log_chunk(
@@ -1610,9 +1671,11 @@ async def _run_auto_sfa_slack_job(
     *,
     channel: str,
     thread_ts: str,
-    request: AutoSFARequest,
+    request: AutoSFARequest | TemplateSFARequest,
 ) -> None:
-    history_run_id = f"slack:{thread_ts}"
+    flow_type = request.flow_type
+    flow_label = "Create SFA Tasks" if flow_type == "create" else "Release SFA Tasks"
+    history_run_id = f"slack:{flow_type}:{thread_ts}"
     history_started_at = int(time.time() * 1000)
 
     async def record_history(status: str) -> None:
@@ -1623,13 +1686,21 @@ async def _run_auto_sfa_slack_job(
             triggered_at_ms=history_started_at,
             display_name=request.display_name,
             status=status,
+            flow_type=flow_type,
             trigger_source="slack",
         )
 
     await record_history("running")
-    log.info("auto_sfa_slack_started", thread_ts=thread_ts,
-             folder_id=request.devtest_folder_id, display_name=request.display_name,
-             task_ids=request.task_ids)
+    folder_id = getattr(request, "devtest_folder_id", None)
+    if folder_id is None:
+        folder_id = getattr(request, "folder_id", None)
+    log.info(
+        "auto_sfa_slack_started",
+        thread_ts=thread_ts,
+        flow_type=flow_type,
+        folder_id=folder_id,
+        display_name=request.display_name,
+    )
     buffer: list[str] = []
     buffer_chars = 0
     last_flush = 0.0
@@ -1670,11 +1741,23 @@ async def _run_auto_sfa_slack_job(
                 ),
             )
             return
+        if event == "template_configured":
+            await client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=(
+                    "*Create SFA Tasks configured*\n"
+                    f"- project: `{evt.get('template_project_id')}`\n"
+                    f"- folder: `{evt.get('folder_id')}`\n"
+                    f"- mode: `{('specific template IDs ' + str(evt.get('template_ids'))) if evt.get('template_ids') else 'Template Owner filter'}`"
+                ),
+            )
+            return
         if event == "started":
             await client.chat_postMessage(
                 channel=channel,
                 thread_ts=thread_ts,
-                text="*Auto SFA command started:*\n```" + str(evt.get("command")) + "```",
+                text=f"*{flow_label} command started:*\n```" + str(evt.get("command")) + "```",
             )
             return
         if event == "line":
@@ -1683,29 +1766,53 @@ async def _run_auto_sfa_slack_job(
             buffer_chars += len(line) + 1
             await flush()
 
-    result_text = "Auto SFA finished."
+    result_text = f"{flow_label} finished."
     try:
-        await run_auto_sfa(request, progress_cb=progress_cb)
+        if isinstance(request, TemplateSFARequest):
+            await run_update_template(request, progress_cb=progress_cb)
+        else:
+            await run_auto_sfa(request, progress_cb=progress_cb)
         await flush(force=True)
         await update_auto_sfa_flow(thread_ts, status="done", last_result=result_text)
         await record_history("done")
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
-            text="Auto SFA finished successfully.",
+            text=f"{flow_label} finished successfully.",
         )
         log.info("auto_sfa_slack_done", thread_ts=thread_ts)
     except Exception as exc:
         await flush(force=True)
-        result_text = f"Auto SFA failed: {str(exc)[:600]}"
+        result_text = f"{flow_label} failed: {str(exc)[:600]}"
         await update_auto_sfa_flow(thread_ts, status="failed", last_result=result_text)
         await record_history("failed")
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
-            text=f"Auto SFA failed: `{str(exc)[:600]}`",
+            text=f"{flow_label} failed: `{str(exc)[:600]}`",
         )
         log.error("auto_sfa_slack_failed", thread_ts=thread_ts, err=str(exc))
+
+
+def _auto_sfa_start_summary(request: AutoSFARequest | TemplateSFARequest) -> str:
+    if isinstance(request, TemplateSFARequest):
+        return (
+            "Đã đủ thông tin. Mình bắt đầu Create SFA Tasks ngay bây giờ.\n"
+            f"- Display name / Template Owner: `{request.display_name}`\n"
+            "- Project: `1072`\n"
+            f"- Folder: `{request.folder_id}`\n"
+            f"- Template mode: `{('specific IDs ' + request.template_ids) if request.template_ids else 'Template Owner filter'}`\n"
+            "Log terminal sẽ được gửi tiếp trong thread này."
+        )
+    return (
+        "Đã đủ thông tin. Mình bắt đầu Release SFA Tasks ngay bây giờ.\n"
+        f"- Display name: `{request.display_name}`\n"
+        f"- Task mode: `{('specific IDs ' + request.task_ids) if request.task_ids else 'display name filter'}`\n"
+        f"- Source folder: `{request.source_folder_id or 'default from magic-auto/configs.json'}`\n"
+        f"- Destination folder: `{request.devtest_folder_id}`\n"
+        f"- URL_PATH: `{request.code_review_path}`\n"
+        "Log terminal sẽ được gửi tiếp trong thread này."
+    )
 
 
 async def handle_auto_sfa_flow_message(
@@ -1739,8 +1846,16 @@ async def handle_auto_sfa_flow_message(
         )
         return
 
-    values = parse_auto_sfa_message(cleaned, flow.get("inputs") or {})
-    missing = missing_auto_sfa_fields(values)
+    existing_inputs = flow.get("inputs") or {}
+    flow_type = str(existing_inputs.get("flow_type") or "release")
+    if flow_type == "create":
+        values = parse_update_template_message(cleaned, existing_inputs)
+        values["flow_type"] = "create"
+        missing = missing_update_template_fields(values)
+    else:
+        values = parse_auto_sfa_message(cleaned, existing_inputs)
+        values["flow_type"] = "release"
+        missing = missing_auto_sfa_fields(values)
     if missing:
         await update_auto_sfa_flow(thread_ts, inputs=values, status="active")
         await client.chat_postMessage(
@@ -1751,7 +1866,11 @@ async def handle_auto_sfa_flow_message(
         return
 
     try:
-        request = build_auto_sfa_request(values)
+        request = (
+            build_update_template_request(values)
+            if flow_type == "create"
+            else build_auto_sfa_request(values)
+        )
     except AutoSFAValidationError as exc:
         await update_auto_sfa_flow(thread_ts, inputs=values, status="active")
         await client.chat_postMessage(
@@ -1761,7 +1880,7 @@ async def handle_auto_sfa_flow_message(
                 "Mình đọc được đủ field, nhưng có giá trị chưa hợp lệ:\n"
                 + "\n".join(f"- {err}" for err in exc.errors)
                 + "\n\nBạn gửi lại field sai hoặc paste lại đủ mẫu này nhé:\n```"
-                + AUTO_SFA_INPUT_TEMPLATE
+                + _auto_sfa_input_template(flow_type)
                 + "```"
             ),
         )
@@ -1771,15 +1890,7 @@ async def handle_auto_sfa_flow_message(
     await client.chat_postMessage(
         channel=channel,
         thread_ts=thread_ts,
-        text=(
-            "Đã đủ thông tin. Mình bắt đầu chạy Auto SFA ngay bây giờ.\n"
-            f"- Display name: `{request.display_name}`\n"
-            f"- Task mode: `{('specific IDs ' + request.task_ids) if request.task_ids else 'display name filter'}`\n"
-            f"- Source folder: `{request.source_folder_id or 'default from magic-auto/configs.json'}`\n"
-            f"- Destination folder: `{request.devtest_folder_id}`\n"
-            f"- URL_PATH: `{request.code_review_path}`\n"
-            "Log terminal sẽ được gửi tiếp trong thread này."
-        ),
+        text=_auto_sfa_start_summary(request),
     )
     task = asyncio.create_task(
         _run_auto_sfa_slack_job(
@@ -1801,8 +1912,11 @@ def _help_blocks() -> list[dict]:
         {"type": "section", "text": {"type": "mrkdwn", "text": HELP_TEXT}},
         {"type": "actions", "elements": [
             {"type": "button",
-             "text": {"type": "plain_text", "text": "Auto SFA"},
-             "action_id": "menu_auto_sfa", "style": "primary"},
+             "text": {"type": "plain_text", "text": "Create SFA Tasks"},
+             "action_id": "menu_auto_sfa_create", "style": "primary"},
+            {"type": "button",
+             "text": {"type": "plain_text", "text": "Release SFA Tasks"},
+             "action_id": "menu_auto_sfa"},
         ]},
         {"type": "actions", "elements": [
             {"type": "button",
@@ -1854,10 +1968,13 @@ async def handle_slash(
     if cmd == "/brief":
         return await cmd_brief(args_text, channel=channel, thread_ts=thread_ts)
     if cmd == "/auto-sfa":
+        sfa_mode = args_text.strip().lower()
+        flow_type = "create" if sfa_mode in {"create", "create tasks", "update-template", "template"} else "release"
         return await cmd_auto_sfa_start(
             channel=channel,
             thread_ts=thread_ts,
             user_id=user_id,
+            flow_type=flow_type,
         )
     if cmd == "/model-free-draft":
         return await cmd_model_free_draft(
@@ -1961,9 +2078,15 @@ PLAIN_COMMANDS: dict[str, tuple[str, str]] = {
     "monthly":        ("/brief", "month"),
     "this month":     ("/brief", "month"),
     # Auto SFA
-    "auto sfa":       ("/auto-sfa", ""),
-    "autosfa":        ("/auto-sfa", ""),
-    "sfa":            ("/auto-sfa", ""),
+    "auto sfa":       ("/auto-sfa", "release"),
+    "autosfa":        ("/auto-sfa", "release"),
+    "sfa":            ("/auto-sfa", "release"),
+    "release sfa":    ("/auto-sfa", "release"),
+    "release sfa tasks": ("/auto-sfa", "release"),
+    "create sfa":     ("/auto-sfa", "create"),
+    "create sfa tasks": ("/auto-sfa", "create"),
+    "update template": ("/auto-sfa", "create"),
+    "update templates": ("/auto-sfa", "create"),
     # outlook automation shortcuts
     "model free draft":       ("/model-free-draft", ""),
     "draft model free":       ("/model-free-draft", ""),
@@ -2441,11 +2564,9 @@ async def on_menu_mcp_refresh(ack, body, client):
     await _reply_in_thread(client, body, body_text)
 
 
-@app.action("menu_auto_sfa")
-async def on_menu_auto_sfa(ack, body, client):
-    await ack()
+async def _open_auto_sfa_flow_from_button(body, client, flow_type: str) -> None:
     user_id = (body.get("user") or {}).get("id")
-    log.info("button_menu_auto_sfa", user=user_id)
+    log.info("button_menu_auto_sfa", user=user_id, flow_type=flow_type)
     channel, thread_ts = _button_thread_context(body)
     if not channel:
         channel = await ensure_dm_channel(client)
@@ -2457,13 +2578,26 @@ async def on_menu_auto_sfa(ack, body, client):
         )
         return
     await upsert_thread(thread_ts, channel, user_id)
-    await remember_auto_sfa_flow(thread_ts, channel, user_id, {})
+    await remember_auto_sfa_flow(thread_ts, channel, user_id, {"flow_type": flow_type})
+    help_text = _auto_sfa_help_text(flow_type)
     await client.chat_postMessage(
         channel=channel,
         thread_ts=thread_ts,
-        text=AUTO_SFA_HELP_TEXT,
-        blocks=_auto_sfa_blocks(AUTO_SFA_HELP_TEXT),
+        text=help_text,
+        blocks=_auto_sfa_blocks(help_text),
     )
+
+
+@app.action("menu_auto_sfa")
+async def on_menu_auto_sfa(ack, body, client):
+    await ack()
+    await _open_auto_sfa_flow_from_button(body, client, "release")
+
+
+@app.action("menu_auto_sfa_create")
+async def on_menu_auto_sfa_create(ack, body, client):
+    await ack()
+    await _open_auto_sfa_flow_from_button(body, client, "create")
 
 
 @app.action("auto_sfa_cancel")

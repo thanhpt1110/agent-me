@@ -188,7 +188,13 @@ def test_help_blocks_include_auto_sfa(monkeypatch, tmp_path) -> None:
         for block in blocks if block.get("type") == "actions"
         for element in block.get("elements", [])
     )
-    assert app.PLAIN_COMMANDS["auto sfa"] == ("/auto-sfa", "")
+    assert any(
+        element.get("action_id") == "menu_auto_sfa_create"
+        for block in blocks if block.get("type") == "actions"
+        for element in block.get("elements", [])
+    )
+    assert app.PLAIN_COMMANDS["auto sfa"] == ("/auto-sfa", "release")
+    assert app.PLAIN_COMMANDS["create sfa tasks"] == ("/auto-sfa", "create")
 
 
 def test_mcp_refresh_shortcuts(monkeypatch, tmp_path) -> None:
@@ -249,6 +255,33 @@ def test_auto_sfa_start_remembers_thread(monkeypatch, tmp_path) -> None:
     assert flow is not None
     assert flow["status"] == "active"
     assert flow["channel"] == "D123"
+    assert flow["inputs"]["flow_type"] == "release"
+
+
+def test_auto_sfa_create_start_remembers_flow_type(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    import asyncio
+
+    text, blocks = asyncio.run(
+        app.cmd_auto_sfa_start(
+            channel="D123",
+            thread_ts="1700000000.000012",
+            user_id="U123",
+            flow_type="create",
+        )
+    )
+    flow = asyncio.run(app.get_auto_sfa_flow("1700000000.000012"))
+
+    assert "Create SFA Tasks" in text
+    assert blocks
+    assert flow is not None
+    assert flow["inputs"]["flow_type"] == "create"
 
 
 def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:

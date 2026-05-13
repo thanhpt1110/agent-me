@@ -192,6 +192,8 @@ def test_auto_sfa_page_renders(
     r = client.get("/auto-sfa", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Auto SFA" in r.text
+    assert "Create SFA Tasks" in r.text
+    assert "Release SFA Tasks" in r.text
     assert "display_name" in r.text
     assert "placeholder=\"Thanh Phan\"" in r.text
     assert "DevTest credentials" in r.text
@@ -199,6 +201,10 @@ def test_auto_sfa_page_renders(
     assert "Use default host credentials" in r.text
     assert "Required by default. Check above to use host credentials instead." in r.text
     assert "specific task IDs" in r.text
+    assert "specific template IDs" in r.text
+    assert "folder_id" in r.text
+    assert "project_id is fixed to" not in r.text
+    assert "project 1072" not in r.text
     assert "source_folder_id" in r.text
     assert "placeholder=\"50722\"" in r.text
     assert "Default value:" in r.text
@@ -211,12 +217,19 @@ def test_auto_sfa_page_renders(
     assert "dashboard-date-field" in r.text
     assert r.text.count("dashboard-date-button") == 2
     assert "openDatePicker" in r.text
-    assert "agent-me terminal" in r.text
+    assert "defaultReleaseStartDate" in r.text
+    assert "defaultReleaseEndDate" in r.text
+    assert "agent-me terminal" not in r.text
+    assert "Cancel operation" in r.text
+    assert "new terminal" in r.text
     assert "Auto SFA realtime terminal output" in r.text
     assert "streaming stdout" in r.text
     assert "terminal-cursor" in r.text
     assert "terminalLineClass" in r.text
-    assert "Auto SFA trigger history" in r.text
+    assert "Recent Auto SFA jobs" not in r.text
+    assert "Create SFA Tasks trigger history" in r.text
+    assert "Release SFA Tasks trigger history" in r.text
+    assert "filteredHistory" in r.text
     assert "/api/auto-sfa/history" in r.text
 
 
@@ -233,19 +246,35 @@ def test_auto_sfa_history_endpoint_returns_persisted_runs(
         triggered_at_ms=now,
         display_name="Thanh Phan",
         status="done",
+        flow_type="release",
+    )
+    record_auto_sfa_run(
+        state_reader.DB_PATH,
+        run_id="run-456",
+        triggered_at_ms=now + 1,
+        display_name="Hung Hoang",
+        status="error",
+        flow_type="create",
     )
 
     r = client.get("/api/auto-sfa/history", headers=_auth(with_token))
     assert r.status_code == 200
     body = r.json()
-    assert body["runs"][0]["run_id"] == "run-123"
-    assert body["runs"][0]["display_name"] == "Thanh Phan"
-    assert body["runs"][0]["status"] == "done"
+    assert body["runs"][0]["run_id"] == "run-456"
+    assert body["runs"][0]["flow_type"] == "create"
+    assert body["runs"][1]["run_id"] == "run-123"
+    assert body["runs"][1]["flow_type"] == "release"
+    assert body["runs_by_flow"]["create"][0]["run_id"] == "run-456"
+    assert body["runs_by_flow"]["release"][0]["run_id"] == "run-123"
+    assert body["runs_by_flow"]["release"][0]["display_name"] == "Thanh Phan"
+    assert body["runs_by_flow"]["release"][0]["status"] == "done"
 
     page = client.get("/auto-sfa", headers=_auth(with_token))
     assert page.status_code == 200
     assert "run-123" in page.text
+    assert "run-456" in page.text
     assert "Thanh Phan" in page.text
+    assert "Hung Hoang" in page.text
 
 
 @pytest.mark.asyncio
@@ -279,8 +308,114 @@ async def test_auto_sfa_runner_persists_trigger_history(
 
     rows = runner.recent_history(limit=5)
     assert rows[0]["run_id"] == job.job_id
+    assert rows[0]["flow_type"] == "release"
     assert rows[0]["display_name"] == "Thanh Phan"
     assert rows[0]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_runner_runs_create_flow(
+    temp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.auto_sfa import build_update_template_request
+    from agent_me.dashboard import auto_sfa_runner as runner_module
+
+    calls = []
+
+    async def fake_run_update_template(request, progress_cb=None):
+        calls.append(request)
+        if progress_cb:
+            await progress_cb({"event": "line", "line_no": 1, "line": "ok"})
+
+    monkeypatch.setattr(runner_module, "run_update_template", fake_run_update_template)
+
+    request = build_update_template_request({
+        "display_name": "Thanh Phan",
+        "folder_id": "494139",
+    })
+    runner = runner_module.AutoSFARunner()
+    job = await runner.start(request)
+
+    for _ in range(50):
+        if runner.get_job(job.job_id).status == "done":
+            break
+        await asyncio.sleep(0.01)
+
+    assert calls == [request]
+    assert runner.get_job(job.job_id).status == "done"
+    rows = runner.recent_history(limit=5, flow_type="create")
+    assert rows[0]["run_id"] == job.job_id
+    assert rows[0]["flow_type"] == "create"
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_runner_allows_concurrent_jobs(
+    temp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.auto_sfa import build_update_template_request
+    from agent_me.dashboard import auto_sfa_runner as runner_module
+
+    started: list[str] = []
+    release = asyncio.Event()
+
+    async def fake_run_update_template(request, progress_cb=None):
+        started.append(request.display_name)
+        if len(started) == 2:
+            release.set()
+        await release.wait()
+
+    monkeypatch.setattr(runner_module, "run_update_template", fake_run_update_template)
+
+    runner = runner_module.AutoSFARunner()
+    first = await runner.start(build_update_template_request({
+        "display_name": "Thanh Phan",
+        "folder_id": "494139",
+    }))
+    second = await runner.start(build_update_template_request({
+        "display_name": "Hung Hoang",
+        "folder_id": "494140",
+    }))
+
+    for _ in range(50):
+        if len(started) == 2:
+            break
+        await asyncio.sleep(0.01)
+
+    assert sorted(started) == ["Hung Hoang", "Thanh Phan"]
+    assert runner.get_job(first.job_id).status in {"running", "done"}
+    assert runner.get_job(second.job_id).status in {"running", "done"}
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_runner_cancel_marks_job_cancelled(
+    temp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.auto_sfa import build_update_template_request
+    from agent_me.dashboard import auto_sfa_runner as runner_module
+
+    started = asyncio.Event()
+
+    async def fake_run_update_template(request, progress_cb=None):
+        started.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(runner_module, "run_update_template", fake_run_update_template)
+
+    runner = runner_module.AutoSFARunner()
+    job = await runner.start(build_update_template_request({
+        "display_name": "Thanh Phan",
+        "folder_id": "494139",
+    }))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    cancelled = await runner.cancel(job.job_id)
+
+    assert cancelled is not None
+    for _ in range(50):
+        if runner.get_job(job.job_id).status == "cancelled":
+            break
+        await asyncio.sleep(0.01)
+    assert runner.get_job(job.job_id).status == "cancelled"
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:
@@ -460,6 +595,119 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     assert captured["request"].auth_username == "thaphan"
     assert captured["request"].auth_password == "dummy-password"
     assert "dummy-password" not in json.dumps(body)
+
+
+def test_api_auto_sfa_run_starts_create_job(client: TestClient, monkeypatch,
+                                            with_token: str) -> None:
+    import uuid
+
+    from agent_me.dashboard import app as app_module
+    from agent_me.dashboard.auto_sfa_runner import AutoSFAJob
+
+    captured = {}
+
+    async def fake_start(self, request):
+        captured["request"] = request
+        return AutoSFAJob(
+            job_id=uuid.uuid4().hex[:8],
+            started_at=int(time.time() * 1000),
+            request=request,
+            status="pending",
+        )
+
+    monkeypatch.setattr(app_module.AUTO_SFA_RUNNER.__class__, "start", fake_start)
+
+    r = client.post(
+        "/api/auto-sfa/run",
+        json={
+            "flow_type": "create",
+            "display_name": "Thanh Phan",
+            "folder_id": "494139",
+            "template_ids_enabled": True,
+            "template_ids": "5996784,5996785",
+            "use_personal_credentials": True,
+            "auth_username": "thaphan",
+            "auth_password": "dummy-password",
+        },
+        headers=_auth(with_token),
+    )
+
+    assert r.status_code == 202
+    body = r.json()
+    assert body["request"]["flow_type"] == "create"
+    assert captured["request"].display_name == "Thanh Phan"
+    assert captured["request"].template_project_id == 1072
+    assert captured["request"].folder_id == 494139
+    assert captured["request"].template_ids == "5996784,5996785"
+    assert captured["request"].auth_username == "thaphan"
+    assert captured["request"].auth_password == "dummy-password"
+    assert "dummy-password" not in json.dumps(body)
+
+
+def test_api_auto_sfa_run_infers_create_job_from_folder_id(
+    client: TestClient, monkeypatch, with_token: str
+) -> None:
+    import uuid
+
+    from agent_me.dashboard import app as app_module
+    from agent_me.dashboard.auto_sfa_runner import AutoSFAJob
+
+    captured = {}
+
+    async def fake_start(self, request):
+        captured["request"] = request
+        return AutoSFAJob(
+            job_id=uuid.uuid4().hex[:8],
+            started_at=int(time.time() * 1000),
+            request=request,
+            status="pending",
+        )
+
+    monkeypatch.setattr(app_module.AUTO_SFA_RUNNER.__class__, "start", fake_start)
+
+    r = client.post(
+        "/api/auto-sfa/run",
+        json={
+            "display_name": "Thanh Phan",
+            "folder_id": "494139",
+            "source_folder_id": "50722",
+            "devtest_folder_id": "",
+            "url_path": "",
+            "start_date": "",
+            "finish_date": "",
+        },
+        headers=_auth(with_token),
+    )
+
+    assert r.status_code == 202
+    body = r.json()
+    assert body["request"]["flow_type"] == "create"
+    assert captured["request"].display_name == "Thanh Phan"
+    assert captured["request"].folder_id == 494139
+
+
+def test_api_auto_sfa_cancel_job(client: TestClient, monkeypatch,
+                                 with_token: str) -> None:
+    from agent_me.dashboard import app as app_module
+
+    calls = []
+
+    async def fake_cancel(job_id):
+        calls.append(job_id)
+
+        class Job:
+            def public_dict(self):
+                return {"job_id": job_id, "status": "cancelled"}
+
+        return Job()
+
+    monkeypatch.setattr(app_module.AUTO_SFA_RUNNER, "cancel", fake_cancel)
+
+    r = client.post("/api/auto-sfa/job-123/cancel", headers=_auth(with_token))
+
+    assert r.status_code == 202
+    assert r.json() == {"job_id": "job-123", "status": "cancelled"}
+    assert calls == ["job-123"]
 
 
 def test_operator_action_endpoints_require_passcode(client: TestClient,

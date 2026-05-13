@@ -35,6 +35,7 @@ from starlette.templating import Jinja2Templates
 from agent_me.auto_sfa import (
     AutoSFAValidationError,
     build_auto_sfa_request,
+    build_update_template_request,
 )
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
@@ -351,12 +352,10 @@ def _auto_sfa_default_source_folder_id() -> str:
 
 
 async def page_auto_sfa(request: Request):
-    active_job = AUTO_SFA_RUNNER.active_job()
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
         "sources": SOURCES,
-        "active_job": active_job.public_dict() if active_job else None,
+        "active_job": None,
         "default_source_folder_id": _auto_sfa_default_source_folder_id(),
-        "recent_jobs": [j.public_dict() for j in AUTO_SFA_RUNNER.recent_jobs(limit=5)],
         "run_history": AUTO_SFA_RUNNER.recent_history(limit=100),
     })
 
@@ -492,40 +491,79 @@ async def api_auto_sfa_run(request: Request):
         return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
 
     values = dict(payload)
-    if "source_fodler_id" in payload and "source_folder_id" not in values:
-        values["source_folder_id"] = payload.get("source_fodler_id")
-    if "source_folder" in payload and "source_folder_id" not in values:
-        values["source_folder_id"] = payload.get("source_folder")
-    if "destination_folder_id" in payload and "devtest_folder_id" not in values:
-        values["devtest_folder_id"] = payload.get("destination_folder_id")
-    if "start" in payload and "start_date" not in values:
-        values["start_date"] = payload.get("start")
-    if "finish" in payload and "finish_date" not in values:
-        values["finish_date"] = payload.get("finish")
-    if "end" in payload and "finish_date" not in values:
-        values["finish_date"] = payload.get("end")
+    raw_flow_value = values.get("flow_type") or values.get("workflow") or values.get("mode")
+    raw_flow = str(raw_flow_value or "").strip().lower()
+    create_payload_keys = ("folder_id", "template_folder_id", "template_id", "template_ids")
+    release_payload_keys = (
+        "devtest_folder_id",
+        "destination_folder_id",
+        "url_path",
+        "start_date",
+        "finish_date",
+        "start",
+        "finish",
+        "end",
+    )
+    if not raw_flow:
+        has_create_payload = any(str(values.get(key) or "").strip()
+                                 for key in create_payload_keys)
+        has_release_payload = any(str(values.get(key) or "").strip()
+                                  for key in release_payload_keys)
+        raw_flow = "create" if has_create_payload and not has_release_payload else "release"
+
+    if raw_flow in {"create", "create_sfa", "create_sfa_tasks", "update-template", "template"}:
+        flow_type = "create"
+    elif raw_flow in {"release", "release_sfa", "release_sfa_tasks", "sfa"}:
+        flow_type = "release"
+    else:
+        return JSONResponse({"error": f"unknown Auto SFA flow_type: {raw_flow}"},
+                            status_code=400)
+
+    if flow_type == "create":
+        if "template_folder_id" in payload and "folder_id" not in values:
+            values["folder_id"] = payload.get("template_folder_id")
+        if "template_id" in payload and "template_ids" not in values:
+            values["template_ids"] = payload.get("template_id")
+    else:
+        if "source_fodler_id" in payload and "source_folder_id" not in values:
+            values["source_folder_id"] = payload.get("source_fodler_id")
+        if "source_folder" in payload and "source_folder_id" not in values:
+            values["source_folder_id"] = payload.get("source_folder")
+        if "destination_folder_id" in payload and "devtest_folder_id" not in values:
+            values["devtest_folder_id"] = payload.get("destination_folder_id")
+        if "start" in payload and "start_date" not in values:
+            values["start_date"] = payload.get("start")
+        if "finish" in payload and "finish_date" not in values:
+            values["finish_date"] = payload.get("finish")
+        if "end" in payload and "finish_date" not in values:
+            values["finish_date"] = payload.get("end")
     try:
-        sfa_request = build_auto_sfa_request(values)
+        sfa_request = (
+            build_update_template_request(values)
+            if flow_type == "create"
+            else build_auto_sfa_request(values)
+        )
     except AutoSFAValidationError as exc:
         return JSONResponse({"error": "invalid Auto SFA input", "errors": exc.errors},
                             status_code=400)
 
-    try:
-        job = await AUTO_SFA_RUNNER.start(sfa_request)
-    except RuntimeError as exc:
-        active = AUTO_SFA_RUNNER.active_job()
-        return JSONResponse(
-            {
-                "error": str(exc),
-                "active_job": active.public_dict() if active else None,
-            },
-            status_code=409,
-        )
+    job = await AUTO_SFA_RUNNER.start(sfa_request)
+    return JSONResponse(job.public_dict(), status_code=202)
+
+
+async def api_auto_sfa_cancel(request: Request):
+    job_id = request.path_params["job_id"]
+    job = await AUTO_SFA_RUNNER.cancel(job_id)
+    if job is None:
+        return JSONResponse({"error": "unknown job_id"}, status_code=404)
     return JSONResponse(job.public_dict(), status_code=202)
 
 
 async def api_auto_sfa_history(_request: Request):
-    return JSONResponse({"runs": AUTO_SFA_RUNNER.recent_history(limit=100)})
+    return JSONResponse({
+        "runs": AUTO_SFA_RUNNER.recent_history(limit=100),
+        "runs_by_flow": AUTO_SFA_RUNNER.recent_history_by_flow(limit=100),
+    })
 
 
 # ── Routes: SSE ─────────────────────────────────────────────────────────
@@ -641,6 +679,8 @@ def build_app() -> Starlette:
               name="api_mcp_auth_refresh"),
         Route("/api/auto-sfa/run", api_auto_sfa_run, methods=["POST"],
               name="api_auto_sfa_run"),
+        Route("/api/auto-sfa/{job_id}/cancel", api_auto_sfa_cancel, methods=["POST"],
+              name="api_auto_sfa_cancel"),
         Route("/api/auto-sfa/history", api_auto_sfa_history,
               name="api_auto_sfa_history"),
         Route("/api/sse/logs", sse_logs, name="sse_logs"),

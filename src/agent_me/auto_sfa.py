@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -53,6 +54,22 @@ AUTO_SFA_FIELD_LABELS = {
     "finish_date": "end",
 }
 
+UPDATE_TEMPLATE_FIELD_ORDER = (
+    "display_name",
+    "folder_id",
+    "template_ids",
+)
+
+UPDATE_TEMPLATE_FIELD_LABELS = {
+    "display_name": "display_name",
+    "folder_id": "folder_id",
+    "template_ids": "template_ids",
+    "template_ids_enabled": "template_ids_enabled",
+    "template_project_id": "project_id",
+    "auth_username": "USERNAME",
+    "auth_password": "PASSWORD",
+}
+
 AUTO_SFA_REQUIRED_BASE_FIELDS = (
     "display_name",
     "devtest_folder_id",
@@ -78,6 +95,7 @@ AUTO_SFA_URL_FIELDS = (
 )
 
 AUTO_SFA_COMPLEXITY_LEVELS = {"L0", "L1", "L2", "L3", "L4", "TT"}
+AUTO_SFA_TEMPLATE_PROJECT_ID = 1072
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DATE_SEARCH_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -106,6 +124,16 @@ INLINE_KEY_RE = re.compile(
     r"actual[-_ ]?qa[-_ ]?start(?:[-_ ]?date)?|"
     r"complexity(?:[-_ ]?level)?|"
     r"start(?:[-_ ]?date)?|finish(?:[-_ ]?date)?|end(?:[-_ ]?date)?"
+    r")\s*(?:[:=\uff1a]|\s+l\u00e0\s+|\s+la\s+)\s*",
+)
+TEMPLATE_INLINE_KEY_RE = re.compile(
+    r"(?im)(^|[\n,;])\s*(?:[-*]\s*)?"
+    r"(?P<key>"
+    r"display[-_ ]?name|template[-_ ]?owner|owner|user[-_ ]?login|username|user|"
+    r"template[-_ ]?ids?|templates?|ids?|"
+    r"folder[-_ ]?id|template[-_ ]?folder[-_ ]?id|"
+    r"project[-_ ]?id|template[-_ ]?project[-_ ]?id|"
+    r"auth[-_ ]?username|devtest[-_ ]?auth[-_ ]?username|password|auth[-_ ]?password"
     r")\s*(?:[:=\uff1a]|\s+l\u00e0\s+|\s+la\s+)\s*",
 )
 
@@ -141,12 +169,17 @@ class AutoSFARequest:
     auth_password: str | None = None
 
     @property
+    def flow_type(self) -> str:
+        return "release"
+
+    @property
     def user_login(self) -> str:
         """Compatibility alias for the legacy name of magic-auto's -u flag."""
         return self.display_name
 
     def as_input_dict(self) -> dict[str, Any]:
         return {
+            "flow_type": self.flow_type,
             "display_name": self.display_name,
             "devtest_project_id": self.devtest_project_id,
             "source_folder_id": self.source_folder_id,
@@ -164,6 +197,35 @@ class AutoSFARequest:
             "source_code_path": self.source_code_path,
             "code_review_path": self.code_review_path,
             "task_ids": self.task_ids,
+            "auth_username": self.auth_username,
+            "auth_password_set": bool(self.auth_password),
+        }
+
+
+@dataclass(frozen=True)
+class TemplateSFARequest:
+    display_name: str
+    folder_id: int
+    template_ids: str | None = None
+    template_project_id: int = AUTO_SFA_TEMPLATE_PROJECT_ID
+    auth_username: str | None = None
+    auth_password: str | None = None
+
+    @property
+    def flow_type(self) -> str:
+        return "create"
+
+    @property
+    def user_login(self) -> str:
+        return self.display_name
+
+    def as_input_dict(self) -> dict[str, Any]:
+        return {
+            "flow_type": self.flow_type,
+            "display_name": self.display_name,
+            "template_project_id": self.template_project_id,
+            "folder_id": self.folder_id,
+            "template_ids": self.template_ids,
             "auth_username": self.auth_username,
             "auth_password_set": bool(self.auth_password),
         }
@@ -195,13 +257,19 @@ def resolve_uv_bin() -> str:
     return "uv"
 
 
-def auto_sfa_command(request: AutoSFARequest, uv_bin: str | None = None) -> list[str]:
+def auto_sfa_command(
+    request: AutoSFARequest,
+    uv_bin: str | None = None,
+    config_file: str | Path | None = None,
+) -> list[str]:
     cmd = [
         uv_bin or resolve_uv_bin(),
         "run",
         "dtoperator.py",
         "sfa",
     ]
+    if config_file is not None:
+        cmd.extend(["-c", str(config_file)])
     if request.task_ids:
         cmd.extend(["-i", request.task_ids])
     cmd.extend([
@@ -209,6 +277,27 @@ def auto_sfa_command(request: AutoSFARequest, uv_bin: str | None = None) -> list
         request.display_name,
         "-f",
     ])
+    return cmd
+
+
+def update_template_command(
+    request: TemplateSFARequest,
+    uv_bin: str | None = None,
+    config_file: str | Path | None = None,
+) -> list[str]:
+    cmd = [
+        uv_bin or resolve_uv_bin(),
+        "run",
+        "dtoperator.py",
+        "update-template",
+        "-u",
+        request.display_name,
+    ]
+    if config_file is not None:
+        cmd.extend(["-c", str(config_file)])
+    if request.template_ids:
+        cmd.extend(["-i", request.template_ids])
+    cmd.extend(["--folder-id", str(request.folder_id), "-f"])
     return cmd
 
 
@@ -328,6 +417,30 @@ def canonical_auto_sfa_key(key: str) -> str | None:
         return "start_date"
     if "finish" in normalized or "end" in normalized:
         return "finish_date"
+    return None
+
+
+def canonical_update_template_key(key: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+    if normalized in {
+        "display_name",
+        "template_owner",
+        "owner",
+        "user_login",
+        "username",
+        "user",
+    }:
+        return "display_name"
+    if normalized in {"folder_id", "template_folder_id"}:
+        return "folder_id"
+    if normalized in {"template_ids", "template_id", "templates", "ids", "id"}:
+        return "template_ids"
+    if normalized in {"project_id", "template_project_id"}:
+        return "template_project_id"
+    if normalized in {"auth_username", "devtest_auth_username"}:
+        return "auth_username"
+    if normalized in {"password", "auth_password"}:
+        return "auth_password"
     return None
 
 
@@ -458,6 +571,50 @@ def _parse_inline_key_values(body: str) -> dict[str, str]:
     return keyed
 
 
+def _apply_update_template_shortcuts(values: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(values)
+
+    display_name = (
+        normalized.get("display_name")
+        or normalized.get("template_owner")
+        or normalized.get("user_login")
+        or normalized.get("username")
+        or normalized.get("owner")
+    )
+    if display_name:
+        normalized["display_name"] = str(display_name).strip()
+
+    if normalized.get("project_id") and not normalized.get("template_project_id"):
+        normalized["template_project_id"] = normalized["project_id"]
+    if not normalized.get("template_project_id"):
+        normalized["template_project_id"] = AUTO_SFA_TEMPLATE_PROJECT_ID
+
+    auth_username = normalized.get("auth_username")
+    if auth_username:
+        normalized["auth_username"] = _derive_auth_username(auth_username)
+
+    if "template_ids" in normalized and normalized["template_ids"] is not None:
+        normalized["template_ids"] = _clean_auto_sfa_value(
+            "template_ids", normalized["template_ids"]
+        )
+
+    return normalized
+
+
+def _parse_update_template_inline_key_values(body: str) -> dict[str, str]:
+    matches = list(TEMPLATE_INLINE_KEY_RE.finditer(body))
+    if not matches:
+        return {}
+    keyed: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        canonical = canonical_update_template_key(match.group("key"))
+        if canonical is None:
+            continue
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        keyed[canonical] = _clean_auto_sfa_value(canonical, body[match.end():end])
+    return keyed
+
+
 def parse_auto_sfa_message(
     text: str | None,
     existing: dict[str, Any] | None = None,
@@ -496,10 +653,56 @@ def parse_auto_sfa_message(
     return _apply_auto_sfa_shortcuts(values)
 
 
+def parse_update_template_message(
+    text: str | None,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Parse Slack/chat input for the create-template Auto SFA flow.
+
+    Ordered fallback maps non-empty lines to display name, folder ID, then
+    optional template IDs.
+    """
+    values = dict(existing or {})
+    body = _clean_auto_sfa_body(text)
+
+    keyed = _parse_update_template_inline_key_values(body)
+    if keyed:
+        values.update(keyed)
+        return _apply_update_template_shortcuts(values)
+
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    ordered: list[str] = []
+    for line in lines:
+        match = KEY_VALUE_RE.match(line)
+        if not match:
+            ordered.append(line)
+            continue
+        canonical = canonical_update_template_key(match.group(1))
+        if canonical is None:
+            ordered.append(line)
+            continue
+        values[canonical] = _clean_auto_sfa_value(canonical, match.group(2))
+
+    if ordered:
+        missing = [field for field in UPDATE_TEMPLATE_FIELD_ORDER if not values.get(field)]
+        for field, value in zip(missing, ordered, strict=False):
+            values[field] = _clean_auto_sfa_value(field, value)
+    return _apply_update_template_shortcuts(values)
+
+
 def missing_auto_sfa_fields(values: dict[str, Any]) -> list[str]:
     normalized = _apply_auto_sfa_shortcuts(values)
     missing: list[str] = []
     for field in AUTO_SFA_REQUIRED_BASE_FIELDS:
+        if not str(normalized.get(field) or "").strip():
+            missing.append(field)
+    return missing
+
+
+def missing_update_template_fields(values: dict[str, Any]) -> list[str]:
+    normalized = _apply_update_template_shortcuts(values)
+    missing: list[str] = []
+    for field in ("display_name", "folder_id"):
         if not str(normalized.get(field) or "").strip():
             missing.append(field)
     return missing
@@ -521,16 +724,31 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
 
 
-def _normalize_task_ids(value: Any) -> tuple[str | None, list[str]]:
+def _normalize_id_csv(value: Any, field_name: str) -> tuple[str | None, list[str]]:
     raw = str(value or "").strip()
     if not raw:
         return None, []
     parts = [part for part in re.split(r"[\s,;]+", raw) if part]
     invalid = [part for part in parts if not part.isdigit()]
     if invalid:
-        return None, [f"task_ids contains invalid ID(s): {', '.join(invalid)}"]
+        return None, [f"{field_name} contains invalid ID(s): {', '.join(invalid)}"]
     normalized = ",".join(str(int(part)) for part in parts)
     return normalized or None, []
+
+
+def _normalize_task_ids(value: Any) -> tuple[str | None, list[str]]:
+    return _normalize_id_csv(value, "task_ids")
+
+
+def _normalize_template_ids(value: Any) -> tuple[str | None, list[str]]:
+    return _normalize_id_csv(value, "template_ids")
+
+
+def _validate_display_name(display_name: str, errors: list[str]) -> None:
+    if not display_name:
+        errors.append("display_name is required")
+    elif "@" in display_name or re.fullmatch(r"[A-Za-z0-9._-]+", display_name):
+        errors.append("display_name must be a DevTest display name like Thanh Phan")
 
 
 def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
@@ -538,10 +756,7 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
     errors: list[str] = []
 
     display_name = str(values.get("display_name") or "").strip()
-    if not display_name:
-        errors.append("display_name is required")
-    elif "@" in display_name or re.fullmatch(r"[A-Za-z0-9._-]+", display_name):
-        errors.append("display_name must be a DevTest display name like Thanh Phan")
+    _validate_display_name(display_name, errors)
 
     task_ids_enabled = _truthy(values.get("task_ids_enabled"))
     task_ids, task_id_errors = _normalize_task_ids(values.get("task_ids"))
@@ -679,12 +894,72 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
     )
 
 
-def update_magic_auto_config(
-    request: AutoSFARequest,
-    repo_dir: str | Path | None = None,
-) -> dict[str, Any]:
-    repo = resolve_magic_auto_repo_dir(repo_dir)
-    config_path = repo / "configs.json"
+def build_update_template_request(values: dict[str, Any]) -> TemplateSFARequest:
+    values = _apply_update_template_shortcuts(values)
+    errors: list[str] = []
+
+    display_name = str(values.get("display_name") or "").strip()
+    _validate_display_name(display_name, errors)
+
+    project_raw = str(
+        values.get("template_project_id") or values.get("project_id") or AUTO_SFA_TEMPLATE_PROJECT_ID
+    ).strip()
+    try:
+        template_project_id = int(project_raw)
+    except ValueError:
+        template_project_id = 0
+    if template_project_id != AUTO_SFA_TEMPLATE_PROJECT_ID:
+        errors.append("project_id must be 1072 for Create SFA Tasks")
+
+    folder_raw = str(values.get("folder_id") or values.get("template_folder_id") or "").strip()
+    try:
+        folder_id = int(folder_raw)
+        if folder_id <= 0:
+            raise ValueError
+    except ValueError:
+        folder_id = 0
+        errors.append("folder_id must be a positive integer")
+
+    template_ids_enabled = _truthy(values.get("template_ids_enabled"))
+    template_ids, template_id_errors = _normalize_template_ids(values.get("template_ids"))
+    errors.extend(template_id_errors)
+    if template_ids_enabled and not template_ids and not template_id_errors:
+        errors.append("template_ids is required when specific template ID mode is enabled")
+
+    use_default_credentials = _truthy(values.get("use_default_credentials"))
+    raw_auth_username = str(values.get("auth_username") or "").strip()
+    raw_auth_password = values.get("auth_password")
+    use_personal_credentials = _truthy(values.get("use_personal_credentials"))
+    auth_username = _derive_auth_username(raw_auth_username) if raw_auth_username else None
+    auth_password = None if raw_auth_password in (None, "") else str(raw_auth_password)
+    if use_default_credentials:
+        auth_username = None
+        auth_password = None
+    elif use_personal_credentials or auth_username or auth_password:
+        if not auth_username:
+            errors.append("USERNAME is required when custom DevTest credentials are enabled")
+        elif not re.match(r"^[A-Za-z0-9._-]+$", auth_username):
+            errors.append("USERNAME must be a short DevTest login like thaphan")
+        if not auth_password:
+            errors.append("PASSWORD is required when custom DevTest credentials are enabled")
+    else:
+        auth_username = None
+        auth_password = None
+
+    if errors:
+        raise AutoSFAValidationError(errors)
+
+    return TemplateSFARequest(
+        display_name=display_name,
+        template_project_id=template_project_id,
+        folder_id=folder_id,
+        template_ids=template_ids,
+        auth_username=auth_username,
+        auth_password=auth_password,
+    )
+
+
+def _auto_sfa_config_payload(request: AutoSFARequest, config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"magic-auto config not found: {config_path}")
 
@@ -713,12 +988,19 @@ def update_magic_auto_config(
         "source_code_path": request.source_code_path,
         "code_review_path": request.code_review_path,
     })
+    return data
 
-    tmp_path = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(json.dumps(data, indent=2) + "\n")
-    tmp_path.replace(config_path)
+
+def _auto_sfa_config_summary(
+    request: AutoSFARequest,
+    data: dict[str, Any],
+    config_path: Path,
+    *,
+    temporary: bool,
+) -> dict[str, Any]:
     return {
         "config_path": str(config_path),
+        "temporary": temporary,
         "devtest_project_id": request.devtest_project_id,
         "source_folder_id": data.get("source_folder_id"),
         "devtest_folder_id": request.devtest_folder_id,
@@ -735,6 +1017,50 @@ def update_magic_auto_config(
         "source_code_path": request.source_code_path,
         "code_review_path": request.code_review_path,
     }
+
+
+def update_magic_auto_config(
+    request: AutoSFARequest,
+    repo_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    repo = resolve_magic_auto_repo_dir(repo_dir)
+    config_path = repo / "configs.json"
+    data = _auto_sfa_config_payload(request, config_path)
+
+    tmp_path = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(json.dumps(data, indent=2) + "\n")
+    tmp_path.replace(config_path)
+    return _auto_sfa_config_summary(request, data, config_path, temporary=False)
+
+
+def write_temp_magic_auto_config(
+    request: AutoSFARequest,
+    repo_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    repo = resolve_magic_auto_repo_dir(repo_dir)
+    base_config_path = repo / "configs.json"
+    data = _auto_sfa_config_payload(request, base_config_path)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix=".agent-me-auto-sfa-",
+            suffix=".json",
+            dir=repo,
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            json.dump(data, tmp, indent=2)
+            tmp.write("\n")
+    except Exception:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        raise
+    if tmp_path is None:
+        raise RuntimeError("failed to create temporary Auto SFA config")
+    return _auto_sfa_config_summary(request, data, tmp_path, temporary=True)
 
 
 @contextlib.asynccontextmanager
@@ -757,6 +1083,22 @@ async def _emit(progress_cb: ProgressCallback | None, event: dict[str, Any]) -> 
     await progress_cb(event)
 
 
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        return
+    except TimeoutError:
+        pass
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+
+
 async def run_auto_sfa(
     request: AutoSFARequest,
     *,
@@ -765,46 +1107,47 @@ async def run_auto_sfa(
     timeout_s: float | None = None,
     uv_bin: str | None = None,
 ) -> int:
-    """Update magic-auto config and stream the SFA command output."""
+    """Run SFA with an isolated temporary magic-auto config."""
     repo = resolve_magic_auto_repo_dir(repo_dir)
     timeout = timeout_s
     if timeout is None:
         timeout = float(os.environ.get("AUTO_SFA_TIMEOUT_S", 60 * 60))
 
-    async with auto_sfa_lock(repo):
-        summary = update_magic_auto_config(request, repo)
-        await _emit(progress_cb, {"event": "config_updated", **summary})
+    summary = write_temp_magic_auto_config(request, repo)
+    temp_config_path = Path(summary["config_path"])
+    await _emit(progress_cb, {"event": "config_updated", **summary})
 
-        cmd = auto_sfa_command(request, uv_bin=uv_bin)
-        await _emit(
-            progress_cb,
-            {
-                "event": "started",
-                "cwd": str(repo),
-                "command": shlex.join(cmd),
-                "display_name": request.display_name,
-                "task_ids": request.task_ids,
-                "credential_mode": "custom" if request.auth_username else "default",
-                "auth_username": request.auth_username,
-            },
-        )
+    cmd = auto_sfa_command(request, uv_bin=uv_bin, config_file=temp_config_path)
+    await _emit(
+        progress_cb,
+        {
+            "event": "started",
+            "cwd": str(repo),
+            "command": shlex.join(cmd),
+            "display_name": request.display_name,
+            "task_ids": request.task_ids,
+            "credential_mode": "custom" if request.auth_username else "default",
+            "auth_username": request.auth_username,
+        },
+    )
 
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        if request.auth_username:
-            env["DEVTEST_USERNAME"] = request.auth_username
-        if request.auth_password:
-            env["DEVTEST_PASSWORD"] = request.auth_password
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(repo),
-            env=env,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            limit=16 * 1024 * 1024,
-        )
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if request.auth_username:
+        env["DEVTEST_USERNAME"] = request.auth_username
+    if request.auth_password:
+        env["DEVTEST_PASSWORD"] = request.auth_password
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(repo),
+        env=env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        limit=16 * 1024 * 1024,
+    )
 
+    try:
         started = time.monotonic()
         line_no = 0
 
@@ -839,6 +1182,19 @@ async def run_auto_sfa(
                 {"event": "error", "error": f"Auto SFA timed out after {seconds}s"},
             )
             raise
+        except asyncio.CancelledError:
+            await _terminate_process(proc)
+            seconds = int(time.monotonic() - started)
+            await _emit(
+                progress_cb,
+                {
+                    "event": "cancelled",
+                    "seconds": seconds,
+                    "line_count": line_no,
+                    "error": "Auto SFA cancelled by user",
+                },
+            )
+            raise
 
         seconds = int(time.monotonic() - started)
         terminal_event = "done" if return_code == 0 else "error"
@@ -854,3 +1210,130 @@ async def run_auto_sfa(
         if return_code != 0:
             raise RuntimeError(f"Auto SFA exited with code {return_code}")
         return return_code
+    finally:
+        with contextlib.suppress(OSError):
+            temp_config_path.unlink()
+
+
+async def run_update_template(
+    request: TemplateSFARequest,
+    *,
+    repo_dir: str | Path | None = None,
+    progress_cb: ProgressCallback | None = None,
+    timeout_s: float | None = None,
+    uv_bin: str | None = None,
+) -> int:
+    """Run magic-auto's pre-SFA update-template command and stream output."""
+    repo = resolve_magic_auto_repo_dir(repo_dir)
+    timeout = timeout_s
+    if timeout is None:
+        timeout = float(os.environ.get("AUTO_SFA_TIMEOUT_S", 60 * 60))
+
+    await _emit(
+        progress_cb,
+        {
+            "event": "template_configured",
+            "flow_type": request.flow_type,
+            "template_project_id": request.template_project_id,
+            "folder_id": request.folder_id,
+            "template_ids": request.template_ids,
+            "display_name": request.display_name,
+        },
+    )
+
+    cmd = update_template_command(request, uv_bin=uv_bin)
+    await _emit(
+        progress_cb,
+        {
+            "event": "started",
+            "flow_type": request.flow_type,
+            "cwd": str(repo),
+            "command": shlex.join(cmd),
+            "display_name": request.display_name,
+            "template_ids": request.template_ids,
+            "credential_mode": "custom" if request.auth_username else "default",
+            "auth_username": request.auth_username,
+        },
+    )
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    if request.auth_username:
+        env["DEVTEST_USERNAME"] = request.auth_username
+    if request.auth_password:
+        env["DEVTEST_PASSWORD"] = request.auth_password
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(repo),
+        env=env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        limit=16 * 1024 * 1024,
+    )
+
+    started = time.monotonic()
+    line_no = 0
+
+    async def drain_stdout() -> None:
+        nonlocal line_no
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            line_no += 1
+            await _emit(
+                progress_cb,
+                {
+                    "event": "line",
+                    "flow_type": request.flow_type,
+                    "line_no": line_no,
+                    "line": raw.decode(errors="replace").rstrip("\n"),
+                },
+            )
+
+    try:
+        if timeout and timeout > 0:
+            async with asyncio.timeout(timeout):
+                await drain_stdout()
+                return_code = await proc.wait()
+        else:
+            await drain_stdout()
+            return_code = await proc.wait()
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        seconds = int(time.monotonic() - started)
+        await _emit(
+            progress_cb,
+            {"event": "error", "error": f"Create SFA Tasks timed out after {seconds}s"},
+        )
+        raise
+    except asyncio.CancelledError:
+        await _terminate_process(proc)
+        seconds = int(time.monotonic() - started)
+        await _emit(
+            progress_cb,
+            {
+                "event": "cancelled",
+                "flow_type": request.flow_type,
+                "seconds": seconds,
+                "line_count": line_no,
+                "error": "Create SFA Tasks cancelled by user",
+            },
+        )
+        raise
+
+    seconds = int(time.monotonic() - started)
+    terminal_event = "done" if return_code == 0 else "error"
+    await _emit(
+        progress_cb,
+        {
+            "event": terminal_event,
+            "flow_type": request.flow_type,
+            "return_code": return_code,
+            "seconds": seconds,
+            "line_count": line_no,
+        },
+    )
+    if return_code != 0:
+        raise RuntimeError(f"Create SFA Tasks exited with code {return_code}")
+    return return_code
