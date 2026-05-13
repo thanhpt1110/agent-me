@@ -119,8 +119,10 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     assert r.status_code == 200
     assert "Auto SFA" in r.text
     assert "devtest_folder_id" in r.text
+    assert "05-2026/Week3-4" in r.text
+    assert "required templates already exist in SFA" in r.text
     assert "dashboard-date-input" in r.text
-    assert "dashboard-date-icon" in r.text
+    assert "dashboard-date-field" in r.text
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:

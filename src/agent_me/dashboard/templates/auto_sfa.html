@@ -31,6 +31,9 @@
       <input id="sfa-folder" x-model="form.devtest_folder_id" type="number" min="1" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
              placeholder="1155188" />
+      <p class="mt-1 text-xs text-slate-500">
+        Example folder: <span class="font-mono text-slate-400">05-2026/Week3-4</span>. Use the folder ID from that DevTest folder.
+      </p>
     </div>
 
     <div>
@@ -49,9 +52,6 @@
         <div class="dashboard-date-field">
           <input id="sfa-start" x-model="form.start_date" type="date" required
                  class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
-          <svg class="dashboard-date-icon" aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M8 2v4M16 2v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
-          </svg>
         </div>
       </div>
       <div>
@@ -59,11 +59,12 @@
         <div class="dashboard-date-field">
           <input id="sfa-finish" x-model="form.finish_date" type="date" required
                  class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
-          <svg class="dashboard-date-icon" aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M8 2v4M16 2v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
-          </svg>
         </div>
       </div>
+    </div>
+
+    <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+      Make sure the required templates already exist in SFA before running this workflow.
     </div>
 
     <button type="submit" :disabled="busy"
