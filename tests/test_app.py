@@ -48,6 +48,8 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "Overview" in body
     assert 'href="/auto-sfa"' in body
     assert "Auto SFA" in body
+    assert "Operator actions" in body
+    assert "Refresh MCP auth" in body
     # All brief sources should appear in the nav at minimum
     for label in ("Jira", "GitLab", "NVBugs",
                   "Slack", "Outlook", "Outlook Calendar", "GitHub"):
@@ -77,7 +79,8 @@ def test_ops_page_renders(client: TestClient, with_token: str) -> None:
     assert r.status_code == 200
     assert "Operations" in r.text
     assert "MCP servers" in r.text
-    assert "refresh auth" in r.text
+    assert "Refresh auth" in r.text
+    assert "No MCP probe cached yet" in r.text
 
 
 def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
@@ -85,6 +88,7 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     assert r.status_code == 200
     assert "Auto SFA" in r.text
     assert "devtest_folder_id" in r.text
+    assert "dashboard-date-input" in r.text
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:

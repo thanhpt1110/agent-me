@@ -32,32 +32,39 @@
 </section>
 
 <!-- ── MCP health ──────────────────────────────────────────────── -->
-<section class="mb-6 rounded-lg border border-ink-700 bg-ink-900"
-         x-data="mcpPanel({{ mcp_cache | tojson }})">
-  <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800">
-    <h2 class="font-semibold text-slate-100">MCP servers</h2>
-    <div class="flex flex-wrap items-center justify-end gap-3 text-xs">
-      <span class="text-slate-500" x-text="checkedAtLabel()"></span>
+<section class="mb-6 rounded-lg border border-accent-700/50 bg-ink-900"
+         x-data='mcpPanel({{ mcp_cache | tojson }})'>
+  <header class="px-5 py-4 border-b border-ink-700 flex flex-wrap items-center justify-between gap-3 bg-ink-800">
+    <div>
+      <h2 class="text-lg font-semibold text-slate-100">MCP servers</h2>
+      <p class="mt-1 text-sm text-slate-400">Refresh host auth exports and probe current MCP connectivity.</p>
+    </div>
+    <div class="flex flex-wrap items-center justify-end gap-2 text-sm">
+      <span class="mr-1 text-xs text-slate-500" x-text="checkedAtLabel()"></span>
       <button @click="authRefresh()" :disabled="authBusy"
-              class="rounded border border-accent-700 bg-accent-900/30 px-2.5 py-1 text-accent-300 hover:bg-accent-900/50 disabled:opacity-50">
-        <span x-show="!authBusy">refresh auth</span>
-        <span x-show="authBusy" x-cloak>refreshing…</span>
+              class="rounded bg-accent-600 px-3 py-2 font-semibold text-white hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed">
+        <span x-show="!authBusy">Refresh auth</span>
+        <span x-show="authBusy" x-cloak>Refreshing...</span>
       </button>
       <button @click="refresh()" :disabled="busy"
-              class="text-accent-400 hover:underline disabled:opacity-50">
-        <span x-show="!busy">⟲ probe now</span>
-        <span x-show="busy" x-cloak>probing…</span>
+              class="rounded border border-ink-600 bg-ink-900 px-3 py-2 font-semibold text-slate-100 hover:border-accent-600 disabled:opacity-50 disabled:cursor-not-allowed">
+        <span x-show="!busy">Probe now</span>
+        <span x-show="busy" x-cloak>Probing...</span>
       </button>
     </div>
   </header>
-  <div class="p-2">
+  <div class="p-4">
     <template x-if="servers.length === 0">
-      <p class="px-2 py-3 text-sm text-slate-400">
-        No probe yet. Click <span class="text-accent-400">probe now</span> to run <code class="font-mono">codex mcp list</code>.
-      </p>
+      <div class="rounded-lg border border-ink-700 bg-ink-950 p-5">
+        <div class="text-sm font-semibold text-slate-100">No MCP probe cached yet</div>
+        <p class="mt-2 max-w-2xl text-sm text-slate-400">
+          Use <span class="text-accent-400">Probe now</span> to run <code class="font-mono">codex mcp list</code>,
+          or <span class="text-accent-400">Refresh auth</span> to reload host credentials before probing.
+        </p>
+      </div>
     </template>
     <template x-if="authResult || authError">
-      <div class="mx-2 mb-2 rounded border px-3 py-2 text-xs"
+      <div class="mb-4 rounded border px-3 py-2 text-xs"
            :class="authError || authResult?.needs_mac_sync
              ? 'border-amber-800 bg-amber-950/30 text-amber-200'
              : 'border-emerald-800 bg-emerald-950/30 text-emerald-200'">
@@ -85,20 +92,25 @@
       </div>
     </template>
     <template x-if="servers.length > 0">
-      <ul class="divide-y divide-ink-700">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         <template x-for="s in servers" :key="s.name">
-          <li class="px-2 py-2 flex items-center justify-between text-sm">
-            <span class="font-mono text-slate-200" x-text="s.name"></span>
-            <span class="text-xs px-2 py-0.5 rounded"
-                  :class="{
-                    'bg-emerald-900/40 text-emerald-300 border border-emerald-800': s.connected,
-                    'bg-amber-900/40 text-amber-300 border border-amber-800': s.needs_auth,
-                    'bg-rose-900/50 text-rose-300 border border-rose-800': !s.connected && !s.needs_auth,
-                  }"
-                  x-text="s.connected ? '✓ connected' : (s.needs_auth ? '! needs auth' : '✗ failed')"></span>
-          </li>
+          <article class="min-h-24 rounded-lg border border-ink-700 bg-ink-950 p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-mono text-sm font-semibold text-slate-100 truncate" x-text="s.name"></div>
+                <div class="mt-1 text-xs text-slate-500 truncate" x-text="authLabel(s)"></div>
+              </div>
+              <span class="shrink-0 text-xs px-2 py-0.5 rounded border"
+                    :class="{
+                      'bg-emerald-900/40 text-emerald-300 border-emerald-800': s.connected,
+                      'bg-amber-900/40 text-amber-300 border-amber-800': s.needs_auth,
+                      'bg-rose-900/50 text-rose-300 border-rose-800': !s.connected && !s.needs_auth,
+                    }"
+                    x-text="s.connected ? 'connected' : (s.needs_auth ? 'needs auth' : 'failed')"></span>
+            </div>
+          </article>
         </template>
-      </ul>
+      </div>
     </template>
   </div>
 </section>
@@ -202,6 +214,14 @@
         if (s < 60) return `probed ${s}s ago`;
         if (s < 3600) return `probed ${Math.floor(s / 60)}m ago`;
         return `probed ${Math.floor(s / 3600)}h ago`;
+      },
+
+      authLabel(server) {
+        const raw = server.raw_line || "";
+        if (raw.includes("Bearer token")) return "Bearer token";
+        if (raw.includes("Unsupported")) return "Unsupported auth";
+        if (server.needs_auth) return "Needs authentication";
+        return server.connected ? "Ready" : "Check raw status";
       },
 
       async refresh() {

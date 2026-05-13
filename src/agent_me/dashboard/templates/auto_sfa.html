@@ -2,7 +2,7 @@
 {% block title %}Auto SFA · agent-me dashboard{% endblock %}
 
 {% block content %}
-<div x-data="autoSfaPage({{ active_job | tojson }})" x-init="init()">
+<div x-data='autoSfaPage({{ active_job | tojson }})' x-init="init()">
 
 <section class="mb-6 flex items-end justify-between flex-wrap gap-3">
   <div>
@@ -47,12 +47,12 @@
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-start">start</label>
         <input id="sfa-start" x-model="form.start_date" type="date" required
-               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100" />
+               class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
       </div>
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-finish">finish</label>
         <input id="sfa-finish" x-model="form.finish_date" type="date" required
-               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100" />
+               class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
       </div>
     </div>
 

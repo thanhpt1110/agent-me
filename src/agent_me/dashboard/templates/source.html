@@ -2,7 +2,7 @@
 {% block title %}{{ snapshot.label }} · agent-me dashboard{% endblock %}
 
 {% block content %}
-<div x-data="sourcePage({{ snapshot.source | tojson }}, {{ active_job | tojson }})">
+<div x-data='sourcePage({{ snapshot.source | tojson }}, {{ active_job | tojson }})'>
 
 <section class="mb-6 flex items-center justify-between flex-wrap gap-3">
   <div>
@@ -75,7 +75,7 @@
 {% endif %}
 
 <!-- Items grouped by .group -->
-<section x-data="{ items: {{ snapshot.items | tojson }} }">
+<section x-data='{ items: {{ snapshot.items | tojson }} }'>
   <template x-if="items.length === 0">
     <div class="rounded-lg border border-ink-700 bg-ink-900 p-8 text-center text-slate-400">
       <div class="text-3xl mb-2">{{ snapshot.icon }}</div>

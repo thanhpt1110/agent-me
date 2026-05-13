@@ -57,9 +57,6 @@
     };
   </script>
 
-  <!-- Alpine.js for sprinkled reactivity (SSE wiring, refresh state). -->
-  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="icon" type="image/svg+xml" href="/static/agent-me-avatar.svg" />
   <link rel="apple-touch-icon" href="/static/agent-me-avatar-512.png" />
@@ -81,5 +78,8 @@
   </div>
 
   {% block scripts %}{% endblock %}
+  <!-- Alpine.js for sprinkled reactivity (SSE wiring, refresh state).
+       Load after page scripts so x-data factories exist before Alpine starts. -->
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </body>
 </html>

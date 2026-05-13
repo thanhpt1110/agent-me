@@ -2,7 +2,7 @@
 {% block title %}Overview · agent-me dashboard{% endblock %}
 
 {% block content %}
-<div x-data="overviewPage({{ snapshots_json | tojson }})">
+<div x-data='overviewPage({{ snapshots_json | tojson }})'>
 
 <section class="mb-6 flex items-end justify-between flex-wrap gap-3">
   <div>
@@ -12,10 +12,6 @@
     </p>
   </div>
   <div class="flex items-center gap-2">
-    <a href="/auto-sfa"
-       class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 text-white font-semibold">
-      Auto SFA
-    </a>
     <select x-model="period"
             class="text-sm bg-ink-800 border border-ink-700 rounded px-2 py-1.5 text-slate-200">
       <option value="day">Day</option>
@@ -31,20 +27,75 @@
 </section>
 
 <section class="mb-6">
+  <div class="mb-3 flex items-center justify-between flex-wrap gap-2">
+    <div>
+      <h2 class="text-lg font-semibold text-slate-100">Operator actions</h2>
+      <p class="mt-1 text-sm text-slate-400">
+        High-impact actions you can run directly from the dashboard.
+      </p>
+    </div>
+    <a href="/ops" class="text-sm text-accent-400 hover:underline">Open Ops →</a>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
   <a href="/auto-sfa"
-     class="block rounded-lg border border-accent-600/50 bg-ink-900 p-4 hover:border-accent-400 transition">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+     class="block rounded-lg border border-accent-600/50 bg-ink-900 p-5 hover:border-accent-400 transition">
+    <div class="flex h-full flex-col justify-between gap-5">
       <div>
-        <h2 class="text-lg font-semibold text-slate-100">Auto SFA</h2>
-        <p class="mt-1 text-sm text-slate-400">
+        <div class="text-xs uppercase tracking-wide text-accent-400">Workflow runner</div>
+        <h3 class="mt-2 text-xl font-semibold text-slate-100">Auto SFA</h3>
+        <p class="mt-2 text-sm text-slate-400">
           Update magic-auto config, run DevTest SFA, and watch live terminal progress.
         </p>
       </div>
-      <span class="inline-flex w-fit items-center rounded bg-accent-600 px-3 py-1.5 text-sm font-semibold text-white">
-        Auto SFA
+      <span class="inline-flex w-fit items-center rounded bg-accent-600 px-4 py-2 text-sm font-semibold text-white">
+        Open Auto SFA
       </span>
     </div>
   </a>
+  <article class="rounded-lg border border-accent-600/50 bg-ink-900 p-5">
+    <div class="flex h-full flex-col justify-between gap-5">
+      <div>
+        <div class="text-xs uppercase tracking-wide text-accent-400">MCP credentials</div>
+        <h3 class="mt-2 text-xl font-semibold text-slate-100">Refresh MCP auth</h3>
+        <p class="mt-2 text-sm text-slate-400">
+          Refresh MaaS OAuth tokens on the host, rewrite Codex env exports, and probe MCP status.
+        </p>
+      </div>
+      <div class="space-y-3">
+        <button @click="authRefresh()" :disabled="authBusy"
+                class="inline-flex w-fit items-center rounded bg-accent-600 px-4 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed">
+          <span x-show="!authBusy">Refresh MCP auth</span>
+          <span x-show="authBusy" x-cloak>Refreshing…</span>
+        </button>
+        <template x-if="authResult || authError">
+          <div class="rounded border px-3 py-2 text-xs"
+               :class="authError || authResult?.needs_mac_sync
+                 ? 'border-amber-800 bg-amber-950/30 text-amber-200'
+                 : 'border-emerald-800 bg-emerald-950/30 text-emerald-200'">
+            <template x-if="authError">
+              <div x-text="authError"></div>
+            </template>
+            <template x-if="authResult && !authError">
+              <div>
+                <div>
+                  <span class="font-semibold">Last run:</span>
+                  <span x-text="`${authResult.refreshed.length}/${authResult.attempted.length} refreshed`"></span>
+                  <span x-text="` · ${authResult.env_exports} env exports`"></span>
+                </div>
+                <template x-if="Object.keys(authResult.failed || {}).length">
+                  <div class="mt-1">
+                    Mac sync needed if these return 401:
+                    <span x-text="Object.keys(authResult.failed).join(', ')"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+  </article>
+  </div>
 </section>
 
 <section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6"
@@ -76,7 +127,7 @@
   </div>
 </section>
 
-<section class="mb-6" x-data="pendingPanel({{ pending_groups | tojson }})">
+<section class="mb-6" x-data='pendingPanel({{ pending_groups | tojson }})'>
   <div class="mb-3 flex items-center justify-between flex-wrap gap-2">
     <div class="flex items-center gap-2">
       <h2 class="text-lg font-semibold text-slate-100">Pending across platforms</h2>
@@ -171,7 +222,7 @@
         <span class="font-semibold text-slate-100">{{ snap.label }}</span>
       </div>
       <!-- Static (server-rendered) status badge; overridden during refresh by Alpine x-show below -->
-      <span x-show="!jobStatus[{{ snap.source | tojson }}]">
+      <span x-show='!jobStatus[{{ snap.source | tojson }}]'>
         {% if snap.error %}
         <span class="text-xs px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800">error</span>
         {% elif snap.fetched_at == 0 %}
@@ -183,10 +234,10 @@
         {% endif %}
       </span>
       <!-- Live job-status badge during a refresh -->
-      <span x-show="jobStatus[{{ snap.source | tojson }}]" x-cloak
+      <span x-show='jobStatus[{{ snap.source | tojson }}]' x-cloak
             class="text-xs px-2 py-0.5 rounded border"
-            :class="badgeClass(jobStatus[{{ snap.source | tojson }}])"
-            x-text="badgeText({{ snap.source | tojson }})"></span>
+            :class='badgeClass(jobStatus[{{ snap.source | tojson }}])'
+            x-text='badgeText({{ snap.source | tojson }})'></span>
     </div>
 
     <div class="mt-3 flex items-baseline gap-2">
@@ -238,6 +289,9 @@
     return {
       period: "day",
       busy: false,
+      authBusy: false,
+      authResult: null,
+      authError: "",
       jobStatus: {},   // { source: "running" | "done" | "error" }
       jobMeta: {},     // { source: { item_count, seconds, error } }
       _es: {},
@@ -288,6 +342,25 @@
         } catch (err) {
           this.busy = false;
           console.error("refreshAll failed", err);
+        }
+      },
+
+      async authRefresh() {
+        if (this.authBusy) return;
+        this.authBusy = true;
+        this.authError = "";
+        try {
+          const r = await fetch("/api/mcp/auth-refresh", {
+            method: "POST",
+            headers: { "Accept": "application/json" },
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          this.authResult = data;
+        } catch (err) {
+          this.authError = `MCP auth refresh failed: ${err.message || err}`;
+        } finally {
+          this.authBusy = false;
         }
       },
 
