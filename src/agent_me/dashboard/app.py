@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -62,6 +63,7 @@ from agent_me.mcp_tokens import (
     refresh_codex_mcp_env_file,
     refresh_mcp_tokens,
 )
+from agent_me.scripts.daily_brief import fmt_event_time
 
 # ── Setup ────────────────────────────────────────────────────────────────
 
@@ -173,12 +175,33 @@ def _brief_priority(value: Any) -> str | None:
     return None
 
 
+def _calendar_meeting_time(item: dict[str, Any], source: str) -> str | None:
+    if source != "calendar" and item.get("source") != "calendar":
+        return None
+
+    extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
+    start = extras.get("start")
+    end = extras.get("end")
+    meeting_time = fmt_event_time(
+        start if isinstance(start, str) else None,
+        end if isinstance(end, str) else None,
+    )
+    return meeting_time or None
+
+
+def _brief_item_with_ui_fields(item: dict[str, Any], source: str) -> dict[str, Any]:
+    enriched = dict(item)
+    if meeting_time := _calendar_meeting_time(item, source):
+        enriched["meeting_time"] = meeting_time
+    return enriched
+
+
 def _brief_item_to_pending_item(item: dict[str, Any], source: str,
                                 fetched_at: int) -> dict[str, Any]:
     extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
     item_id = str(item.get("item_id") or extras.get("id") or "")
     title = str(item.get("title") or "(untitled)")[:220]
-    return {
+    pending = {
         "item_id": item_id,
         "title": title,
         "url": str(item.get("url") or f"/source/{source}"),
@@ -189,6 +212,9 @@ def _brief_item_to_pending_item(item: dict[str, Any], source: str,
         "mock": False,
         "reason": item.get("reason"),
     }
+    if meeting_time := _calendar_meeting_time(item, source):
+        pending["meeting_time"] = meeting_time
+    return pending
 
 
 def _pending_groups_from_snapshots(snapshots: list[Any]) -> list[dict[str, Any]]:
@@ -277,6 +303,10 @@ async def page_source(request: Request):
     if source_id not in SOURCE_IDS:
         return JSONResponse({"error": f"unknown source: {source_id}"}, status_code=404)
     snapshot = StateReader.brief_snapshot(source_id)
+    snapshot = replace(
+        snapshot,
+        items=[_brief_item_with_ui_fields(item, source_id) for item in snapshot.items],
+    )
     active_job = RUNNER.active_job_for(source_id)
     return TEMPLATES.TemplateResponse(request, "source.html", {
         "snapshot": snapshot,

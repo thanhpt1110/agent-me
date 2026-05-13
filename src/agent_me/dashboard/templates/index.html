@@ -189,6 +189,9 @@
                     <span class="ml-2" x-text="i.title"></span>
                   </a>
                   <div class="flex items-center flex-wrap gap-2 text-xs sm:shrink-0">
+                    <template x-if="i.meeting_time">
+                      <span class="text-accent-400" x-text="i.meeting_time"></span>
+                    </template>
                     <template x-if="i.priority === 'P0'">
                       <span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-800">P0</span>
                     </template>

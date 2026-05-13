@@ -95,6 +95,66 @@ def test_index_pending_uses_brief_cache(client: TestClient, temp_state_dir: Path
     assert "IPP-4521" not in r.text
 
 
+def test_index_pending_calendar_shows_meeting_time(client: TestClient, temp_state_dir: Path,
+                                                   with_token: str) -> None:
+    from agent_me.dashboard.state_reader import StateReader
+
+    StateReader.write_cache("calendar", {
+        "source": "calendar",
+        "items": [{
+            "source": "calendar",
+            "icon": "📅",
+            "item_id": "",
+            "title": "Model Free 2.0 sync",
+            "url": "https://outlook.office.com/calendar/item/1",
+            "group": "2026-05-11",
+            "extras": {
+                "start": "2026-05-11T09:00:00",
+                "end": "2026-05-11T09:30:00",
+            },
+        }],
+        "error": None,
+        "fetched_at": int(time.time() * 1000),
+        "seconds": 3,
+    })
+
+    r = client.get("/", headers=_auth(with_token))
+
+    assert r.status_code == 200
+    assert "Model Free 2.0 sync" in r.text
+    assert "Mon 05/11 09:00-09:30" in r.text
+
+
+def test_source_calendar_shows_meeting_time(client: TestClient, temp_state_dir: Path,
+                                            with_token: str) -> None:
+    from agent_me.dashboard.state_reader import StateReader
+
+    StateReader.write_cache("calendar", {
+        "source": "calendar",
+        "items": [{
+            "source": "calendar",
+            "icon": "📅",
+            "item_id": "",
+            "title": "Model Free 2.0 sync",
+            "url": "https://outlook.office.com/calendar/item/1",
+            "group": "2026-05-11",
+            "extras": {
+                "start": "2026-05-11T09:00:00",
+                "end": "2026-05-11T09:30:00",
+            },
+        }],
+        "error": None,
+        "fetched_at": int(time.time() * 1000),
+        "seconds": 3,
+    })
+
+    r = client.get("/source/calendar", headers=_auth(with_token))
+
+    assert r.status_code == 200
+    assert "Model Free 2.0 sync" in r.text
+    assert "Mon 05/11 09:00-09:30" in r.text
+
+
 def test_source_page_known_source_renders(client: TestClient, with_token: str) -> None:
     r = client.get("/source/jira", headers=_auth(with_token))
     assert r.status_code == 200
