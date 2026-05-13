@@ -59,8 +59,8 @@
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      <div>
-        <div class="mb-1 flex items-center justify-between gap-3">
+      <div class="space-y-1">
+        <div class="flex min-h-5 items-center justify-between gap-3">
           <label class="block text-xs uppercase tracking-wide text-slate-500" for="sfa-source-folder">source_folder_id</label>
           <label class="flex items-center gap-1 text-xs text-slate-400">
             <input type="checkbox" x-model="form.use_default_source_folder" class="accent-accent-500" />
@@ -78,14 +78,17 @@
           Default: <span class="font-mono text-slate-400">{{ default_source_folder_id or 'configs.json' }}</span>.
         </p>
       </div>
-      <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-destination-folder">destination_folder_id</label>
-      <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="text" inputmode="numeric" pattern="[0-9]*" required
-             class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-             placeholder="1138081" />
-      <p class="mt-1 text-xs text-slate-500">
-        Release folder ID.
-      </p>
+      <div class="space-y-1">
+        <div class="flex min-h-5 items-center justify-between gap-3">
+          <label class="block text-xs uppercase tracking-wide text-slate-500" for="sfa-destination-folder">destination_folder_id</label>
+          <span class="h-4 text-xs text-transparent select-none" aria-hidden="true">use default</span>
+        </div>
+        <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="text" inputmode="numeric" pattern="[0-9]*" required
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               placeholder="1138081" />
+        <p class="mt-1 text-xs text-slate-500">
+          Release folder ID.
+        </p>
       </div>
     </div>
 
@@ -100,15 +103,25 @@
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-start">start</label>
         <div class="dashboard-date-field">
-          <input id="sfa-start" x-model="form.start_date" type="date" required
+          <input id="sfa-start" x-ref="startDate" x-model="form.start_date" type="date" required
                  class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
+          <button type="button" class="dashboard-date-button" @click.stop="openDatePicker('startDate')" aria-label="Open start date picker">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 2v4M16 2v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
+            </svg>
+          </button>
         </div>
       </div>
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-end">end</label>
         <div class="dashboard-date-field">
-          <input id="sfa-end" x-model="form.finish_date" type="date" required
+          <input id="sfa-end" x-ref="endDate" x-model="form.finish_date" type="date" required
                  class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
+          <button type="button" class="dashboard-date-button" @click.stop="openDatePicker('endDate')" aria-label="Open end date picker">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 2v4M16 2v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -252,6 +265,19 @@
         if (!this.form.task_ids_enabled) {
           this.form.task_ids = "";
         }
+      },
+
+      openDatePicker(refName) {
+        const input = this.$refs[refName];
+        if (!input) return;
+        if (typeof input.showPicker === "function") {
+          try {
+            input.showPicker();
+            return;
+          } catch (_) {}
+        }
+        input.focus();
+        input.click();
       },
 
       append(line) {

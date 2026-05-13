@@ -147,6 +147,8 @@ def test_auto_sfa_page_renders(
     assert "required templates already exist in SFA" in r.text
     assert "dashboard-date-input" in r.text
     assert "dashboard-date-field" in r.text
+    assert r.text.count("dashboard-date-button") == 2
+    assert "openDatePicker" in r.text
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:
