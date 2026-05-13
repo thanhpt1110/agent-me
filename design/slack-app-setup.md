@@ -167,7 +167,7 @@ scope — name it `agent-me-socket` and create it. Save the resulting
 
 ### Why Socket Mode for this use case
 
-The agent runs on a **Brev** dev box (or any machine you SSH into). Socket
+The agent runs on a **Cloud host** dev box (or any machine you SSH into). Socket
 Mode is the right transport here because:
 
 1. **No public HTTP endpoint.** Slack opens a WebSocket from your process
@@ -182,7 +182,7 @@ Mode is the right transport here because:
    used (and we still verify it for any slash-command HTTP fallbacks), but
    event delivery over the WebSocket is authenticated by the app token.
 5. **Reconnect is free.** Bolt's Socket Mode client handles backoff and
-   reconnect automatically when your laptop sleeps or the Brev box restarts.
+   reconnect automatically when your laptop sleeps or the cloud host restarts.
 
 The trade-off is that Socket Mode is **single-tenant** — it is intended for
 internal-use apps, which is exactly what `agent-me` is. If you ever
@@ -530,7 +530,7 @@ cd ~/agent-me/services/slack-bridge && npm start
 - [ ] **Rate limits.** Add a simple per-user rate limit (e.g. 10
       messages/min) to avoid runaway loops costing Anthropic credits if a
       bug makes the bot reply to itself.
-- [ ] **Brev exposure.** The Brev box should only have outbound network for
+- [ ] **Cloud host exposure.** The cloud host should only have outbound network for
       the Slack bridge. Do not open inbound ports just for Slack — Socket
       Mode does not need them.
 
@@ -557,7 +557,6 @@ app config:
    | `/whoami` | Show Slack user id | _(blank)_ |
    | `/help` | List bot commands | _(blank)_ |
    | `/brief` | Run daily/weekly/monthly brief | `[week|month]` |
-   | `/brev` | Fill Brev credits form in screenshot test mode, or check browser SSO | `<org_id>` or `auth` |
    | `/model-free-draft` | Create Model Free reply-all draft | _(blank)_ |
 3. **Request URL** field can stay blank in Socket Mode (Slack uses the WebSocket).
 4. **Save** each one.

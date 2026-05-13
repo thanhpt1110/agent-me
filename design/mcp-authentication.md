@@ -37,8 +37,12 @@ uv run agent-me-codex-reauth
 `sync-mcp-creds-to-host.sh` now also prepares Codex bearer-token auth on the
 host by writing `~/.config/agent-me/codex-mcp-env.sh` and installing a small
 shell startup hook. Future shell-launched Codex sessions inherit refreshed
-`AGENT_ME_MCP_TOKEN_*` values automatically. Existing Codex sessions keep their
-original process environment, so restart them after a sync.
+`AGENT_ME_MCP_TOKEN_*` values automatically. The running Slack bridge also reads
+the host credential store on each Codex call. Run `/mcp refresh` in Slack to
+force-refresh every MaaS OAuth token that has a usable refresh token, rewrite the
+persistent env file, load it into the bridge process, and verify without
+restarting the bridge. If an MCP auth server rejects its refresh token, the
+command reports that server; that is the point where Mac sync/reauth is needed.
 
 ## Where the auth state lives
 
@@ -53,7 +57,10 @@ Codex sessions.
 - Bridge running on your **Mac** → auth from your **Mac terminal**.
 - Bridge running on **Colossus/remote Linux** → auth from your **Mac terminal**
   with `./scripts/mac-reauth-and-sync.sh <ssh-host>` whenever possible.
-- Bridge running on **Brev** without Mac sync → auth from a **Brev SSH
+  If the Mac auth is still valid and only the host copy/env is stale, run
+  `./scripts/sync-mcp-creds-to-host.sh <ssh-host>` on the Mac, then `/mcp refresh`
+  in Slack.
+- Bridge running on **Cloud host** without Mac sync → auth from a **Cloud host SSH
   session** with the auth URL opened in your local browser; the
   loopback-token-paste flow is documented at the bottom of this doc.
 - You **cannot** auth via Slack DM. There is no browser there.
@@ -119,23 +126,23 @@ If the script can't run for any reason:
 After either path, run `/mcp` from Slack — every server should be
 `✓ Connected`.
 
-## How to re-auth (Brev — Phase 3+)
+## How to re-auth (Cloud host — Phase 3+)
 
-When the bridge moves to Brev, you'll have no local browser on the instance.
+When the bridge moves to Cloud host, you'll have no local browser on the instance.
 Two patterns work:
 
 ### Pattern A — SSH port forwarding (recommended)
 
 ```
-ssh -L 8080:localhost:8080 brev-instance
+ssh -L 8080:localhost:8080 cloud-instance
 # ...inside the SSH session...
 claude
 > use mcp__maas-jira__jira_search to find 1 issue assigned to me
 ```
 
-The OAuth callback runs on the Brev instance's `localhost:8080`, but you
+The OAuth callback runs on the cloud instance's `localhost:8080`, but you
 forwarded that port to your Mac so the URL Claude prints opens in **your
-local** browser and the callback hits your Mac → SSH tunnel → Brev.
+local** browser and the callback hits your Mac → SSH tunnel → Cloud host.
 
 ### Pattern B — Manual token paste
 
@@ -162,6 +169,12 @@ config affects both equally. Re-auth from terminal fixes both.
   `MIN_NOTIFY_GAP_MS` (default 4h), so you don't get spam if you read the
   first ping but haven't re-auth'd yet.
 - **`/mcp`** is always there for ad-hoc checks.
+- **`/mcp refresh`** force-refreshes every MaaS OAuth token that has refresh
+  metadata, rewrites `~/.config/agent-me/codex-mcp-env.sh` from the host's
+  `~/.claude/.credentials.json`, loads those tokens into the running bridge
+  process, then runs the same MCP status probe. If a refresh token is rejected,
+  the command names the affected server so you know when Mac sync/reauth is
+  actually required.
 - **`/whoami`** echoes your Slack user id so you can pin
   `SLACK_ALLOWED_USER_ID` in `.env` for both notification routing and
   single-user lockdown.
