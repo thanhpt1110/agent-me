@@ -149,6 +149,11 @@ def test_auto_sfa_page_renders(
     assert "dashboard-date-field" in r.text
     assert r.text.count("dashboard-date-button") == 2
     assert "openDatePicker" in r.text
+    assert "agent-me terminal" in r.text
+    assert "Auto SFA realtime terminal output" in r.text
+    assert "streaming stdout" in r.text
+    assert "terminal-cursor" in r.text
+    assert "terminalLineClass" in r.text
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:

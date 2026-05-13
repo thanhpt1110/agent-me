@@ -164,21 +164,59 @@
     </template>
   </form>
 
-  <section class="rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
-    <header class="px-4 py-3 border-b border-ink-700 bg-ink-800 flex items-center justify-between gap-3">
-      <div class="min-w-0">
-        <h2 class="font-semibold text-slate-100">Terminal log</h2>
-        <p class="text-xs text-slate-500 font-mono truncate" x-text="jobLabel()"></p>
+  <section class="rounded-lg border border-ink-700 bg-black overflow-hidden shadow-2xl">
+    <header class="px-4 py-3 border-b border-ink-700 bg-ink-900 flex items-center justify-between gap-3">
+      <div class="flex min-w-0 items-center gap-3">
+        <div class="flex shrink-0 items-center gap-1.5" aria-hidden="true">
+          <span class="h-3 w-3 rounded-full bg-rose-500"></span>
+          <span class="h-3 w-3 rounded-full bg-amber-400"></span>
+          <span class="h-3 w-3 rounded-full bg-accent-400"></span>
+        </div>
+        <div class="min-w-0">
+          <h2 class="font-semibold text-slate-100">agent-me terminal</h2>
+          <p class="text-xs text-slate-500 font-mono truncate" x-text="terminalTitle()"></p>
+        </div>
       </div>
       <div class="flex items-center gap-3 text-xs shrink-0">
+        <span class="inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono"
+              :class="terminalBadgeClass()">
+          <span class="h-1.5 w-1.5 rounded-full"
+                :class="busy ? 'bg-accent-400 animate-pulse' : 'bg-current'"></span>
+          <span x-text="terminalState()"></span>
+        </span>
         <label class="flex items-center gap-1 text-slate-400">
           <input type="checkbox" x-model="autoScroll" class="accent-accent-500" /> auto-scroll
         </label>
-        <button @click="lines = []" type="button" class="text-slate-400 hover:text-accent-400">clear</button>
+        <button @click="clearTerminal()" type="button" class="text-slate-400 hover:text-accent-400">clear</button>
       </div>
     </header>
-    <pre class="p-3 text-xs font-mono h-[36rem] overflow-y-auto text-slate-300 bg-ink-950"
-         x-ref="logBox"><template x-for="(line, idx) in lines" :key="idx"><div class="whitespace-pre-wrap" x-text="line"></div></template><template x-if="lines.length === 0"><div class="text-slate-500 italic">(no Auto SFA run started)</div></template></pre>
+    <div class="border-b border-ink-700 bg-ink-950 px-4 py-2 font-mono text-[11px] text-slate-500">
+      <span class="text-accent-400">agent-me@server</span><span>:</span><span>~/magic-auto</span><span>$ </span><span x-text="terminalCommandPreview()"></span>
+    </div>
+    <div class="h-[36rem] overflow-y-auto bg-[#020403] p-4 font-mono text-xs leading-5 text-slate-300"
+         x-ref="logBox"
+         role="log"
+         aria-live="polite"
+         aria-label="Auto SFA realtime terminal output">
+      <template x-if="lines.length === 0">
+        <div class="text-slate-600">
+          <span class="text-accent-400">agent-me@server</span><span>:</span><span>~/magic-auto</span><span>$ </span><span>waiting for Auto SFA run</span><span class="terminal-cursor"></span>
+        </div>
+      </template>
+      <template x-for="(line, idx) in lines" :key="idx">
+        <div class="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-3 whitespace-pre-wrap break-words"
+             :class="terminalLineClass(line)">
+          <span class="select-none text-right text-slate-700" x-text="line.time"></span>
+          <span x-text="line.text"></span>
+        </div>
+      </template>
+      <template x-if="busy && lines.length > 0">
+        <div class="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-3 text-slate-500">
+          <span class="select-none text-right text-slate-700" x-text="nowLabel()"></span>
+          <span><span class="text-accent-400">streaming stdout</span><span class="terminal-cursor"></span></span>
+        </div>
+      </template>
+    </div>
   </section>
 </section>
 
@@ -232,6 +270,7 @@
       error: null,
       job: null,
       lines: [],
+      lastCommand: "",
       autoScroll: true,
       _es: null,
       MAX: 1000,
@@ -251,6 +290,30 @@
         const id = this.job.job_id || "";
         const lines = this.job.line_count || this.lines.length;
         return `${status} · ${id} · ${lines} line(s)`;
+      },
+
+      terminalTitle() {
+        if (!this.job) return "idle · /localhome/local-thaphan/magic-auto";
+        return `${this.job.status || "pending"} · ${this.job.job_id || ""} · ${this.job.line_count || this.lines.length} line(s)`;
+      },
+
+      terminalState() {
+        if (this.busy) return "live";
+        if (this.job?.status === "done") return "done";
+        if (this.job?.status === "error") return "error";
+        return "idle";
+      },
+
+      terminalBadgeClass() {
+        const state = this.terminalState();
+        if (state === "live") return "border-accent-600/50 bg-accent-600/15 text-accent-400";
+        if (state === "done") return "border-emerald-700/60 bg-emerald-950/30 text-emerald-300";
+        if (state === "error") return "border-rose-800/70 bg-rose-950/40 text-rose-300";
+        return "border-ink-700 bg-ink-950 text-slate-500";
+      },
+
+      terminalCommandPreview() {
+        return this.lastCommand || "uv run dtoperator.py sfa ...";
       },
 
       credentialLabel() {
@@ -280,8 +343,28 @@
         input.click();
       },
 
-      append(line) {
-        this.lines.push(String(line || ""));
+      nowLabel() {
+        return new Date().toLocaleTimeString("en-US", { hour12: false });
+      },
+
+      terminalLineClass(line) {
+        if (line.kind === "error") return "text-rose-300";
+        if (line.kind === "success") return "text-emerald-300";
+        if (line.kind === "command") return "text-accent-300";
+        if (line.kind === "system") return "text-slate-500";
+        return "text-slate-300";
+      },
+
+      clearTerminal() {
+        this.lines = [];
+      },
+
+      append(line, kind = "stdout") {
+        this.lines.push({
+          text: String(line || ""),
+          kind,
+          time: this.nowLabel(),
+        });
         if (this.lines.length > this.MAX) {
           this.lines.splice(0, this.lines.length - this.MAX);
         }
@@ -299,6 +382,7 @@
         this.error = null;
         this.lines = [];
         this.job = null;
+        this.lastCommand = "";
         try {
           const payload = { ...this.form };
           if (!payload.task_ids_enabled) {
@@ -326,11 +410,11 @@
             throw new Error(detail || `HTTP ${r.status}`);
           }
           this.job = data;
-          this.append(`[start] job ${data.job_id}`);
+          this.append(`job ${data.job_id} accepted by dashboard runner`, "system");
           this.subscribe(data.job_id);
         } catch (err) {
           this.error = String(err.message || err);
-          this.append(`[error] ${this.error}`);
+          this.append(this.error, "error");
           this.busy = false;
         }
       },
@@ -345,27 +429,28 @@
           if (data.event === "line") {
             this.append(data.line || "");
           } else if (data.event === "config_updated") {
-            this.append(`[config] updated ${data.config_path}`);
-            this.append(`[config] project=${data.devtest_project_id} source=${data.source_folder_id || "direct"} destination=${data.devtest_folder_id} provider=${data.log_file_provider}`);
+            this.append(`config updated: ${data.config_path}`, "system");
+            this.append(`config project=${data.devtest_project_id} source=${data.source_folder_id || "default"} destination=${data.devtest_folder_id} provider=${data.log_file_provider}`, "system");
           } else if (data.event === "started") {
-            this.append(`[command] ${data.command}`);
+            this.lastCommand = data.command || this.lastCommand;
+            this.append(`agent-me@server:~/magic-auto$ ${data.command}`, "command");
           } else if (data.event === "snapshot" || data.event === "running") {
             this.job = { ...this.job, ...data, status: "running" };
           } else if (data.event === "done") {
             this.job = { ...this.job, ...data, status: "done" };
-            this.append(`[done] return_code=0 seconds=${data.seconds || 0}`);
+            this.append(`process exited 0 after ${data.seconds || 0}s`, "success");
             this.busy = false;
             es.close();
             this._es = null;
           } else if (data.event === "error") {
             this.job = { ...this.job, ...data, status: "error" };
             this.error = data.error || "Auto SFA failed";
-            this.append(`[error] ${this.error}`);
+            this.append(this.error, "error");
             this.busy = false;
             es.close();
             this._es = null;
           } else if (data.event === "timeout") {
-            this.append(`[timeout] ${data.note || "no progress event"}`);
+            this.append(data.note || "no progress event", "system");
           }
         };
         ["message", "snapshot", "running", "config_updated", "started", "line", "done", "error", "timeout"].forEach(
@@ -375,7 +460,7 @@
           if (this._es === es) this._es = null;
           es.close();
           if (this.busy) {
-            this.append("[sse] disconnected; refresh the page to reconnect");
+            this.append("SSE disconnected; refresh the page to reconnect", "error");
           }
         };
       },

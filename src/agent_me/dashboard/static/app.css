@@ -88,3 +88,15 @@ pre, code, .font-mono { font-family: "JetBrains Mono", ui-monospace, "SFMono-Reg
   pointer-events: none;
   width: 1rem;
 }
+
+.terminal-cursor::after {
+  animation: terminal-blink 1s steps(1, end) infinite;
+  color: #76b900;
+  content: "▊";
+  margin-left: 0.25rem;
+}
+
+@keyframes terminal-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
