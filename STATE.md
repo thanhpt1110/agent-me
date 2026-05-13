@@ -103,19 +103,20 @@ approval gate.
   app-server helper. The generic `codex exec` chat prompt is read-first and
   refuses connector/MCP writes that escape the router, avoiding
   hallucinated `user cancelled MCP tool call` outcomes.
-- [x] **Auto SFA (2026-05-12)** — Slack `/help` now includes an
+- [x] **Auto SFA (2026-05-12; refreshed 2026-05-13)** — Slack `/help` now includes an
   **Auto SFA** button and `auto sfa` plain-text shortcut. The Slack flow
-  collects `username`, `devtest_folder_id`, `url_path`, `start`, and
-  `finish` in-thread, preserves the supplied username as the exact
-  `--task-owner` argv value, updates `magic-auto/configs.json`, then runs
-  `uv run dtoperator.py sfa --task-owner <username> -f` from
-  `/localhome/local-thaphan/magic-auto`. The shared runner updates
-  `log_file_base_url`, `source_code_path`, and `code_review_path` from
-  `url_path`; every release config key containing `start` or `finish` gets
-  the shared date. Slack posts only new terminal log lines into the same
-  thread. Dashboard route `/auto-sfa` provides the same input form and an
-  SSE-backed terminal log panel. Advisory locking serializes concurrent
-  Slack/dashboard runs against the shared `magic-auto` config.
+  collects five required fields in-thread: `username_email`,
+  `destination_folder_id`, `url_path`, `start`, and `end`. The runner maps
+  `thaphan@nvidia.com` to `--user-login thaphan`, treats `url_path` as the
+  GitLab Merge Request / MR link for log/source/review fields, maps `start`
+  and `end` across the required Dev/QA date fields, preserves
+  `source_folder_id` from the existing `magic-auto` config, updates
+  `magic-auto/configs.json`, then runs
+  `uv run dtoperator.py sfa --user-login <login> -f` from
+  `/localhome/local-thaphan/magic-auto`. Slack posts only new terminal log
+  lines into the same thread. Dashboard route `/auto-sfa` provides the same
+  compact form and an SSE-backed terminal log panel. Advisory locking
+  serializes concurrent Slack/dashboard runs against the shared config.
 - [x] **agent-me avatar/logo asset set (2026-05-11)** — canonical
   vector source is `assets/agent-me-avatar.svg`; the visual is a
   text-free NVIDIA-green autonomous robot with circuit/web3 styling and

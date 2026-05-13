@@ -50,6 +50,7 @@ from slack_bolt.async_app import AsyncApp
 
 from agent_me.auto_sfa import (
     AUTO_SFA_FIELD_LABELS,
+    AUTO_SFA_FIELD_ORDER,
     AutoSFARequest,
     AutoSFAValidationError,
     build_auto_sfa_request,
@@ -1040,7 +1041,7 @@ HELP_TEXT = "\n".join((
     "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
-    "• `auto sfa` — collect Auto SFA inputs, update `magic-auto/configs.json`, run `dtoperator.py sfa`, and stream logs",
+    "• `auto sfa` — collect DevTest SFA config, update `magic-auto/configs.json`, run `dtoperator.py sfa --user-login`, and stream logs",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `mcp refresh` / `/mcp refresh` — force-refresh MaaS OAuth tokens, rewrite persistent Codex MCP env, and verify",
@@ -1495,28 +1496,29 @@ AUTO_SFA_LOG_FLUSH_INTERVAL_S = 2.0
 AUTO_SFA_SLACK_TASKS: set[asyncio.Task[None]] = set()
 
 AUTO_SFA_INPUT_TEMPLATE = "\n".join((
-    "username: Thanh Phan",
-    "devtest_folder_id: 1155188",
+    "username_email: thaphan@nvidia.com",
+    "destination_folder_id: 1138081",
     "url_path: https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
     "start: 2026-04-16",
-    "finish: 2026-05-08",
+    "end: 2026-04-27",
 ))
 
 AUTO_SFA_HELP_TEXT = "\n".join((
     "*Auto SFA* — mình sẽ chuẩn bị config và chạy SFA giúp bạn.",
     "",
-    "Mình cần 5 thông tin. Bạn có thể gửi cùng một lúc trong thread này:",
-    "• *username* — tên Task Owner trong DevTest, mình sẽ truyền y nguyên vào `--task-owner`.",
-    "• *devtest_folder_id* — folder chứa task cần release.",
-    "• *url_path* — link log/MR dùng chung cho log, source code, và code review.",
-    "• *start* và *finish* — ngày theo format `yyyy-MM-dd`.",
+    "Mình cần 5 thông tin. Các field dùng chung sẽ được tự map vào config `magic-auto`:",
+    "• *username_email* — ví dụ `thaphan@nvidia.com`; mình sẽ lấy `thaphan` để truyền vào `--user-login`.",
+    "• *destination_folder_id* — DevTest release folder id, ví dụ folder week `05-2026/Week3-4`.",
+    "• *url_path* — link Merge Request / MR dùng chung cho log, source code, và code review.",
+    "• *start* và *end* — ngày theo format `yyyy-MM-dd`.",
     "",
     "Ví dụ nhanh:",
     "```",
     AUTO_SFA_INPUT_TEMPLATE,
     "```",
     "",
-    "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa --task-owner <username> -f`, rồi stream log lại ngay trong thread này.",
+    "Mặc định: `devtest_project_id=1074`, `log_file_provider=Manual`, `complexity_level=L2`; source folder giữ theo config hiện tại của `magic-auto`.",
+    "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa --user-login <user_login> -f`, rồi stream log lại ngay trong thread này.",
     "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
 ))
 
@@ -1537,14 +1539,14 @@ def _auto_sfa_missing_text(values: dict[str, Any]) -> str:
     labels = ", ".join(f"`{AUTO_SFA_FIELD_LABELS[field]}`" for field in missing)
     present = [
         f"- `{AUTO_SFA_FIELD_LABELS[field]}`: `{values[field]}`"
-        for field in ("username", "devtest_folder_id", "url_path", "start_date", "finish_date")
+        for field in AUTO_SFA_FIELD_ORDER
         if values.get(field)
     ]
     body = [
         "Mình nhận được một phần thông tin rồi.",
         f"Còn thiếu: {labels}.",
         "",
-        "Bạn chỉ cần gửi tiếp phần còn thiếu, ví dụ `finish: 2026-05-08`, hoặc paste lại đủ 5 dòng như mẫu này:",
+        "Bạn chỉ cần gửi tiếp phần còn thiếu, ví dụ `end: 2026-04-27`, hoặc paste lại đủ mẫu này:",
         "```",
         AUTO_SFA_INPUT_TEMPLATE,
         "```",
@@ -1606,7 +1608,7 @@ async def _run_auto_sfa_slack_job(
     request: AutoSFARequest,
 ) -> None:
     log.info("auto_sfa_slack_started", thread_ts=thread_ts,
-             folder_id=request.devtest_folder_id, task_owner=request.username)
+             folder_id=request.devtest_folder_id, user_login=request.user_login)
     buffer: list[str] = []
     buffer_chars = 0
     last_flush = 0.0
@@ -1641,8 +1643,9 @@ async def _run_auto_sfa_slack_job(
                 text=(
                     "*Auto SFA config updated* "
                     f"`{evt.get('config_path')}`\n"
-                    f"- folder: `{evt.get('devtest_folder_id')}`\n"
-                    f"- start: `{evt.get('start_date')}` · finish: `{evt.get('finish_date')}`"
+                    f"- project: `{evt.get('devtest_project_id')}`\n"
+                    f"- source folder: `{evt.get('source_folder_id')}` · destination folder: `{evt.get('devtest_folder_id')}`\n"
+                    f"- provider: `{evt.get('log_file_provider')}` · complexity: `{evt.get('complexity_level')}`"
                 ),
             )
             return
@@ -1747,8 +1750,9 @@ async def handle_auto_sfa_flow_message(
         thread_ts=thread_ts,
         text=(
             "Đã đủ thông tin. Mình bắt đầu chạy Auto SFA ngay bây giờ.\n"
-            f"- Task owner: `{request.username}`\n"
-            f"- DevTest folder: `{request.devtest_folder_id}`\n"
+            f"- Username email -> user login: `{request.user_login}`\n"
+            f"- Destination folder: `{request.devtest_folder_id}`\n"
+            f"- MR link: `{request.code_review_path}`\n"
             "Log terminal sẽ được gửi tiếp trong thread này."
         ),
     )

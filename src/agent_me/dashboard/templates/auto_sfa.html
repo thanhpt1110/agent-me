@@ -8,11 +8,8 @@
   <div>
     <h1 class="text-2xl font-semibold text-slate-100">Auto SFA</h1>
     <p class="text-slate-400 text-sm mt-1">
-      Update magic-auto config, run DevTest SFA, and stream terminal output here.
+      Automate template on SFA and stream terminal output here.
     </p>
-  </div>
-  <div class="text-xs text-slate-500 font-mono">
-    /localhome/local-thaphan/magic-auto
   </div>
 </section>
 
@@ -20,30 +17,27 @@
   <form @submit.prevent="run()"
         class="rounded-lg border border-ink-700 bg-ink-900 p-4 space-y-4">
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-username">username</label>
-      <input id="sfa-username" x-model="form.username" type="text" required
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-username-email">username email</label>
+      <input id="sfa-username-email" x-model="form.username_email" type="email" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-             placeholder="Thanh Phan" />
+             placeholder="thaphan@nvidia.com" />
     </div>
 
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-folder">devtest_folder_id</label>
-      <input id="sfa-folder" x-model="form.devtest_folder_id" type="number" min="1" required
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-destination-folder">destination_folder_id</label>
+      <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="number" min="1" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-             placeholder="1155188" />
+             placeholder="1138081" />
       <p class="mt-1 text-xs text-slate-500">
-        Example folder: <span class="font-mono text-slate-400">05-2026/Week3-4</span>. Use the folder ID from that DevTest folder.
+        Example folder: <span class="font-mono text-slate-400">05-2026/Week3-4</span>. Use the DevTest folder ID for that week release folder.
       </p>
     </div>
 
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-url">url_path</label>
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-url">URL_PATH · Merge Request / MR link</label>
       <input id="sfa-url" x-model="form.url_path" type="url" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
              placeholder="https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123" />
-      <p class="mt-1 text-xs text-slate-500">
-        Shared by log_file_base_url, source_code_path, and code_review_path.
-      </p>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -55,9 +49,9 @@
         </div>
       </div>
       <div>
-        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-finish">finish</label>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-end">end</label>
         <div class="dashboard-date-field">
-          <input id="sfa-finish" x-model="form.finish_date" type="date" required
+          <input id="sfa-end" x-model="form.finish_date" type="date" required
                  class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
         </div>
       </div>
@@ -105,7 +99,7 @@
     {% for job in recent_jobs %}
     <li class="px-4 py-2 text-sm flex items-center justify-between gap-3">
       <span class="font-mono text-xs text-slate-400">{{ job.job_id }}</span>
-      <span class="text-slate-300 truncate">{{ job.request.username }} · folder {{ job.request.devtest_folder_id }}</span>
+      <span class="text-slate-300 truncate">{{ job.request.user_login }} · folder {{ job.request.devtest_folder_id }}</span>
       <span class="text-xs px-2 py-0.5 rounded
         {% if job.status == 'done' %}bg-emerald-900/40 text-emerald-300
         {% elif job.status == 'error' %}bg-rose-900/50 text-rose-300
@@ -126,7 +120,7 @@
   function autoSfaPage(activeJob) {
     return {
       form: {
-        username: "",
+        username_email: "",
         devtest_folder_id: "",
         url_path: "",
         start_date: "",
@@ -177,10 +171,11 @@
         this.lines = [];
         this.job = null;
         try {
+          const payload = { ...this.form };
           const r = await fetch("/api/auto-sfa/run", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },
-            body: JSON.stringify(this.form),
+            body: JSON.stringify(payload),
           });
           const data = await r.json();
           if (!r.ok) {
@@ -208,6 +203,7 @@
             this.append(data.line || "");
           } else if (data.event === "config_updated") {
             this.append(`[config] updated ${data.config_path}`);
+            this.append(`[config] project=${data.devtest_project_id} source=${data.source_folder_id || "direct"} destination=${data.devtest_folder_id} provider=${data.log_file_provider}`);
           } else if (data.event === "started") {
             this.append(`[command] ${data.command}`);
           } else if (data.event === "snapshot" || data.event === "running") {

@@ -118,7 +118,8 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     r = client.get("/auto-sfa", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Auto SFA" in r.text
-    assert "devtest_folder_id" in r.text
+    assert "username email" in r.text
+    assert "destination_folder_id" in r.text
     assert "05-2026/Week3-4" in r.text
     assert "required templates already exist in SFA" in r.text
     assert "dashboard-date-input" in r.text
@@ -277,11 +278,11 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     r = client.post(
         "/api/auto-sfa/run",
         json={
-            "username": "Thanh Phan",
+            "username_email": "thaphan@nvidia.com",
             "devtest_folder_id": "1155188",
             "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
             "start_date": "2026-04-16",
-            "finish_date": "2026-05-08",
+            "finish_date": "2026-04-27",
         },
         headers=_auth(with_token),
     )
@@ -289,7 +290,7 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     assert r.status_code == 202
     body = r.json()
     assert body["status"] == "pending"
-    assert captured["request"].username == "Thanh Phan"
+    assert captured["request"].user_login == "thaphan"
     assert captured["request"].devtest_folder_id == 1155188
 
 
@@ -298,11 +299,11 @@ def test_api_auto_sfa_run_rejects_bad_input(client: TestClient,
     r = client.post(
         "/api/auto-sfa/run",
         json={
-            "username": "Thanh Phan",
+            "username_email": "Thanh Phan",
             "devtest_folder_id": "not-a-number",
             "url_path": "not-a-url",
             "start_date": "2026-04-16",
-            "finish_date": "2026-05-08",
+            "finish_date": "2026-04-27",
         },
         headers=_auth(with_token),
     )

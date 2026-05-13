@@ -435,13 +435,11 @@ async def api_auto_sfa_run(request: Request):
     if not isinstance(payload, dict):
         return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
 
-    values = {
-        "username": payload.get("username"),
-        "devtest_folder_id": payload.get("devtest_folder_id"),
-        "url_path": payload.get("url_path"),
-        "start_date": payload.get("start_date") or payload.get("start"),
-        "finish_date": payload.get("finish_date") or payload.get("finish"),
-    }
+    values = dict(payload)
+    if "start" in payload and "start_date" not in values:
+        values["start_date"] = payload.get("start")
+    if "finish" in payload and "finish_date" not in values:
+        values["finish_date"] = payload.get("finish")
     try:
         sfa_request = build_auto_sfa_request(values)
     except AutoSFAValidationError as exc:
