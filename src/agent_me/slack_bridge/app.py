@@ -58,6 +58,7 @@ from agent_me.auto_sfa import (
     parse_auto_sfa_message,
     run_auto_sfa,
 )
+from agent_me.auto_sfa_history import record_auto_sfa_run
 from agent_me.codex_app_server import (
     codex_app_server_args,
     run_codex_app_server,
@@ -1611,6 +1612,21 @@ async def _run_auto_sfa_slack_job(
     thread_ts: str,
     request: AutoSFARequest,
 ) -> None:
+    history_run_id = f"slack:{thread_ts}"
+    history_started_at = int(time.time() * 1000)
+
+    async def record_history(status: str) -> None:
+        await asyncio.to_thread(
+            record_auto_sfa_run,
+            DB_PATH,
+            run_id=history_run_id,
+            triggered_at_ms=history_started_at,
+            display_name=request.display_name,
+            status=status,
+            trigger_source="slack",
+        )
+
+    await record_history("running")
     log.info("auto_sfa_slack_started", thread_ts=thread_ts,
              folder_id=request.devtest_folder_id, display_name=request.display_name,
              task_ids=request.task_ids)
@@ -1672,6 +1688,7 @@ async def _run_auto_sfa_slack_job(
         await run_auto_sfa(request, progress_cb=progress_cb)
         await flush(force=True)
         await update_auto_sfa_flow(thread_ts, status="done", last_result=result_text)
+        await record_history("done")
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
@@ -1682,6 +1699,7 @@ async def _run_auto_sfa_slack_job(
         await flush(force=True)
         result_text = f"Auto SFA failed: {str(exc)[:600]}"
         await update_auto_sfa_flow(thread_ts, status="failed", last_result=result_text)
+        await record_history("failed")
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,

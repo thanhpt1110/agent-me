@@ -7,6 +7,7 @@ but doesn't require pytest-asyncio).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -140,7 +141,8 @@ def test_auto_sfa_page_renders(
     assert "specific task IDs" in r.text
     assert "source_folder_id" in r.text
     assert "placeholder=\"50722\"" in r.text
-    assert "use default" in r.text
+    assert "Default value:" in r.text
+    assert "use_default_source_folder" not in r.text
     assert "destination_folder_id" in r.text
     assert r.text.count('type="text" inputmode="numeric" pattern="[0-9]*"') >= 2
     assert "Merge Request / MR link" not in r.text
@@ -154,6 +156,71 @@ def test_auto_sfa_page_renders(
     assert "streaming stdout" in r.text
     assert "terminal-cursor" in r.text
     assert "terminalLineClass" in r.text
+    assert "Auto SFA trigger history" in r.text
+    assert "/api/auto-sfa/history" in r.text
+
+
+def test_auto_sfa_history_endpoint_returns_persisted_runs(
+    client: TestClient, temp_state_dir: Path, with_token: str
+) -> None:
+    from agent_me.auto_sfa_history import record_auto_sfa_run
+    from agent_me.dashboard import state_reader
+
+    now = int(time.time() * 1000)
+    record_auto_sfa_run(
+        state_reader.DB_PATH,
+        run_id="run-123",
+        triggered_at_ms=now,
+        display_name="Thanh Phan",
+        status="done",
+    )
+
+    r = client.get("/api/auto-sfa/history", headers=_auth(with_token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["runs"][0]["run_id"] == "run-123"
+    assert body["runs"][0]["display_name"] == "Thanh Phan"
+    assert body["runs"][0]["status"] == "done"
+
+    page = client.get("/auto-sfa", headers=_auth(with_token))
+    assert page.status_code == 200
+    assert "run-123" in page.text
+    assert "Thanh Phan" in page.text
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_runner_persists_trigger_history(
+    temp_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.auto_sfa import build_auto_sfa_request
+    from agent_me.dashboard import auto_sfa_runner as runner_module
+
+    async def fake_run_auto_sfa(request, progress_cb=None):
+        if progress_cb:
+            await progress_cb({"event": "line", "line_no": 1, "line": "ok"})
+
+    monkeypatch.setattr(runner_module, "run_auto_sfa", fake_run_auto_sfa)
+
+    request = build_auto_sfa_request({
+        "display_name": "Thanh Phan",
+        "source_folder_id": "50722",
+        "devtest_folder_id": "1155188",
+        "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
+        "start_date": "2026-04-16",
+        "finish_date": "2026-04-27",
+    })
+    runner = runner_module.AutoSFARunner()
+    job = await runner.start(request)
+
+    for _ in range(50):
+        if runner.get_job(job.job_id).status == "done":
+            break
+        await asyncio.sleep(0.01)
+
+    rows = runner.recent_history(limit=5)
+    assert rows[0]["run_id"] == job.job_id
+    assert rows[0]["display_name"] == "Thanh Phan"
+    assert rows[0]["status"] == "done"
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:

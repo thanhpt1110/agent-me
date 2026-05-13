@@ -34,7 +34,6 @@ from starlette.templating import Jinja2Templates
 from agent_me.auto_sfa import (
     AutoSFAValidationError,
     build_auto_sfa_request,
-    resolve_magic_auto_repo_dir,
 )
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
@@ -318,13 +317,7 @@ async def page_logs(request: Request):
 
 
 def _auto_sfa_default_source_folder_id() -> str:
-    config_path = resolve_magic_auto_repo_dir() / "configs.json"
-    try:
-        data = json.loads(config_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return ""
-    value = data.get("source_folder_id")
-    return "" if value is None else str(value)
+    return os.environ.get("AUTO_SFA_DEFAULT_SOURCE_FOLDER_ID", "50722")
 
 
 async def page_auto_sfa(request: Request):
@@ -334,6 +327,7 @@ async def page_auto_sfa(request: Request):
         "active_job": active_job.public_dict() if active_job else None,
         "default_source_folder_id": _auto_sfa_default_source_folder_id(),
         "recent_jobs": [j.public_dict() for j in AUTO_SFA_RUNNER.recent_jobs(limit=5)],
+        "run_history": AUTO_SFA_RUNNER.recent_history(limit=100),
     })
 
 
@@ -500,6 +494,10 @@ async def api_auto_sfa_run(request: Request):
     return JSONResponse(job.public_dict(), status_code=202)
 
 
+async def api_auto_sfa_history(_request: Request):
+    return JSONResponse({"runs": AUTO_SFA_RUNNER.recent_history(limit=100)})
+
+
 # ── Routes: SSE ─────────────────────────────────────────────────────────
 
 async def sse_logs(_request: Request):
@@ -613,6 +611,8 @@ def build_app() -> Starlette:
               name="api_mcp_auth_refresh"),
         Route("/api/auto-sfa/run", api_auto_sfa_run, methods=["POST"],
               name="api_auto_sfa_run"),
+        Route("/api/auto-sfa/history", api_auto_sfa_history,
+              name="api_auto_sfa_history"),
         Route("/api/sse/logs", sse_logs, name="sse_logs"),
         Route("/api/sse/logs/watcher", sse_logs_watcher, name="sse_logs_watcher"),
         Route("/api/sse/logs/slack", sse_logs_slack, name="sse_logs_slack"),

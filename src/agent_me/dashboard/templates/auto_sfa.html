@@ -2,7 +2,7 @@
 {% block title %}Auto SFA · agent-me dashboard{% endblock %}
 
 {% block content %}
-<div x-data='autoSfaPage({{ active_job | tojson }})' x-init="init()">
+<div x-data='autoSfaPage({{ active_job | tojson }}, {{ run_history | tojson }})' x-init="init()">
 
 <section class="mb-6 flex items-end justify-between flex-wrap gap-3">
   <div>
@@ -59,30 +59,18 @@
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      <div class="space-y-1">
-        <div class="flex min-h-5 items-center justify-between gap-3">
-          <label class="block text-xs uppercase tracking-wide text-slate-500" for="sfa-source-folder">source_folder_id</label>
-          <label class="flex items-center gap-1 text-xs text-slate-400">
-            <input type="checkbox" x-model="form.use_default_source_folder" class="accent-accent-500" />
-            use default
-          </label>
-        </div>
-        <input id="sfa-source-folder" x-model="form.source_folder_id" type="text" inputmode="numeric" pattern="[0-9]*"
-               :required="!form.use_default_source_folder"
-               :readonly="form.use_default_source_folder"
-               :disabled="form.use_default_source_folder"
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-source-folder">source_folder_id</label>
+        <input id="sfa-source-folder" x-model="form.source_folder_id" type="text" inputmode="numeric" pattern="[0-9]*" required
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-               :class="form.use_default_source_folder ? 'opacity-60 cursor-not-allowed' : ''"
-               placeholder="{{ default_source_folder_id or '50722' }}" />
+               placeholder="{{ default_source_folder_id or '50722' }}"
+               value="{{ default_source_folder_id or '50722' }}" />
         <p class="mt-1 text-xs text-slate-500">
-          Default: <span class="font-mono text-slate-400">{{ default_source_folder_id or 'configs.json' }}</span>.
+          Default value: <span class="font-mono text-slate-400">{{ default_source_folder_id or '50722' }}</span>; keep it unless you need another source folder.
         </p>
       </div>
-      <div class="space-y-1">
-        <div class="flex min-h-5 items-center justify-between gap-3">
-          <label class="block text-xs uppercase tracking-wide text-slate-500" for="sfa-destination-folder">destination_folder_id</label>
-          <span class="h-4 text-xs text-transparent select-none" aria-hidden="true">use default</span>
-        </div>
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-destination-folder">destination_folder_id</label>
         <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="text" inputmode="numeric" pattern="[0-9]*" required
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
                placeholder="1138081" />
@@ -245,17 +233,53 @@
 </section>
 {% endif %}
 
+<section class="mt-6 rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
+  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800 flex items-center justify-between gap-3">
+    <h2 class="font-semibold text-slate-100">Auto SFA trigger history</h2>
+    <span class="text-xs text-slate-500" x-text="`${history.length} run(s)`"></span>
+  </header>
+  <div class="max-h-72 overflow-y-auto">
+    <template x-if="history.length === 0">
+      <div class="px-4 py-6 text-sm text-slate-500">
+        No Auto SFA runs recorded yet.
+      </div>
+    </template>
+    <table x-show="history.length > 0" x-cloak class="min-w-full text-sm">
+      <thead class="sticky top-0 bg-ink-900 text-xs uppercase tracking-wide text-slate-500">
+        <tr class="border-b border-ink-700">
+          <th class="px-4 py-2 text-left font-medium">Run</th>
+          <th class="px-4 py-2 text-left font-medium">Time</th>
+          <th class="px-4 py-2 text-left font-medium">Display name</th>
+          <th class="px-4 py-2 text-right font-medium">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-ink-700">
+        <template x-for="run in history" :key="run.run_id">
+          <tr>
+            <td class="px-4 py-2 font-mono text-xs text-slate-400" x-text="run.run_id"></td>
+            <td class="px-4 py-2 text-slate-300 whitespace-nowrap" x-text="run.triggered_at_label"></td>
+            <td class="px-4 py-2 text-slate-300" x-text="run.display_name || '(unknown)'"></td>
+            <td class="px-4 py-2 text-right">
+              <span class="inline-flex rounded px-2 py-0.5 text-xs" :class="historyStatusClass(run.status)" x-text="run.status || 'unknown'"></span>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</section>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  function autoSfaPage(activeJob) {
+  function autoSfaPage(activeJob, initialHistory) {
+    const defaultSourceFolderId = {{ (default_source_folder_id or "50722") | tojson }};
     return {
       form: {
         display_name: "",
-        use_default_source_folder: true,
-        source_folder_id: "",
+        source_folder_id: defaultSourceFolderId,
         devtest_folder_id: "",
         url_path: "",
         start_date: "",
@@ -270,6 +294,7 @@
       error: null,
       job: null,
       lines: [],
+      history: Array.isArray(initialHistory) ? initialHistory : [],
       lastCommand: "",
       autoScroll: true,
       _es: null,
@@ -282,6 +307,7 @@
           this.append(`[resume] Auto SFA job ${activeJob.job_id} is ${activeJob.status}`);
           if (this.busy) this.subscribe(activeJob.job_id);
         }
+        this.refreshHistory();
       },
 
       jobLabel() {
@@ -355,6 +381,20 @@
         return "text-slate-300";
       },
 
+      historyStatusClass(status) {
+        const value = String(status || "").toLowerCase();
+        if (value === "done" || value === "success") {
+          return "bg-emerald-900/40 text-emerald-300";
+        }
+        if (value === "error" || value === "failed") {
+          return "bg-rose-900/50 text-rose-300";
+        }
+        if (value === "running" || value === "pending") {
+          return "bg-accent-600/30 text-accent-400";
+        }
+        return "bg-ink-800 text-slate-400";
+      },
+
       clearTerminal() {
         this.lines = [];
       },
@@ -376,6 +416,19 @@
         }
       },
 
+      async refreshHistory() {
+        try {
+          const r = await fetch("/api/auto-sfa/history", {
+            headers: { "Accept": "application/json" },
+          });
+          if (!r.ok) return;
+          const data = await r.json();
+          if (Array.isArray(data.runs)) {
+            this.history = data.runs;
+          }
+        } catch (_) {}
+      },
+
       async run() {
         if (this.busy) return;
         this.busy = true;
@@ -387,9 +440,6 @@
           const payload = { ...this.form };
           if (!payload.task_ids_enabled) {
             delete payload.task_ids;
-          }
-          if (payload.use_default_source_folder) {
-            delete payload.source_folder_id;
           }
           if (payload.use_default_credentials) {
             delete payload.auth_username;
@@ -411,6 +461,7 @@
           }
           this.job = data;
           this.append(`job ${data.job_id} accepted by dashboard runner`, "system");
+          this.refreshHistory();
           this.subscribe(data.job_id);
         } catch (err) {
           this.error = String(err.message || err);
@@ -440,6 +491,7 @@
             this.job = { ...this.job, ...data, status: "done" };
             this.append(`process exited 0 after ${data.seconds || 0}s`, "success");
             this.busy = false;
+            this.refreshHistory();
             es.close();
             this._es = null;
           } else if (data.event === "error") {
@@ -447,6 +499,7 @@
             this.error = data.error || "Auto SFA failed";
             this.append(this.error, "error");
             this.busy = false;
+            this.refreshHistory();
             es.close();
             this._es = null;
           } else if (data.event === "timeout") {

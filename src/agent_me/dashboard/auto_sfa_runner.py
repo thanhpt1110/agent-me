@@ -13,6 +13,8 @@ from typing import Any
 import structlog
 
 from agent_me.auto_sfa import AutoSFARequest, run_auto_sfa
+from agent_me.auto_sfa_history import recent_auto_sfa_runs, record_auto_sfa_run
+from agent_me.dashboard import state_reader
 
 log = structlog.get_logger("dashboard.auto_sfa")
 
@@ -72,6 +74,9 @@ class AutoSFARunner:
     def recent_jobs(self, limit: int = 10) -> list[AutoSFAJob]:
         return sorted(self._jobs.values(), key=lambda j: j.started_at, reverse=True)[:limit]
 
+    def recent_history(self, limit: int = 100) -> list[dict[str, Any]]:
+        return recent_auto_sfa_runs(state_reader.DB_PATH, limit=limit)
+
     async def start(self, request: AutoSFARequest) -> AutoSFAJob:
         if active := self.active_job():
             raise RuntimeError(f"Auto SFA job already running: {active.job_id}")
@@ -89,15 +94,28 @@ class AutoSFARunner:
             ]:
                 self._jobs.pop(old_id, None)
 
+        await asyncio.to_thread(self._record_history, job)
         task = asyncio.create_task(self._run(job))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return job
 
+    def _record_history(self, job: AutoSFAJob) -> None:
+        record_auto_sfa_run(
+            state_reader.DB_PATH,
+            run_id=job.job_id,
+            triggered_at_ms=job.started_at,
+            display_name=job.request.display_name,
+            status=job.status,
+            trigger_source="dashboard",
+            updated_at_ms=job.finished_at or int(time.time() * 1000),
+        )
+
     async def _run(self, job: AutoSFAJob) -> None:
         async with self._lock:
             started = time.monotonic()
             job.status = "running"
+            await asyncio.to_thread(self._record_history, job)
             job.emit({"event": "running", **job.public_dict()})
             log.info("auto_sfa_started", job_id=job.job_id, folder_id=job.request.devtest_folder_id)
 
@@ -113,6 +131,7 @@ class AutoSFARunner:
                 job.status = "done"
                 job.seconds = int(time.monotonic() - started)
                 job.finished_at = int(time.time() * 1000)
+                await asyncio.to_thread(self._record_history, job)
                 job.emit({"event": "done", **job.public_dict()})
                 log.info(
                     "auto_sfa_done", job_id=job.job_id, seconds=job.seconds, lines=job.line_count
@@ -122,6 +141,7 @@ class AutoSFARunner:
                 job.error = str(exc)[:500]
                 job.seconds = int(time.monotonic() - started)
                 job.finished_at = int(time.time() * 1000)
+                await asyncio.to_thread(self._record_history, job)
                 job.emit({"event": "error", **job.public_dict()})
                 log.error("auto_sfa_failed", job_id=job.job_id, err=str(exc))
             finally:
