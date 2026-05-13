@@ -1511,6 +1511,7 @@ AUTO_SFA_HELP_TEXT = "\n".join((
     "• *destination_folder_id* — DevTest release folder id, ví dụ folder week `05-2026/Week3-4`.",
     "• *url_path* — link dùng chung cho log, source code, và code review.",
     "• *start* và *end* — ngày theo format `yyyy-MM-dd`.",
+    "• *source_folder_id* — optional. Thêm `source_folder_id: 50722` nếu muốn override pool/source folder; bỏ trống thì dùng default trong `magic-auto/configs.json`.",
     "• *task_ids* — optional. Thêm `task_ids: 824423,824424` nếu muốn chạy đúng danh sách task ID; bỏ trống thì bot release theo display name.",
     "",
     "Ví dụ nhanh:",
@@ -1756,6 +1757,7 @@ async def handle_auto_sfa_flow_message(
             "Đã đủ thông tin. Mình bắt đầu chạy Auto SFA ngay bây giờ.\n"
             f"- Display name: `{request.display_name}`\n"
             f"- Task mode: `{('specific IDs ' + request.task_ids) if request.task_ids else 'display name filter'}`\n"
+            f"- Source folder: `{request.source_folder_id or 'default from magic-auto/configs.json'}`\n"
             f"- Destination folder: `{request.devtest_folder_id}`\n"
             f"- URL_PATH: `{request.code_review_path}`\n"
             "Log terminal sẽ được gửi tiếp trong thread này."

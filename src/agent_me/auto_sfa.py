@@ -93,7 +93,8 @@ INLINE_KEY_RE = re.compile(
     r"task[-_ ]?ids?|tasks|ids|"
     r"auth[-_ ]?username|devtest[-_ ]?auth[-_ ]?username|password|auth[-_ ]?password|"
     r"devtest[-_ ]?project[-_ ]?id|project[-_ ]?id|"
-    r"source[-_ ]?folder[-_ ]?id|pool[-_ ]?folder[-_ ]?id|from[-_ ]?folder[-_ ]?id|"
+    r"source[-_ ]?folder[-_ ]?id|source[-_ ]?fodler[-_ ]?id|"
+    r"pool[-_ ]?folder[-_ ]?id|from[-_ ]?folder[-_ ]?id|"
     r"devtest[-_ ]?folder[-_ ]?id|destination[-_ ]?folder[-_ ]?id|release[-_ ]?folder[-_ ]?id|"
     r"folder[-_ ]?id|folder|devtest[-_ ]?folder|"
     r"log[-_ ]?file[-_ ]?provider|log[-_ ]?provider|provider|"
@@ -243,6 +244,7 @@ def canonical_auto_sfa_key(key: str) -> str | None:
         return "devtest_project_id"
     if normalized in {
         "source_folder_id",
+        "source_fodler_id",
         "pool_folder_id",
         "from_folder_id",
     }:
@@ -573,7 +575,7 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
         errors.append("devtest_project_id must be a positive integer")
 
     source_raw = str(values.get("source_folder_id") or "").strip().lower()
-    if source_raw in {"", "none", "null", "skip", "direct", "false", "no", "0"}:
+    if source_raw in {"", "none", "null", "default", "use_default", "leave_default"}:
         source_folder_id = None
     else:
         try:
@@ -582,7 +584,7 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
                 raise ValueError
         except ValueError:
             source_folder_id = None
-            errors.append("source_folder_id must be a positive integer, or blank/null for direct release")
+            errors.append("source_folder_id must be a positive integer when provided")
 
     folder_raw = str(values.get("devtest_folder_id") or "").strip()
     try:

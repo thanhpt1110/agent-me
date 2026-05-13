@@ -31,7 +31,11 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from agent_me.auto_sfa import AutoSFAValidationError, build_auto_sfa_request
+from agent_me.auto_sfa import (
+    AutoSFAValidationError,
+    build_auto_sfa_request,
+    resolve_magic_auto_repo_dir,
+)
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
     COOKIE_NAME,
@@ -313,11 +317,22 @@ async def page_logs(request: Request):
     })
 
 
+def _auto_sfa_default_source_folder_id() -> str:
+    config_path = resolve_magic_auto_repo_dir() / "configs.json"
+    try:
+        data = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    value = data.get("source_folder_id")
+    return "" if value is None else str(value)
+
+
 async def page_auto_sfa(request: Request):
     active_job = AUTO_SFA_RUNNER.active_job()
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
         "sources": SOURCES,
         "active_job": active_job.public_dict() if active_job else None,
+        "default_source_folder_id": _auto_sfa_default_source_folder_id(),
         "recent_jobs": [j.public_dict() for j in AUTO_SFA_RUNNER.recent_jobs(limit=5)],
     })
 
@@ -453,6 +468,10 @@ async def api_auto_sfa_run(request: Request):
         return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
 
     values = dict(payload)
+    if "source_fodler_id" in payload and "source_folder_id" not in values:
+        values["source_folder_id"] = payload.get("source_fodler_id")
+    if "source_folder" in payload and "source_folder_id" not in values:
+        values["source_folder_id"] = payload.get("source_folder")
     if "destination_folder_id" in payload and "devtest_folder_id" not in values:
         values["devtest_folder_id"] = payload.get("destination_folder_id")
     if "start" in payload and "start_date" not in values:

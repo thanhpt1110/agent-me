@@ -121,7 +121,13 @@ def test_ops_page_renders(client: TestClient, with_token: str) -> None:
     assert "No MCP probe cached yet" in r.text
 
 
-def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
+def test_auto_sfa_page_renders(
+    client: TestClient, with_token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    monkeypatch.setattr(app_module, "_auto_sfa_default_source_folder_id", lambda: "50722")
+
     r = client.get("/auto-sfa", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Auto SFA" in r.text
@@ -129,6 +135,8 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     assert "placeholder=\"Thanh Phan\"" in r.text
     assert "DevTest credentials" in r.text
     assert "specific task IDs" in r.text
+    assert "source_folder_id" in r.text
+    assert "placeholder=\"50722\"" in r.text
     assert "destination_folder_id" in r.text
     assert "05-2026/Week3-4" in r.text
     assert "Merge Request / MR link" not in r.text
@@ -290,6 +298,7 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
         "/api/auto-sfa/run",
         json={
             "display_name": "Thanh Phan",
+            "source_folder_id": "50722",
             "devtest_folder_id": "1155188",
             "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
             "start_date": "2026-04-16",
@@ -307,6 +316,7 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     body = r.json()
     assert body["status"] == "pending"
     assert captured["request"].display_name == "Thanh Phan"
+    assert captured["request"].source_folder_id == 50722
     assert captured["request"].devtest_folder_id == 1155188
     assert captured["request"].task_ids == "824423,824424"
     assert captured["request"].auth_username == "thaphan"
@@ -333,6 +343,7 @@ def test_api_auto_sfa_run_rejects_bad_input(client: TestClient,
         "/api/auto-sfa/run",
         json={
             "display_name": "thaphan",
+            "source_folder_id": "",
             "devtest_folder_id": "not-a-number",
             "url_path": "not-a-url",
             "start_date": "2026-04-16",

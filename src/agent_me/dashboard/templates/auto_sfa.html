@@ -14,28 +14,18 @@
 </section>
 
 <section class="mb-4 rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
-  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800 flex flex-wrap items-center justify-between gap-3">
-    <div class="min-w-0">
+  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800">
+    <label class="flex items-start gap-3">
+      <input type="checkbox" x-model="form.use_personal_credentials"
+             class="mt-1 accent-accent-500" />
+      <span class="min-w-0">
       <h2 class="font-semibold text-slate-100">DevTest credentials</h2>
       <p class="text-xs text-slate-500" x-text="credentialLabel()"></p>
-    </div>
-    <button type="button" @click="credentialsOpen = !credentialsOpen"
-            class="rounded border border-ink-600 px-3 py-1.5 text-sm text-slate-200 hover:border-accent-600"
-            x-text="credentialsOpen ? 'Close' : 'Configure'"></button>
-  </header>
-  <div x-show="credentialsOpen" x-cloak class="px-4 py-4 space-y-4">
-    <label class="flex items-start gap-3 rounded border border-ink-700 bg-ink-950 p-3">
-      <input type="checkbox" x-model="form.use_personal_credentials"
-             class="mt-0.5 accent-accent-500" />
-      <span>
-        <span class="block text-sm font-semibold text-slate-100">Use custom credentials for this run</span>
-        <span class="block text-xs text-slate-500">
-          Off uses the default DevTest credentials already loaded on this host.
-        </span>
       </span>
     </label>
-
-    <div x-show="form.use_personal_credentials" x-cloak class="grid grid-cols-1 md:grid-cols-2 gap-3">
+  </header>
+  <div x-show="form.use_personal_credentials" x-cloak class="px-4 py-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-auth-username">USERNAME</label>
         <input id="sfa-auth-username" name="devtest-username" x-model="form.auth_username" type="text"
@@ -70,7 +60,17 @@
       </p>
     </div>
 
-    <div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-source-folder">source_folder_id</label>
+        <input id="sfa-source-folder" x-model="form.source_folder_id" type="number" min="1"
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               placeholder="{{ default_source_folder_id or '50722' }}" />
+        <p class="mt-1 text-xs text-slate-500">
+          Leave blank to use the default source folder from <span class="font-mono text-slate-400">magic-auto/configs.json</span>.
+        </p>
+      </div>
+      <div>
       <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-destination-folder">destination_folder_id</label>
       <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="number" min="1" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
@@ -78,6 +78,7 @@
       <p class="mt-1 text-xs text-slate-500">
         Example folder: <span class="font-mono text-slate-400">05-2026/Week3-4</span>. Use the DevTest folder ID for that week release folder.
       </p>
+      </div>
     </div>
 
     <div>
@@ -170,7 +171,7 @@
     <li class="px-4 py-2 text-sm flex items-center justify-between gap-3">
       <span class="font-mono text-xs text-slate-400">{{ job.job_id }}</span>
       <span class="text-slate-300 truncate">
-        {{ job.request.display_name or job.request.user_login }} · folder {{ job.request.devtest_folder_id }}
+        {{ job.request.display_name or job.request.user_login }} · source {{ job.request.source_folder_id or 'default' }} -> destination {{ job.request.devtest_folder_id }}
         {% if job.request.task_ids %} · IDs {{ job.request.task_ids }}{% endif %}
       </span>
       <span class="text-xs px-2 py-0.5 rounded
@@ -194,6 +195,7 @@
     return {
       form: {
         display_name: "",
+        source_folder_id: "",
         devtest_folder_id: "",
         url_path: "",
         start_date: "",
@@ -204,7 +206,6 @@
         auth_username: "",
         auth_password: "",
       },
-      credentialsOpen: false,
       busy: false,
       error: null,
       job: null,

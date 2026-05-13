@@ -10,6 +10,7 @@ from agent_me.auto_sfa import (
     build_auto_sfa_request,
     missing_auto_sfa_fields,
     parse_auto_sfa_message,
+    run_auto_sfa,
     update_magic_auto_config,
 )
 
@@ -98,8 +99,8 @@ def test_auto_sfa_parse_slack_mention_multiline_shortcuts() -> None:
         """
         @agent-me
         display_name: Thanh Phan
+        source_folder_id: 50722
         devtest_folder_id: 1138081
-        source_folder_id: null
         url_path: https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160
         start: 2026-04-16
         finish: 2026-04-25
@@ -109,7 +110,7 @@ def test_auto_sfa_parse_slack_mention_multiline_shortcuts() -> None:
     request = build_auto_sfa_request(values)
 
     assert request.display_name == "Thanh Phan"
-    assert request.source_folder_id is None
+    assert request.source_folder_id == 50722
     assert request.devtest_folder_id == 1138081
     assert request.log_file_base_url.endswith("/merge_requests/160")
     assert request.source_code_path.endswith("/merge_requests/160")
@@ -121,6 +122,7 @@ def test_auto_sfa_parse_slack_code_fence_inline_delimiters() -> None:
     values = parse_auto_sfa_message(
         """@agent-me
         ```display_name: Thanh Phan
+        source_folder_id: 50722
         devtest_folder_id: 1138081
         url_path: <https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160>
         start: 2026-04-16
@@ -144,6 +146,7 @@ def test_auto_sfa_parse_vietnamese_field_separator() -> None:
         """
         @agent-me
         display_name l\u00e0 Thanh Phan
+        source_folder_id: 50722
         devtest_folder_id: 1138081
         url_path: https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160
         start: 2026-04-16
@@ -172,6 +175,7 @@ def test_auto_sfa_parse_slack_link_url() -> None:
     values = parse_auto_sfa_message(
         """
         display_name: Thanh Phan
+        source_folder_id: 50722
         devtest_folder_id: 1155188
         url_path: <https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123|https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123>
         start: 2026-04-16
@@ -218,9 +222,10 @@ def test_auto_sfa_validation_rejects_short_login_as_display_name() -> None:
 
 
 def test_auto_sfa_missing_fields_requires_compact_fields() -> None:
-    values = _full_values(url_path="")
+    values = _full_values(url_path="", source_folder_id="")
 
     assert "url_path" in missing_auto_sfa_fields(values)
+    assert "source_folder_id" not in missing_auto_sfa_fields(values)
 
 
 def test_auto_sfa_domino_does_not_require_log_file_base_url() -> None:
@@ -263,6 +268,32 @@ def test_auto_sfa_config_update_sets_magic_auto_fields(tmp_path) -> None:
     assert release["source_code_path"] == request.source_code_path
     assert release["code_review_path"] == request.code_review_path
     assert summary["log_file_provider"] == "Manual"
+
+
+def test_auto_sfa_config_update_requires_source_folder_override(tmp_path) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
+    request = build_auto_sfa_request(_full_values(source_folder_id="50724"))
+
+    summary = update_magic_auto_config(request, repo)
+
+    updated = json.loads((repo / "configs.json").read_text())
+    assert updated["source_folder_id"] == 50724
+    assert summary["source_folder_id"] == 50724
+
+
+def test_auto_sfa_config_update_preserves_source_folder_when_blank(tmp_path) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
+    request = build_auto_sfa_request(_full_values(source_folder_id=""))
+
+    summary = update_magic_auto_config(request, repo)
+
+    updated = json.loads((repo / "configs.json").read_text())
+    assert updated["source_folder_id"] == 50722
+    assert summary["source_folder_id"] == 50722
 
 
 def test_auto_sfa_config_update_keeps_mr_url_for_domino_input(tmp_path) -> None:
@@ -339,3 +370,56 @@ def test_auto_sfa_rejects_empty_task_ids_when_task_id_mode_enabled() -> None:
         build_auto_sfa_request(_full_values(task_ids_enabled=True, task_ids=""))
 
     assert "task_ids is required when specific task ID mode is enabled" in exc.value.errors
+
+
+def test_auto_sfa_blank_source_folder_id_preserves_config_default() -> None:
+    request = build_auto_sfa_request(_full_values(source_folder_id=""))
+
+    assert request.source_folder_id is None
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_env(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
+    request = build_auto_sfa_request(
+        _full_values(
+            use_personal_credentials=True,
+            auth_username="thaphan@nvidia.com",
+            auth_password="dummy-password",
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class FakeStdout:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            captured["killed"] = True
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    await run_auto_sfa(request, repo_dir=repo, uv_bin="/usr/bin/uv")
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["DEVTEST_USERNAME"] == "thaphan"
+    assert env["DEVTEST_PASSWORD"] == "dummy-password"
