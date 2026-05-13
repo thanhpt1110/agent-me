@@ -1041,7 +1041,7 @@ HELP_TEXT = "\n".join((
     "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
-    "• `auto sfa` — collect DevTest SFA config, update `magic-auto/configs.json`, run `dtoperator.py sfa --user-login`, and stream logs",
+    "• `auto sfa` — collect DevTest SFA config, run `dtoperator.py sfa` by display name or optional task IDs, and stream logs",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
     "• `mcp refresh` / `/mcp refresh` — force-refresh MaaS OAuth tokens, rewrite persistent Codex MCP env, and verify",
@@ -1496,7 +1496,7 @@ AUTO_SFA_LOG_FLUSH_INTERVAL_S = 2.0
 AUTO_SFA_SLACK_TASKS: set[asyncio.Task[None]] = set()
 
 AUTO_SFA_INPUT_TEMPLATE = "\n".join((
-    "username: thaphan",
+    "display_name: Thanh Phan",
     "destination_folder_id: 1138081",
     "url_path: https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
     "start: 2026-04-16",
@@ -1506,19 +1506,22 @@ AUTO_SFA_INPUT_TEMPLATE = "\n".join((
 AUTO_SFA_HELP_TEXT = "\n".join((
     "*Auto SFA* — mình sẽ chuẩn bị config và chạy SFA giúp bạn.",
     "",
-    "Mình cần 5 thông tin. Các field dùng chung sẽ được tự map vào config `magic-auto`:",
-    "• *username* — NVIDIA account, ví dụ `thaphan`; nếu bạn gửi email thì mình lấy phần trước `@`.",
+    "Mình cần 5 thông tin bắt buộc. Các field dùng chung sẽ được tự map vào config `magic-auto`:",
+    "• *display_name* — DevTest `Automation Dev Linux` display name, ví dụ `Thanh Phan`. Bắt buộc cả khi chạy theo task ID.",
     "• *destination_folder_id* — DevTest release folder id, ví dụ folder week `05-2026/Week3-4`.",
     "• *url_path* — link dùng chung cho log, source code, và code review.",
     "• *start* và *end* — ngày theo format `yyyy-MM-dd`.",
+    "• *task_ids* — optional. Thêm `task_ids: 824423,824424` nếu muốn chạy đúng danh sách task ID; bỏ trống thì bot release theo display name.",
     "",
     "Ví dụ nhanh:",
     "```",
     AUTO_SFA_INPUT_TEMPLATE,
     "```",
+    "Ví dụ chạy task IDs cụ thể: thêm dòng `task_ids: 824423,824424` vào mẫu trên.",
     "",
     "Mặc định: `devtest_project_id=1074`, `log_file_provider=Manual`, `complexity_level=L2`; source folder giữ theo config hiện tại của `magic-auto`.",
-    "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa --user-login <user_login> -f`, rồi stream log lại ngay trong thread này.",
+    "Slack dùng DevTest credentials mặc định trên host. Nếu cần credential riêng, dùng dashboard Auto SFA để tránh paste password vào Slack.",
+    "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa [-i <task_ids>] --user-login <display_name> -f`, rồi stream log lại ngay trong thread này.",
     "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
 ))
 
@@ -1608,7 +1611,8 @@ async def _run_auto_sfa_slack_job(
     request: AutoSFARequest,
 ) -> None:
     log.info("auto_sfa_slack_started", thread_ts=thread_ts,
-             folder_id=request.devtest_folder_id, user_login=request.user_login)
+             folder_id=request.devtest_folder_id, display_name=request.display_name,
+             task_ids=request.task_ids)
     buffer: list[str] = []
     buffer_chars = 0
     last_flush = 0.0
@@ -1750,9 +1754,10 @@ async def handle_auto_sfa_flow_message(
         thread_ts=thread_ts,
         text=(
             "Đã đủ thông tin. Mình bắt đầu chạy Auto SFA ngay bây giờ.\n"
-            f"- Username email -> user login: `{request.user_login}`\n"
+            f"- Display name: `{request.display_name}`\n"
+            f"- Task mode: `{('specific IDs ' + request.task_ids) if request.task_ids else 'display name filter'}`\n"
             f"- Destination folder: `{request.devtest_folder_id}`\n"
-            f"- MR link: `{request.code_review_path}`\n"
+            f"- URL_PATH: `{request.code_review_path}`\n"
             "Log terminal sẽ được gửi tiếp trong thread này."
         ),
     )

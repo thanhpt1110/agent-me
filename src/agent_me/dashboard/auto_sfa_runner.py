@@ -7,7 +7,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import structlog
@@ -125,6 +125,8 @@ class AutoSFARunner:
                 job.emit({"event": "error", **job.public_dict()})
                 log.error("auto_sfa_failed", job_id=job.job_id, err=str(exc))
             finally:
+                if job.request.auth_password:
+                    job.request = replace(job.request, auth_password=None)
                 if self._active is job:
                     self._active = None
 

@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-12 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the new Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA is a deterministic local runner that updates `/localhome/local-thaphan/magic-auto/configs.json`, then runs `uv run dtoperator.py sfa --task-owner <exact username> -f` in the `magic-auto` repo and streams terminal output. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard route tests._
+_Last updated: 2026-05-13 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the refreshed Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA is a deterministic local runner that updates `/localhome/local-thaphan/magic-auto/configs.json`, then runs `uv run dtoperator.py sfa [--task-ids <ids>] --user-login <display_name> -f` in the `magic-auto` repo and streams terminal output. Dashboard users can optionally pass per-run DevTest credentials; the password is not written to server config or public job history. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard route tests._
 
 ## Phase
 
@@ -105,18 +105,19 @@ approval gate.
   hallucinated `user cancelled MCP tool call` outcomes.
 - [x] **Auto SFA (2026-05-12; refreshed 2026-05-13)** — Slack `/help` now includes an
   **Auto SFA** button and `auto sfa` plain-text shortcut. The Slack flow
-  collects five required fields in-thread: `username`,
-  `destination_folder_id`, `url_path`, `start`, and `end`. The runner maps
-  the NVIDIA account to `--user-login`, treats `url_path` as the shared
-  log/source/review URL, maps `start`
-  and `end` across the required Dev/QA date fields, preserves
-  `source_folder_id` from the existing `magic-auto` config, updates
-  `magic-auto/configs.json`, then runs
-  `uv run dtoperator.py sfa --user-login <login> -f` from
-  `/localhome/local-thaphan/magic-auto`. Slack posts only new terminal log
-  lines into the same thread. Dashboard route `/auto-sfa` provides the same
-  compact form and an SSE-backed terminal log panel. Advisory locking
-  serializes concurrent Slack/dashboard runs against the shared config.
+  collects five required fields in-thread: `display_name`,
+  `destination_folder_id`, `url_path`, `start`, and `end`, plus optional
+  `task_ids`. The runner passes the DevTest `Automation Dev Linux` display
+  name to `--user-login`, adds `-i <task_ids>` for specific-ID mode, treats
+  `url_path` as the shared log/source/review URL, maps `start` and `end`
+  across the required Dev/QA date fields, preserves `source_folder_id` from
+  the existing `magic-auto` config, updates `magic-auto/configs.json`, then
+  runs `uv run dtoperator.py sfa [-i <task_ids>] --user-login <display_name> -f`
+  from `/localhome/local-thaphan/magic-auto`. Slack posts only new terminal
+  log lines into the same thread. Dashboard route `/auto-sfa` provides the
+  same compact form, an optional custom DevTest credential panel, and an
+  SSE-backed terminal log panel. Advisory locking serializes concurrent
+  Slack/dashboard runs against the shared config.
 - [x] **Dashboard operator action guard (2026-05-13)** — public team dashboard
   viewers can browse read surfaces, but `Refresh all` and `Refresh MCP auth`
   now open an operator-check modal and the corresponding POST endpoints require

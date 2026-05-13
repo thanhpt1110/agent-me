@@ -17,16 +17,22 @@ from pathlib import Path
 from typing import Any
 
 AUTO_SFA_FIELD_ORDER = (
-    "username_email",
+    "display_name",
     "devtest_folder_id",
     "url_path",
     "start_date",
     "finish_date",
+    "task_ids",
 )
 
 AUTO_SFA_FIELD_LABELS = {
+    "display_name": "display_name",
     "username_email": "username",
     "user_login": "user_login",
+    "task_ids": "task_ids",
+    "task_ids_enabled": "task_ids_enabled",
+    "auth_username": "USERNAME",
+    "auth_password": "PASSWORD",
     "devtest_project_id": "devtest_project_id",
     "source_folder_id": "source_folder_id",
     "devtest_folder_id": "destination_folder_id",
@@ -48,7 +54,7 @@ AUTO_SFA_FIELD_LABELS = {
 }
 
 AUTO_SFA_REQUIRED_BASE_FIELDS = (
-    "username_email",
+    "display_name",
     "devtest_folder_id",
     "url_path",
     "start_date",
@@ -81,8 +87,11 @@ SLACK_LINK_RE = re.compile(r"^<(?P<url>https?://[^>|]+)(?:\|[^>]+)?>$")
 INLINE_KEY_RE = re.compile(
     r"(?im)(^|[\n,;])\s*(?:[-*]\s*)?"
     r"(?P<key>"
+    r"display[-_ ]?name|automation[-_ ]?dev[-_ ]?linux|dev[-_ ]?display[-_ ]?name|"
     r"username[-_ ]?email|user[-_ ]?email|email|"
     r"user[-_ ]?login|devtest[-_ ]?username|username|user|login|owner|task[-_ ]?owner|taskowner|"
+    r"task[-_ ]?ids?|tasks|ids|"
+    r"auth[-_ ]?username|devtest[-_ ]?auth[-_ ]?username|password|auth[-_ ]?password|"
     r"devtest[-_ ]?project[-_ ]?id|project[-_ ]?id|"
     r"source[-_ ]?folder[-_ ]?id|pool[-_ ]?folder[-_ ]?id|from[-_ ]?folder[-_ ]?id|"
     r"devtest[-_ ]?folder[-_ ]?id|destination[-_ ]?folder[-_ ]?id|release[-_ ]?folder[-_ ]?id|"
@@ -110,7 +119,7 @@ class AutoSFAValidationError(ValueError):
 
 @dataclass(frozen=True)
 class AutoSFARequest:
-    user_login: str
+    display_name: str
     devtest_project_id: int
     devtest_folder_id: int
     source_folder_id: int | None
@@ -126,10 +135,18 @@ class AutoSFARequest:
     complexity_level: str
     source_code_path: str
     code_review_path: str
+    task_ids: str | None = None
+    auth_username: str | None = None
+    auth_password: str | None = None
+
+    @property
+    def user_login(self) -> str:
+        """Compatibility alias for the legacy name of magic-auto's -u flag."""
+        return self.display_name
 
     def as_input_dict(self) -> dict[str, Any]:
         return {
-            "user_login": self.user_login,
+            "display_name": self.display_name,
             "devtest_project_id": self.devtest_project_id,
             "source_folder_id": self.source_folder_id,
             "devtest_folder_id": self.devtest_folder_id,
@@ -145,6 +162,9 @@ class AutoSFARequest:
             "complexity_level": self.complexity_level,
             "source_code_path": self.source_code_path,
             "code_review_path": self.code_review_path,
+            "task_ids": self.task_ids,
+            "auth_username": self.auth_username,
+            "auth_password_set": bool(self.auth_password),
         }
 
 
@@ -175,19 +195,30 @@ def resolve_uv_bin() -> str:
 
 
 def auto_sfa_command(request: AutoSFARequest, uv_bin: str | None = None) -> list[str]:
-    return [
+    cmd = [
         uv_bin or resolve_uv_bin(),
         "run",
         "dtoperator.py",
         "sfa",
-        "--user-login",
-        request.user_login,
-        "-f",
     ]
+    if request.task_ids:
+        cmd.extend(["-i", request.task_ids])
+    cmd.extend([
+        "--user-login",
+        request.display_name,
+        "-f",
+    ])
+    return cmd
 
 
 def canonical_auto_sfa_key(key: str) -> str | None:
     normalized = re.sub(r"[^a-z0-9]+", "_", key.strip().lower()).strip("_")
+    if normalized in {
+        "display_name",
+        "automation_dev_linux",
+        "dev_display_name",
+    }:
+        return "display_name"
     if normalized in {
         "username_email",
         "user_email",
@@ -201,7 +232,13 @@ def canonical_auto_sfa_key(key: str) -> str | None:
         "login",
         "devtest_username",
     }:
-        return "username_email"
+        return "display_name"
+    if normalized in {"task_ids", "task_id", "tasks", "ids"}:
+        return "task_ids"
+    if normalized in {"auth_username", "devtest_auth_username"}:
+        return "auth_username"
+    if normalized in {"password", "auth_password"}:
+        return "auth_password"
     if normalized in {"devtest_project_id", "project_id"}:
         return "devtest_project_id"
     if normalized in {
@@ -336,7 +373,7 @@ def _normalize_provider(value: Any) -> str:
     return provider
 
 
-def _derive_user_login(value: Any) -> str:
+def _derive_auth_username(value: Any) -> str:
     raw = str(value or "").strip()
     if "@" in raw:
         raw = raw.split("@", 1)[0]
@@ -346,14 +383,22 @@ def _derive_user_login(value: Any) -> str:
 def _apply_auto_sfa_shortcuts(values: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(values)
 
-    username_value = (
-        normalized.get("username_email")
-        or normalized.get("username")
+    display_name = (
+        normalized.get("display_name")
+        or normalized.get("username_email")
         or normalized.get("user_login")
+        or normalized.get("username")
+        or normalized.get("task_owner")
     )
-    if username_value:
-        normalized["username_email"] = str(username_value).strip()
-        normalized["user_login"] = _derive_user_login(username_value)
+    if display_name:
+        normalized["display_name"] = str(display_name).strip()
+
+    auth_username = normalized.get("auth_username")
+    if auth_username:
+        normalized["auth_username"] = _derive_auth_username(auth_username)
+
+    if "task_ids" in normalized and normalized["task_ids"] is not None:
+        normalized["task_ids"] = _clean_auto_sfa_value("task_ids", normalized["task_ids"])
 
     if url_path := normalized.get("url_path"):
         for field in AUTO_SFA_URL_FIELDS:
@@ -468,19 +513,55 @@ def _valid_ymd(value: str) -> bool:
     return True
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
+
+
+def _normalize_task_ids(value: Any) -> tuple[str | None, list[str]]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None, []
+    parts = [part for part in re.split(r"[\s,;]+", raw) if part]
+    invalid = [part for part in parts if not part.isdigit()]
+    if invalid:
+        return None, [f"task_ids contains invalid ID(s): {', '.join(invalid)}"]
+    normalized = ",".join(str(int(part)) for part in parts)
+    return normalized or None, []
+
+
 def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
     values = _apply_auto_sfa_shortcuts(values)
     errors: list[str] = []
 
-    username_email = str(values.get("username_email") or "").strip()
-    if not username_email:
-        errors.append("username is required")
+    display_name = str(values.get("display_name") or "").strip()
+    if not display_name:
+        errors.append("display_name is required")
+    elif "@" in display_name or re.fullmatch(r"[A-Za-z0-9._-]+", display_name):
+        errors.append("display_name must be a DevTest display name like Thanh Phan")
 
-    user_login = str(values.get("user_login") or "").strip()
-    if not user_login:
-        errors.append("username must include a DevTest login or email local part")
-    elif not re.match(r"^[A-Za-z0-9._-]+$", user_login):
-        errors.append("username must be an NVIDIA account like thaphan")
+    task_ids_enabled = _truthy(values.get("task_ids_enabled"))
+    task_ids, task_id_errors = _normalize_task_ids(values.get("task_ids"))
+    errors.extend(task_id_errors)
+    if task_ids_enabled and not task_ids and not task_id_errors:
+        errors.append("task_ids is required when specific task ID mode is enabled")
+
+    raw_auth_username = str(values.get("auth_username") or "").strip()
+    raw_auth_password = values.get("auth_password")
+    use_personal_credentials = _truthy(values.get("use_personal_credentials"))
+    auth_username = _derive_auth_username(raw_auth_username) if raw_auth_username else None
+    auth_password = None if raw_auth_password in (None, "") else str(raw_auth_password)
+    if use_personal_credentials or auth_username or auth_password:
+        if not auth_username:
+            errors.append("USERNAME is required when custom DevTest credentials are enabled")
+        elif not re.match(r"^[A-Za-z0-9._-]+$", auth_username):
+            errors.append("USERNAME must be a short DevTest login like thaphan")
+        if not auth_password:
+            errors.append("PASSWORD is required when custom DevTest credentials are enabled")
+    else:
+        auth_username = None
+        auth_password = None
 
     project_raw = str(values.get("devtest_project_id") or "").strip()
     try:
@@ -564,7 +645,7 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
         raise AutoSFAValidationError(errors)
 
     return AutoSFARequest(
-        user_login=user_login,
+        display_name=display_name,
         devtest_project_id=devtest_project_id,
         devtest_folder_id=devtest_folder_id,
         source_folder_id=source_folder_id,
@@ -580,6 +661,9 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
         complexity_level=complexity_level,
         source_code_path=source_code_path,
         code_review_path=code_review_path,
+        task_ids=task_ids,
+        auth_username=auth_username,
+        auth_password=auth_password,
     )
 
 
@@ -686,12 +770,19 @@ async def run_auto_sfa(
                 "event": "started",
                 "cwd": str(repo),
                 "command": shlex.join(cmd),
-                "user_login": request.user_login,
+                "display_name": request.display_name,
+                "task_ids": request.task_ids,
+                "credential_mode": "custom" if request.auth_username else "default",
+                "auth_username": request.auth_username,
             },
         )
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        if request.auth_username:
+            env["DEVTEST_USERNAME"] = request.auth_username
+        if request.auth_password:
+            env["DEVTEST_PASSWORD"] = request.auth_password
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(repo),

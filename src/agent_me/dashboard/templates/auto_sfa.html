@@ -13,14 +13,61 @@
   </div>
 </section>
 
-<section class="grid grid-cols-1 lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)] gap-4">
+<section class="mb-4 rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
+  <header class="px-4 py-3 border-b border-ink-700 bg-ink-800 flex flex-wrap items-center justify-between gap-3">
+    <div class="min-w-0">
+      <h2 class="font-semibold text-slate-100">DevTest credentials</h2>
+      <p class="text-xs text-slate-500" x-text="credentialLabel()"></p>
+    </div>
+    <button type="button" @click="credentialsOpen = !credentialsOpen"
+            class="rounded border border-ink-600 px-3 py-1.5 text-sm text-slate-200 hover:border-accent-600"
+            x-text="credentialsOpen ? 'Close' : 'Configure'"></button>
+  </header>
+  <div x-show="credentialsOpen" x-cloak class="px-4 py-4 space-y-4">
+    <label class="flex items-start gap-3 rounded border border-ink-700 bg-ink-950 p-3">
+      <input type="checkbox" x-model="form.use_personal_credentials"
+             class="mt-0.5 accent-accent-500" />
+      <span>
+        <span class="block text-sm font-semibold text-slate-100">Use custom credentials for this run</span>
+        <span class="block text-xs text-slate-500">
+          Off uses the default DevTest credentials already loaded on this host.
+        </span>
+      </span>
+    </label>
+
+    <div x-show="form.use_personal_credentials" x-cloak class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-auth-username">USERNAME</label>
+        <input id="sfa-auth-username" name="devtest-username" x-model="form.auth_username" type="text"
+               :required="form.use_personal_credentials" autocomplete="username"
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               placeholder="thaphan" />
+      </div>
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-auth-password">PASSWORD</label>
+        <input id="sfa-auth-password" name="devtest-password" x-model="form.auth_password" type="password"
+               :required="form.use_personal_credentials" autocomplete="current-password"
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               placeholder="••••••••" />
+      </div>
+      <p class="md:col-span-2 text-xs text-slate-500">
+        Use your browser password manager for the longest local cache. agent-me only sends these for this run and never saves them on the server.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 lg:grid-cols-[minmax(0,30rem)_minmax(0,1fr)] gap-4">
   <form @submit.prevent="run()"
         class="rounded-lg border border-ink-700 bg-ink-900 p-4 space-y-4">
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-username">username (NVIDIA account)</label>
-      <input id="sfa-username" x-model="form.username_email" type="text" required
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-display-name">display_name</label>
+      <input id="sfa-display-name" x-model="form.display_name" type="text" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-             placeholder="thaphan" />
+             placeholder="Thanh Phan" />
+      <p class="mt-1 text-xs text-slate-500">
+        Required for both modes. This must match the DevTest <span class="font-mono text-slate-400">Automation Dev Linux</span> display name.
+      </p>
     </div>
 
     <div>
@@ -55,6 +102,29 @@
                  class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
         </div>
       </div>
+    </div>
+
+    <div class="rounded border border-ink-700 bg-ink-950 p-3 space-y-3">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <label class="block text-xs uppercase tracking-wide text-slate-500">specific task IDs</label>
+          <p class="mt-1 text-xs text-slate-500">
+            Optional: run only these DevTest task IDs instead of scanning every task for the display name.
+          </p>
+        </div>
+        <button type="button" role="switch" :aria-checked="form.task_ids_enabled.toString()"
+                @click="toggleTaskIds()"
+                class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition"
+                :class="form.task_ids_enabled ? 'border-accent-600 bg-accent-600' : 'border-ink-600 bg-ink-800'">
+          <span class="sr-only">Toggle task ID mode</span>
+          <span class="inline-block h-4 w-4 rounded-full bg-white transition"
+                :class="form.task_ids_enabled ? 'translate-x-5' : 'translate-x-1'"></span>
+        </button>
+      </div>
+      <textarea x-show="form.task_ids_enabled" x-cloak x-model="form.task_ids"
+                :required="form.task_ids_enabled" rows="3"
+                class="w-full rounded border border-ink-700 bg-ink-900 px-3 py-2 text-sm text-slate-100"
+                placeholder="824423,824424&#10;824425"></textarea>
     </div>
 
     <div class="rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
@@ -99,7 +169,10 @@
     {% for job in recent_jobs %}
     <li class="px-4 py-2 text-sm flex items-center justify-between gap-3">
       <span class="font-mono text-xs text-slate-400">{{ job.job_id }}</span>
-      <span class="text-slate-300 truncate">{{ job.request.user_login }} · folder {{ job.request.devtest_folder_id }}</span>
+      <span class="text-slate-300 truncate">
+        {{ job.request.display_name or job.request.user_login }} · folder {{ job.request.devtest_folder_id }}
+        {% if job.request.task_ids %} · IDs {{ job.request.task_ids }}{% endif %}
+      </span>
       <span class="text-xs px-2 py-0.5 rounded
         {% if job.status == 'done' %}bg-emerald-900/40 text-emerald-300
         {% elif job.status == 'error' %}bg-rose-900/50 text-rose-300
@@ -120,12 +193,18 @@
   function autoSfaPage(activeJob) {
     return {
       form: {
-        username_email: "",
+        display_name: "",
         devtest_folder_id: "",
         url_path: "",
         start_date: "",
         finish_date: "",
+        task_ids_enabled: false,
+        task_ids: "",
+        use_personal_credentials: false,
+        auth_username: "",
+        auth_password: "",
       },
+      credentialsOpen: false,
       busy: false,
       error: null,
       job: null,
@@ -151,6 +230,20 @@
         return `${status} · ${id} · ${lines} line(s)`;
       },
 
+      credentialLabel() {
+        if (this.form.use_personal_credentials) {
+          return "Custom credentials enabled for the next run";
+        }
+        return "Using default credentials loaded on the host";
+      },
+
+      toggleTaskIds() {
+        this.form.task_ids_enabled = !this.form.task_ids_enabled;
+        if (!this.form.task_ids_enabled) {
+          this.form.task_ids = "";
+        }
+      },
+
       append(line) {
         this.lines.push(String(line || ""));
         if (this.lines.length > this.MAX) {
@@ -172,6 +265,13 @@
         this.job = null;
         try {
           const payload = { ...this.form };
+          if (!payload.task_ids_enabled) {
+            delete payload.task_ids;
+          }
+          if (!payload.use_personal_credentials) {
+            delete payload.auth_username;
+            delete payload.auth_password;
+          }
           const r = await fetch("/api/auto-sfa/run", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },

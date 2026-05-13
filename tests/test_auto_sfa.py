@@ -38,7 +38,7 @@ def _sample_config() -> dict:
 
 def _full_values(**overrides) -> dict:
     values = {
-        "username_email": "thaphan@nvidia.com",
+        "display_name": "Thanh Phan",
         "devtest_project_id": "1074",
         "source_folder_id": "50722",
         "devtest_folder_id": "1138081",
@@ -65,7 +65,7 @@ def _full_values(**overrides) -> dict:
 def test_auto_sfa_parse_full_keyed_message() -> None:
     values = parse_auto_sfa_message(
         """
-        username_email: thaphan@nvidia.com
+        display_name: Thanh Phan
         devtest_project_id: 1074
         source_folder_id: 50722
         devtest_folder_id: 1138081
@@ -85,7 +85,7 @@ def test_auto_sfa_parse_full_keyed_message() -> None:
     )
     request = build_auto_sfa_request(values)
 
-    assert request.user_login == "thaphan"
+    assert request.display_name == "Thanh Phan"
     assert request.devtest_project_id == 1074
     assert request.source_folder_id == 50722
     assert request.devtest_folder_id == 1138081
@@ -97,7 +97,7 @@ def test_auto_sfa_parse_slack_mention_multiline_shortcuts() -> None:
     values = parse_auto_sfa_message(
         """
         @agent-me
-        username_email: thaphan@nvidia.com
+        display_name: Thanh Phan
         devtest_folder_id: 1138081
         source_folder_id: null
         url_path: https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160
@@ -108,7 +108,7 @@ def test_auto_sfa_parse_slack_mention_multiline_shortcuts() -> None:
     )
     request = build_auto_sfa_request(values)
 
-    assert request.user_login == "thaphan"
+    assert request.display_name == "Thanh Phan"
     assert request.source_folder_id is None
     assert request.devtest_folder_id == 1138081
     assert request.log_file_base_url.endswith("/merge_requests/160")
@@ -120,7 +120,7 @@ def test_auto_sfa_parse_slack_mention_multiline_shortcuts() -> None:
 def test_auto_sfa_parse_slack_code_fence_inline_delimiters() -> None:
     values = parse_auto_sfa_message(
         """@agent-me
-        ```username_email: thaphan@nvidia.com
+        ```display_name: Thanh Phan
         devtest_folder_id: 1138081
         url_path: <https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160>
         start: 2026-04-16
@@ -129,7 +129,7 @@ def test_auto_sfa_parse_slack_code_fence_inline_delimiters() -> None:
     )
     request = build_auto_sfa_request(values)
 
-    assert request.user_login == "thaphan"
+    assert request.display_name == "Thanh Phan"
     assert request.devtest_folder_id == 1138081
     assert request.log_file_base_url == (
         "https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/"
@@ -143,7 +143,7 @@ def test_auto_sfa_parse_vietnamese_field_separator() -> None:
     values = parse_auto_sfa_message(
         """
         @agent-me
-        username_email l\u00e0 thaphan@nvidia.com
+        display_name l\u00e0 Thanh Phan
         devtest_folder_id: 1138081
         url_path: https://gitlab-master.nvidia.com/cloud-service-qa/Blueprint/blueprint-github-test/-/merge_requests/160
         start: 2026-04-16
@@ -153,25 +153,25 @@ def test_auto_sfa_parse_vietnamese_field_separator() -> None:
     )
     request = build_auto_sfa_request(values)
 
-    assert request.user_login == "thaphan"
+    assert request.display_name == "Thanh Phan"
     assert request.planned_dev_finish_date == "2026-04-27"
 
 
 def test_auto_sfa_parse_inline_followup_fields() -> None:
     values = parse_auto_sfa_message(
-        "@agent-me username_email: thaphan@nvidia.com, finish date: 2026-04-28",
+        "@agent-me display_name: Thanh Phan, finish date: 2026-04-28",
         existing=_full_values(),
     )
     request = build_auto_sfa_request(values)
 
-    assert request.user_login == "thaphan"
+    assert request.display_name == "Thanh Phan"
     assert request.planned_qa_finish_date == "2026-04-28"
 
 
 def test_auto_sfa_parse_slack_link_url() -> None:
     values = parse_auto_sfa_message(
         """
-        username_email: thaphan@nvidia.com
+        display_name: Thanh Phan
         devtest_folder_id: 1155188
         url_path: <https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123|https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123>
         start: 2026-04-16
@@ -188,7 +188,7 @@ def test_auto_sfa_parse_ordered_compact_message() -> None:
     values = parse_auto_sfa_message(
         "\n".join(
             (
-                "thaphan@nvidia.com",
+                "Thanh Phan",
                 "1138081",
                 "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
                 "2026-04-16",
@@ -198,8 +198,7 @@ def test_auto_sfa_parse_ordered_compact_message() -> None:
     )
     request = build_auto_sfa_request(values)
 
-    assert values["username_email"] == "thaphan@nvidia.com"
-    assert values["user_login"] == "thaphan"
+    assert values["display_name"] == "Thanh Phan"
     assert values["devtest_folder_id"] == "1138081"
     assert request.source_code_path.endswith("/merge_requests/159")
 
@@ -211,11 +210,11 @@ def test_auto_sfa_validation_rejects_bad_date() -> None:
     assert "planned_dev_start_date must use yyyy-MM-dd" in exc.value.errors
 
 
-def test_auto_sfa_validation_rejects_display_name_login() -> None:
+def test_auto_sfa_validation_rejects_short_login_as_display_name() -> None:
     with pytest.raises(AutoSFAValidationError) as exc:
-        build_auto_sfa_request(_full_values(username_email="Thanh Phan"))
+        build_auto_sfa_request(_full_values(display_name="thaphan"))
 
-    assert "username must be an NVIDIA account like thaphan" in exc.value.errors
+    assert "display_name must be a DevTest display name like Thanh Phan" in exc.value.errors
 
 
 def test_auto_sfa_missing_fields_requires_compact_fields() -> None:
@@ -281,8 +280,8 @@ def test_auto_sfa_config_update_keeps_mr_url_for_domino_input(tmp_path) -> None:
     assert updated["log_file_base_url"] == request.log_file_base_url
 
 
-def test_auto_sfa_command_uses_user_login_as_single_argv() -> None:
-    request = build_auto_sfa_request(_full_values(user_login="thaphan"))
+def test_auto_sfa_command_uses_display_name_as_single_argv() -> None:
+    request = build_auto_sfa_request(_full_values(display_name="Thanh Phan"))
 
     args = auto_sfa_command(request, uv_bin="/usr/bin/uv")
 
@@ -292,6 +291,51 @@ def test_auto_sfa_command_uses_user_login_as_single_argv() -> None:
         "dtoperator.py",
         "sfa",
         "--user-login",
-        "thaphan",
+        "Thanh Phan",
         "-f",
     ]
+
+
+def test_auto_sfa_task_ids_are_optional_command_mode() -> None:
+    request = build_auto_sfa_request(
+        _full_values(task_ids_enabled=True, task_ids="824423, 824424\n824425")
+    )
+
+    args = auto_sfa_command(request, uv_bin="/usr/bin/uv")
+
+    assert request.task_ids == "824423,824424,824425"
+    assert args == [
+        "/usr/bin/uv",
+        "run",
+        "dtoperator.py",
+        "sfa",
+        "-i",
+        "824423,824424,824425",
+        "--user-login",
+        "Thanh Phan",
+        "-f",
+    ]
+
+
+def test_auto_sfa_credentials_are_required_only_when_enabled() -> None:
+    request = build_auto_sfa_request(
+        _full_values(
+            use_personal_credentials=True,
+            auth_username="thaphan@nvidia.com",
+            auth_password="dummy-password",
+        )
+    )
+
+    assert request.auth_username == "thaphan"
+    assert request.auth_password == "dummy-password"
+    public = request.as_input_dict()
+    assert public["auth_username"] == "thaphan"
+    assert public["auth_password_set"] is True
+    assert "dummy-password" not in json.dumps(public)
+
+
+def test_auto_sfa_rejects_empty_task_ids_when_task_id_mode_enabled() -> None:
+    with pytest.raises(AutoSFAValidationError) as exc:
+        build_auto_sfa_request(_full_values(task_ids_enabled=True, task_ids=""))
+
+    assert "task_ids is required when specific task ID mode is enabled" in exc.value.errors

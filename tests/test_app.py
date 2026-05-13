@@ -7,6 +7,7 @@ but doesn't require pytest-asyncio).
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -124,8 +125,10 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     r = client.get("/auto-sfa", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Auto SFA" in r.text
-    assert "username (NVIDIA account)" in r.text
-    assert "placeholder=\"thaphan\"" in r.text
+    assert "display_name" in r.text
+    assert "placeholder=\"Thanh Phan\"" in r.text
+    assert "DevTest credentials" in r.text
+    assert "specific task IDs" in r.text
     assert "destination_folder_id" in r.text
     assert "05-2026/Week3-4" in r.text
     assert "Merge Request / MR link" not in r.text
@@ -286,11 +289,16 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     r = client.post(
         "/api/auto-sfa/run",
         json={
-            "username": "thaphan",
+            "display_name": "Thanh Phan",
             "devtest_folder_id": "1155188",
             "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/159",
             "start_date": "2026-04-16",
             "finish_date": "2026-04-27",
+            "task_ids_enabled": True,
+            "task_ids": "824423,824424",
+            "use_personal_credentials": True,
+            "auth_username": "thaphan",
+            "auth_password": "dummy-password",
         },
         headers=_auth(with_token),
     )
@@ -298,8 +306,12 @@ def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
     assert r.status_code == 202
     body = r.json()
     assert body["status"] == "pending"
-    assert captured["request"].user_login == "thaphan"
+    assert captured["request"].display_name == "Thanh Phan"
     assert captured["request"].devtest_folder_id == 1155188
+    assert captured["request"].task_ids == "824423,824424"
+    assert captured["request"].auth_username == "thaphan"
+    assert captured["request"].auth_password == "dummy-password"
+    assert "dummy-password" not in json.dumps(body)
 
 
 def test_operator_action_endpoints_require_passcode(client: TestClient,
@@ -320,7 +332,7 @@ def test_api_auto_sfa_run_rejects_bad_input(client: TestClient,
     r = client.post(
         "/api/auto-sfa/run",
         json={
-            "username_email": "Thanh Phan",
+            "display_name": "thaphan",
             "devtest_folder_id": "not-a-number",
             "url_path": "not-a-url",
             "start_date": "2026-04-16",
