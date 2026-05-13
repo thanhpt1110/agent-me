@@ -1,42 +1,56 @@
-<nav class="border-b border-ink-700 bg-ink-900/80 backdrop-blur sticky top-0 z-30">
+{% set path = request.url.path %}
+{% set is_source = path.startswith('/source/') %}
+{% set is_tool = path in ['/auto-sfa', '/ops', '/logs'] %}
+<nav class="sticky top-0 z-30 border-b border-ink-700 bg-ink-900/90 backdrop-blur">
   <div class="mx-auto max-w-7xl px-3 sm:px-6 lg:px-8">
-    <div class="flex h-14 items-center justify-between gap-3">
-      <a href="/" class="flex items-center gap-2 text-slate-100 font-semibold shrink-0">
-        <img src="/static/agent-me-avatar.svg" alt="" class="h-8 w-8 rounded-lg bg-ink-950 ring-1 ring-accent-400/50" />
-        <span class="hidden sm:inline">agent-me</span>
-        <span class="hidden lg:inline text-xs font-mono px-1.5 py-0.5 rounded bg-ink-700 text-slate-400">dashboard</span>
+    <div class="flex h-16 items-center justify-between gap-3 sm:gap-4">
+      <a href="/" class="flex min-w-0 shrink-0 items-center gap-2 sm:gap-3 text-slate-100">
+        <img src="/static/agent-me-avatar.svg" alt="" class="h-8 w-8 rounded-lg bg-ink-950 ring-1 ring-accent-400/50 sm:h-9 sm:w-9" />
+        <span class="text-base font-semibold tracking-normal sm:text-lg">Agent Me</span>
       </a>
 
-      <!-- Scroll-x on phones so all 9 nav items remain reachable without
-           a hamburger menu. Each pill stays touch-target sized. -->
-      <div class="flex items-center gap-1 text-sm overflow-x-auto -mx-1 px-1
-                  scrollbar-thin">
+      <div class="flex items-center gap-2 text-sm">
         <a href="/"
-           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+           class="rounded px-2 py-2 font-medium hover:bg-ink-700 sm:px-3 {% if path == '/' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
           Overview
         </a>
-        {% for src_id, label, icon in sources %}
-        <a href="/source/{{ src_id }}"
-           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/source/' + src_id %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
-          <span aria-hidden="true">{{ icon }}</span>
-          <span class="hidden md:inline">{{ label }}</span>
-          <span class="md:hidden sr-only">{{ label }}</span>
-        </a>
-        {% endfor %}
-        <a href="/logs"
-           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/logs' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
-          <span aria-hidden="true">📜</span>
-          <span class="hidden sm:inline">Logs</span>
-        </a>
-        <a href="/auto-sfa"
-           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/auto-sfa' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
-          Auto SFA
-        </a>
-        <a href="/ops"
-           class="px-3 py-1.5 rounded shrink-0 hover:bg-ink-700 {% if request.url.path == '/ops' %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
-          <span aria-hidden="true">⚙</span>
-          <span class="hidden sm:inline">Ops</span>
-        </a>
+
+        <details class="nav-dropdown relative">
+          <summary class="flex cursor-pointer select-none items-center gap-1 rounded px-2 py-2 font-medium hover:bg-ink-700 sm:px-3 {% if is_source %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+            Sources
+            <span class="text-xs text-slate-500">▾</span>
+          </summary>
+          <div class="absolute right-0 mt-2 w-64 rounded-lg border border-ink-700 bg-ink-900 p-2 shadow-xl">
+            {% for src_id, label, icon in sources %}
+            <a href="/source/{{ src_id }}"
+               class="flex items-center gap-3 rounded px-3 py-2 hover:bg-ink-800 {% if path == '/source/' + src_id %}text-slate-100{% else %}text-slate-300{% endif %}">
+              <span aria-hidden="true" class="text-lg">{{ icon }}</span>
+              <span>{{ label }}</span>
+            </a>
+            {% endfor %}
+          </div>
+        </details>
+
+        <details class="nav-dropdown relative">
+          <summary class="flex cursor-pointer select-none items-center gap-1 rounded px-2 py-2 font-medium hover:bg-ink-700 sm:px-3 {% if is_tool %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+            Tools
+            <span class="text-xs text-slate-500">▾</span>
+          </summary>
+          <div class="absolute right-0 mt-2 w-56 rounded-lg border border-ink-700 bg-ink-900 p-2 shadow-xl">
+            <a href="/auto-sfa"
+               class="block rounded px-3 py-2 hover:bg-ink-800 {% if path == '/auto-sfa' %}text-slate-100{% else %}text-slate-300{% endif %}">
+              Auto SFA
+            </a>
+            <a href="/ops"
+               class="block rounded px-3 py-2 hover:bg-ink-800 {% if path == '/ops' %}text-slate-100{% else %}text-slate-300{% endif %}">
+              Operations
+            </a>
+            <a href="/logs"
+               class="block rounded px-3 py-2 hover:bg-ink-800 {% if path == '/logs' %}text-slate-100{% else %}text-slate-300{% endif %}">
+              Logs
+            </a>
+          </div>
+        </details>
       </div>
     </div>
   </div>

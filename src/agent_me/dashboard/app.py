@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,133 @@ def _ms_to_human(ms: int | None) -> str:
     return f"{delta_s // 86400}d ago"
 
 
+def _coerce_epoch_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        if value <= 0:
+            return None
+        return int(value if value > 1_000_000_000_000 else value * 1000)
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        numeric = float(raw)
+        return int(numeric if numeric > 1_000_000_000_000 else numeric * 1000)
+    except ValueError:
+        pass
+
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
+
+
+def _activity_label(value: Any, fallback_ms: int | None) -> str:
+    if ms := _coerce_epoch_ms(value):
+        return _ms_to_human(ms)
+    if isinstance(value, str) and value.strip():
+        return value.strip()[:16]
+    return _ms_to_human(fallback_ms) if fallback_ms else ""
+
+
+def _brief_priority(value: Any) -> str | None:
+    if not value:
+        return None
+    raw = str(value).upper()
+    for priority in ("P0", "P1", "P2", "P3"):
+        if priority in raw:
+            return priority
+    if "CRITICAL" in raw or "HIGH" in raw:
+        return "P1"
+    if "MEDIUM" in raw:
+        return "P2"
+    return None
+
+
+def _brief_item_to_pending_item(item: dict[str, Any], source: str,
+                                fetched_at: int) -> dict[str, Any]:
+    extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
+    item_id = str(item.get("item_id") or extras.get("id") or "")
+    title = str(item.get("title") or "(untitled)")[:220]
+    return {
+        "item_id": item_id,
+        "title": title,
+        "url": str(item.get("url") or f"/source/{source}"),
+        "kind": str(extras.get("kind") or item.get("kind") or item.get("group") or "item"),
+        "priority": _brief_priority(item.get("priority")),
+        "due": item.get("deadline") or item.get("due"),
+        "age_label": _activity_label(item.get("last_activity"), fetched_at),
+        "mock": False,
+        "reason": item.get("reason"),
+    }
+
+
+def _pending_groups_from_snapshots(snapshots: list[Any]) -> list[dict[str, Any]]:
+    """Use real brief cache for source groups, falling back to mock data.
+
+    This keeps the overview as the single pending surface: refreshing a
+    source writes the brief cache, and the next overview render replaces
+    that source's mock group with the latest brief items.
+    """
+    mock_by_id = {g["group_id"]: g for g in pending_groups_dicts()}
+    groups: list[dict[str, Any]] = []
+
+    for snap in snapshots:
+        source_url = f"/source/{snap.source}"
+        mock = mock_by_id.get(snap.source)
+        has_cache = bool(snap.fetched_at)
+
+        if has_cache:
+            items = [
+                _brief_item_to_pending_item(item, snap.source, snap.fetched_at)
+                for item in snap.items
+            ]
+            note = f"Brief cache · fetched {_ms_to_human(snap.fetched_at)} · {snap.seconds}s"
+            cache_state = "error" if snap.error else ("stale" if snap.stale else "fresh")
+            cache_label = "error" if snap.error else ("stale" if snap.stale else "fresh")
+            mock_flag = False
+        elif mock:
+            items = [dict(item) for item in mock["items"]]
+            note = "Mock fallback · refresh this source to replace with brief data"
+            cache_state = "mock"
+            cache_label = "mock fallback"
+            mock_flag = True
+        else:
+            items = []
+            note = "No brief cache yet"
+            cache_state = "empty"
+            cache_label = "no cache"
+            mock_flag = False
+
+        if snap.error:
+            note = f"Brief error · {str(snap.error)[:140]}"
+
+        groups.append({
+            "group_id": snap.source,
+            "label": snap.label,
+            "icon": snap.icon,
+            "pending_count": len(items),
+            "home_url": source_url,
+            "source_url": source_url,
+            "items": items,
+            "mock": mock_flag,
+            "note": note,
+            "cache_state": cache_state,
+            "cache_label": cache_label,
+            "fetched_at": snap.fetched_at,
+            "seconds": snap.seconds,
+            "error": snap.error,
+        })
+    return groups
+
+
 TEMPLATES.env.filters["age"] = _ms_to_human
 
 
@@ -116,7 +244,7 @@ TEMPLATES.env.filters["age"] = _ms_to_human
 async def page_index(request: Request):
     snapshots = StateReader.all_snapshots()
     bridge_stats = StateReader.bridge_stats()
-    pending_groups = pending_groups_dicts()
+    pending_groups = _pending_groups_from_snapshots(snapshots)
     total_pending = sum(g["pending_count"] for g in pending_groups)
     return TEMPLATES.TemplateResponse(request, "index.html", {
         "snapshots": snapshots,

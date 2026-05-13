@@ -46,13 +46,23 @@
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-start">start</label>
-        <input id="sfa-start" x-model="form.start_date" type="date" required
-               class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
+        <div class="dashboard-date-field">
+          <input id="sfa-start" x-model="form.start_date" type="date" required
+                 class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
+          <svg class="dashboard-date-icon" aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M8 2v4M16 2v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
+          </svg>
+        </div>
       </div>
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-finish">finish</label>
-        <input id="sfa-finish" x-model="form.finish_date" type="date" required
-               class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
+        <div class="dashboard-date-field">
+          <input id="sfa-finish" x-model="form.finish_date" type="date" required
+                 class="dashboard-date-input w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-sm text-slate-100" />
+          <svg class="dashboard-date-icon" aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M8 2v4M16 2v4M3 10h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
+          </svg>
+        </div>
       </div>
     </div>
 

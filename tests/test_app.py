@@ -43,6 +43,7 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert r.status_code == 200
     assert "text/html" in r.headers.get("content-type", "")
     body = r.text
+    assert "Agent Me" in body
     assert "agent-me" in body
     assert "agent-me-avatar.svg" in body
     assert "Overview" in body
@@ -50,10 +51,40 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "Auto SFA" in body
     assert "Operator actions" in body
     assert "Refresh MCP auth" in body
+    assert "Pending across platforms" in body
+    assert "Briefs by source" not in body
     # All brief sources should appear in the nav at minimum
     for label in ("Jira", "GitLab", "NVBugs",
                   "Slack", "Outlook", "Outlook Calendar", "GitHub"):
         assert label in body
+
+
+def test_index_pending_uses_brief_cache(client: TestClient, temp_state_dir: Path,
+                                        with_token: str) -> None:
+    from agent_me.dashboard.state_reader import StateReader
+
+    StateReader.write_cache("jira", {
+        "source": "jira",
+        "items": [{
+            "source": "jira",
+            "icon": "📋",
+            "item_id": "PROJ-1",
+            "title": "Cached Jira task",
+            "url": "https://jirasw.nvidia.com/browse/PROJ-1",
+            "group": "PROJ",
+            "priority": "P1",
+            "deadline": "2026-05-20",
+            "last_activity": "2026-05-13T00:00:00Z",
+        }],
+        "error": None,
+        "fetched_at": int(time.time() * 1000),
+        "seconds": 4,
+    })
+    r = client.get("/", headers=_auth(with_token))
+    assert r.status_code == 200
+    assert "PROJ-1" in r.text
+    assert "Cached Jira task" in r.text
+    assert "IPP-4521" not in r.text
 
 
 def test_source_page_known_source_renders(client: TestClient, with_token: str) -> None:
@@ -89,6 +120,7 @@ def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
     assert "Auto SFA" in r.text
     assert "devtest_folder_id" in r.text
     assert "dashboard-date-input" in r.text
+    assert "dashboard-date-icon" in r.text
 
 
 def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) -> None:
