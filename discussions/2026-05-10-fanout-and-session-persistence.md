@@ -101,7 +101,7 @@ prerequisites check → `uv sync` → seed `configs/.env` → setup-mcps →
 print interactive next steps).
 
 `design/setup-on-fresh-host.md` is the long form of "what bootstrap.sh
-does and why," including Brev-specific notes (systemd unit, SSH
+does and why," including cloud-host-specific notes (systemd unit, SSH
 port-forward for OAuth, daily token sync recipe).
 
 ## Files touched
@@ -133,5 +133,5 @@ port-forward for OAuth, daily token sync recipe).
 ## Next session
 
 User will manually test multi-turn chat in Slack. After that:
-prompt-tuning the brief (user-driven), Phase 3 Brev deploy, Phase 2b
+prompt-tuning the brief (user-driven), Phase 3 cloud host deploy, Phase 2b
 approval gate.

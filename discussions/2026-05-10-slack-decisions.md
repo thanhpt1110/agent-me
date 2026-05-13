@@ -32,7 +32,7 @@ needed when installing into someone else's workspace (e.g., NVIDIA's).
 ## Architectural implication
 
 Choosing Slack means we need a Node bridge service running on the always-on
-host (Brev, per Phase 0 decision). The bridge owns:
+host (Cloud host, per Phase 0 decision). The bridge owns:
 
 - Slack Bolt SDK in Socket Mode (no public HTTP endpoint required)
 - Per-thread session state in SQLite at the XDG path
@@ -72,6 +72,6 @@ workspace is a private operation — only you see/use it.
    subscribes to events (§5), and captures the bot token + app token.
 3. Tokens stored in `~/agent-me/configs/.env` (gitignored — see `.gitignore`).
 4. Build the bridge service at `~/agent-me/services/slack-bridge/` per §8.
-5. Deploy to Brev (separate Phase 3 work).
+5. Deploy to a cloud host (separate Phase 3 work).
 
 This doc + design-doc edits should land in the same commit.

@@ -4,11 +4,11 @@ You are working in `~/agent-me/` — _"myself, but in agent mode."_ A public-sha
 
 ## What this project is
 
-A 24/7 always-on autonomous agent framework, inspired by NVIDIA's Personal Assistant. Goal: orchestrator + sub-agents handle daily/weekly workload across Jira, GitLab, Confluence, Glean, calendar, code review, ops. Configs sync to GitHub. Runtime hosted on Brev cloud (CPU). Primary interface: Slack DM. The framework should be generic enough that any user can fork → set their own configs → have their own `agent-me`.
+A 24/7 always-on autonomous agent framework, inspired by NVIDIA's Personal Assistant. Goal: orchestrator + sub-agents handle daily/weekly workload across Jira, GitLab, Confluence, Glean, calendar, code review, ops. Configs sync to GitHub. Runtime hosted on cloud host (CPU). Primary interface: Slack DM. The framework should be generic enough that any user can fork → set their own configs → have their own `agent-me`.
 
 ## Decisions already made (do not re-litigate unless asked)
 
-- **Runtime host:** Brev cloud instance (CPU)
+- **Runtime host:** cloud host instance (CPU)
 - **Interface:** Slack DM / channel
 - **Config persistence:** Personal GitHub, private repo
 - **Default model:** Claude Opus 4.7 (1M context) — always pick best/thinking-best, no cost limit

@@ -49,7 +49,7 @@ User's Claude Code installation already has these MCP servers connected (from th
 | Maintenance burden | NVIDIA | NVIDIA + bridge | Self |
 | Risk if NVIDIA pulls tool | Total loss | PA stops; bridge useless | Unaffected |
 | Approval / admin gate | None | None | None |
-| Cost | NVIDIA-internal | NVIDIA-internal + Brev | Brev + Claude usage |
+| Cost | NVIDIA-internal | NVIDIA-internal + Cloud host | Cloud host + Claude usage |
 | Aligned with project goals¹ | Partial | Worst-of-both | Yes |
 
 ¹ Project goals: public-shareable framework (MIT template), best model (Claude Opus 4.7), 24/7 autonomous, no third-party gate, repo-aware context. See `STATE.md`.

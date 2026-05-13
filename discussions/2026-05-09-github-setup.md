@@ -12,7 +12,7 @@
 1. **Visibility:** public template repo (vs private + collaborators) so anyone can `Use this template` and have their own `agent-me`.
 2. **License:** MIT.
 3. **Git identity strategy:** `includeIf` per-host instead of per-repo local config — global rule, applies to all future repos automatically.
-4. **Slack transport:** Socket Mode (no public HTTP endpoint, no ngrok/Cloudflare Tunnel needed; works behind Brev NAT).
+4. **Slack transport:** Socket Mode (no public HTTP endpoint, no ngrok/Cloudflare Tunnel needed; works behind Cloud host NAT).
 5. **Bridge stack:** Node.js + `@slack/bolt` Socket Mode SDK, spawn `claude -p` headless with `cwd: ~/agent-me/` so the agent inherits `CLAUDE.md` context per turn.
 
 ## Open questions raised by Slack design doc

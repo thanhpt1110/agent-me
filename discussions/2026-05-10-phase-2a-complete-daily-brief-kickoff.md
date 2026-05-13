@@ -88,7 +88,7 @@ Bug history (so future-us doesn't re-debug the same things):
 
 Per user direction (2026-05-10), the order from here is:
 1. **Daily-brief sub-agent** ← we start here.
-2. **Phase 3 — Brev deploy** (cron jobs need a 24/7 host).
+2. **Phase 3 — cloud host deploy** (cron jobs need a 24/7 host).
 3. Phase 2b — approval gate.
 4. Phase 4 — web dashboard.
 
@@ -138,7 +138,7 @@ User's spec:
 - v1 (Mac, today): launchd plist at `~/Library/LaunchAgents/me.thaphan.agent-me.brief.plist`
   fires at 8am local. Outputs to `~/.local/state/agent-me/brief-YYYY-MM-DD.json`
   for debugging plus posts to Slack.
-- v2 (Brev, Phase 3): systemd timer; same script, different host.
+- v2 (Cloud host, Phase 3): systemd timer; same script, different host.
 - Manual trigger: DM `/brief` to the bridge — bridge spawns
   `uv run agent-me-brief --post`. (Slash to be added in the bridge once
   the script lands.)
@@ -195,7 +195,7 @@ agent-me · /brief to refresh now · /mcp for source health
   date stay in their source section.
 - **Empty-source rendering** — drop the section, or show "_(none)_"?
   v1: drop entirely so message stays compact when sources are quiet.
-- **Cron scheduling** — launchd today, systemd on Brev later. Keep the
+- **Cron scheduling** — launchd today, systemd on a cloud host later. Keep the
   schedule definition outside the script (so the script is just a
   one-shot main()).
 

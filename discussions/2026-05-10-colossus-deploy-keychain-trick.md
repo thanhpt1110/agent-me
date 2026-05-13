@@ -1,13 +1,13 @@
 # Phase 3 deploy on Colossus + Mac-Keychain MCP token transfer
 
-_2026-05-10 evening · the deploy that replaced the Brev plan._
+_2026-05-10 evening · the deploy that replaced the Cloud host plan._
 
 ## What landed
 
-1. **Pivoted Phase 3 target from Brev to Colossus.** Brev is external
+1. **Pivoted Phase 3 target from Cloud host to Colossus.** Cloud host is external
    network — MaaS MCP endpoints (`*.nvidia.com`) all 401 from there,
-   making the bridge useless on a Brev host. Colossus is internal,
-   reaches everything. Renamed `design/deploy-on-brev.md` →
+   making the bridge useless on a cloud host. Colossus is internal,
+   reaches everything. Renamed `design/deploy-on-host.md` →
    `design/deploy-on-host.md` and made it host-agnostic.
 2. **Steps 1–5 of `design/deploy-on-host.md` done on Colossus
    `1xA100-40`** (Ubuntu 24.04, 16 CPU / 125 GB / 731 GB free,
@@ -149,7 +149,7 @@ User is driving these from a claude session running on Colossus.
 
 ## Files touched today
 
-- `design/deploy-on-host.md` (renamed from deploy-on-brev.md;
+- `design/deploy-on-host.md` (renamed from deploy-on-host.md;
   step-5 rewritten to put Keychain transfer first)
 - `scripts/sync-mcp-creds-to-host.sh` (new)
 - `src/agent_me/scripts/reauth_mcps.py` (Linux fallback, maas-*
@@ -158,7 +158,7 @@ User is driving these from a claude session running on Colossus.
 - `~/agent-me-secrets.md` (LOCAL — restructured so
   `design/deploy-on-host.md`'s awk extractor parses it; never pushed)
 
-Commits: `4917b41` (rename + Brev→host pivot), `d0c41da` (reauth
+Commits: `4917b41` (rename + Cloud host→host pivot), `d0c41da` (reauth
 graceful fallback), `02667d8` (reauth maas-* filter), `07f7396`
 (sync-mcp-creds-to-host.sh + design rewrite).
 

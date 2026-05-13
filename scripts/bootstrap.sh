@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/bootstrap.sh — first-time setup on a fresh host (e.g. Brev).
+# scripts/bootstrap.sh — first-time setup on a fresh host (e.g. Cloud host).
 #
 # Run from the repo root after `git clone`:
 #   ./scripts/bootstrap.sh

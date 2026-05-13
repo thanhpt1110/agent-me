@@ -10,7 +10,7 @@ Tested / recommended targets:
 - **Any internal NVIDIA Linux box** with `systemd --user`, outbound
   to slack.com + github.com, and inbound from the human's browser
   (over SSH) for OAuth callbacks.
-- **External cloud (Brev / EC2 / Lambda Cloud)** — works for the
+- **External cloud (Cloud host / EC2 / Lambda Cloud)** — works for the
   bridge process itself but the MaaS MCP endpoints (`*.nvidia.com`,
   `maas.prd.astra.nvidia.com`) generally aren't reachable from
   external networks, so Jira / GitLab / Confluence / NVBugs / Slack /
@@ -50,7 +50,7 @@ done
 ```
 
 NVIDIA-internal hosts (`*.nvidia.com`, `maas.prd.astra.nvidia.com`)
-require internal network. Colossus has it; Brev/EC2 don't.
+require internal network. Colossus has it; Cloud host/EC2 don't.
 
 `api.anthropic.com` is needed if you authenticate Claude Code via
 `claude /login`. NVIDIA-internal Inference Hub is an alternative if
@@ -489,12 +489,12 @@ die on logout. That command needs sudo *once* during setup.
 
 We poll origin/main every 60s. Alternatives:
 
-- **GitHub webhook → Brev port-expose**: instant, but needs a
+- **GitHub webhook → provider port-expose**: instant, but needs a
   publicly reachable HTTPS endpoint, a webhook secret to manage,
-  and Brev's port-expose URL is fragile (rotates per instance
+  and Cloud host's port-expose URL is fragile (rotates per instance
   restart). If the bridge needs to handle webhooks too, that's a
   second listener to keep alive.
-- **GitHub Actions → SSH to Brev**: faster than polling, but needs
+- **GitHub Actions → SSH to cloud host**: faster than polling, but needs
   an SSH deploy key in GitHub Secrets, plus a separate runner
   setup. Workable if we want sub-30s deploys; overkill for now.
 

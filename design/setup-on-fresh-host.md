@@ -1,6 +1,6 @@
 # Setup on a fresh host
 
-Goal: a clean machine (Colossus, Brev, new Mac, anything with
+Goal: a clean machine (Colossus, Cloud host, new Mac, anything with
 Linux/macOS) goes from `git clone` to a working agent-me deployment.
 The path is deliberately scripted so you don't have to remember which
 17 MCP servers we use, or which env vars need filling.
@@ -69,10 +69,10 @@ uv run agent-me-bridge                # starts the always-on bridge
 | `node` | Required for `claude` CLI itself and for the playwright MCP (`npx`) | `brew install node` etc. |
 | `git` | Pulling configs / pushing state | usually present |
 
-On Brev specifically, `claude`, `gh`, and `jq` need explicit install:
+On Cloud host specifically, `claude`, `gh`, and `jq` need explicit install:
 
 ```bash
-# Brev L4-CPU (Ubuntu 22.04) one-shot:
+# Cloud host L4-CPU (Ubuntu 22.04) one-shot:
 sudo apt update && sudo apt install -y jq nodejs npm git python3.12 python3.12-venv
 sudo npm install -g @anthropic-ai/claude-code
 type -p curl >/dev/null && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -118,7 +118,7 @@ Once per machine. Opens a browser to `console.anthropic.com` and
 captures an OAuth refresh token into `~/.claude/credentials.json`. After
 this every `claude -p ...` call is authenticated automatically.
 
-For headless Brev: `export ANTHROPIC_API_KEY=...` in your shell rc
+For headless cloud host: `export ANTHROPIC_API_KEY=...` in your shell rc
 instead of `claude /login`. The CLI prefers the env var if set.
 
 ### `uv run agent-me-reauth`
@@ -149,13 +149,13 @@ These belong to your Slack workspace, not the host. Two sources of truth:
 Fill them in once, then never edit `configs/.env` from inside the bridge
 process — restart it to pick up new values.
 
-## Brev-specific notes
+## cloud-host-specific notes
 
 - **SSH port-forward for OAuth tabs.** When `agent-me-reauth` runs on
-  Brev, the OAuth callback hits `localhost:<random>` on Brev, not your
+  Cloud host, the OAuth callback hits `localhost:<random>` on a cloud host, not your
   Mac. Two ways to handle this:
-    1. Run `agent-me-reauth` *via SSH with port-forward*: `ssh -L 51080:localhost:51080 brev-host` and the callback comes back to Brev's listener which you reach through the tunnel.
-    2. Or run `claude /login` and `agent-me-reauth` on your Mac (where browser auto-open works), then `scp ~/.claude.json brev-host:~/.claude.json` once. Tokens live in that file.
+    1. Run `agent-me-reauth` *via SSH with port-forward*: `ssh -L 51080:localhost:51080 cloud-host` and the callback comes back to Cloud host's listener which you reach through the tunnel.
+    2. Or run `claude /login` and `agent-me-reauth` on your Mac (where browser auto-open works), then `scp ~/.claude.json cloud-host:~/.claude.json` once. Tokens live in that file.
   The second option is simpler; refresh once a day.
 - **Persistent runtime.** Use `systemd` (Linux) to keep
   `agent-me-bridge` alive across reboots. Example unit:
