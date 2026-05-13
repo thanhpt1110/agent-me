@@ -191,6 +191,40 @@ def test_help_blocks_include_auto_sfa(monkeypatch, tmp_path) -> None:
     assert app.PLAIN_COMMANDS["auto sfa"] == ("/auto-sfa", "")
 
 
+def test_mcp_refresh_shortcuts(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert app.PLAIN_COMMANDS["mcp refresh"] == ("/mcp", "refresh")
+    assert app.PLAIN_COMMANDS["refresh mcp"] == ("/mcp", "refresh")
+
+
+def test_mcp_slash_refresh_routes_to_refresh(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    calls: list[bool] = []
+
+    async def fake_cmd_mcp(refresh: bool = False) -> str:
+        calls.append(refresh)
+        return "ok"
+
+    monkeypatch.setattr(app, "cmd_mcp", fake_cmd_mcp)
+
+    import asyncio
+
+    assert asyncio.run(app.handle_slash("/mcp", "U123", "refresh")) == "ok"
+    assert calls == [True]
+
+
 def test_auto_sfa_start_remembers_thread(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")

@@ -62,7 +62,7 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 
 from agent_me.codex_app_server import run_codex_app_server
-from agent_me.mcp_tokens import codex_mcp_token_env
+from agent_me.mcp_tokens import codex_mcp_token_env, refresh_expired_mcp_tokens
 
 # ── Setup ────────────────────────────────────────────────────────────────
 
@@ -1227,7 +1227,26 @@ async def nvbugs_fetcher(_spec: SourceSpec, _period_days: int) -> dict:
     items_by_id: dict[str, dict] = {}
     async with httpx.AsyncClient() as client:
         for reason, query in queries:
-            payload = await _nvbugs_search_v2(client, token, query)
+            try:
+                payload = await _nvbugs_search_v2(client, token, query)
+            except RuntimeError as exc:
+                if "NVBugs MCP auth token expired or invalid" not in str(exc):
+                    raise
+                refreshed = refresh_expired_mcp_tokens(
+                    force=True,
+                    servers={"maas-nvbugs"},
+                )
+                if not refreshed:
+                    raise
+                token = (
+                    codex_mcp_token_env().get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
+                    or os.environ.get("AGENT_ME_MCP_TOKEN_MAAS_NVBUGS")
+                )
+                if not token:
+                    raise RuntimeError(
+                        "AGENT_ME_MCP_TOKEN_MAAS_NVBUGS is not available"
+                    ) from exc
+                payload = await _nvbugs_search_v2(client, token, query)
             for row in _nvbugs_rows(payload):
                 item = _normalize_nvbug(row, reason)
                 bug_id = str(item.get("id") or "")

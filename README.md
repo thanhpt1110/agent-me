@@ -44,7 +44,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
      # Reauth only on the current machine; no host sync.
      uv run agent-me-codex-reauth
      ```
-     New shell-launched Codex sessions on the host inherit the refreshed MCP env automatically; already-running Codex sessions still need a restart.
+     New shell-launched Codex sessions on the host inherit the refreshed MCP env automatically. The running Slack bridge can force-refresh host-side MaaS OAuth tokens and reload the env without restart: type `mcp refresh` or `/mcp refresh` in Slack. Run the Mac sync only when that command reports a rejected refresh token or a tool still returns 401.
 4. **Verify**:
    ```bash
    codex mcp list                             # all 17 MaaS MCPs should be registered

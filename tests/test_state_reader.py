@@ -142,3 +142,35 @@ def test_all_snapshots_returns_all_sources(temp_state_dir: Path) -> None:
     assert {s.source for s in snaps} == {
         "jira", "gitlab", "nvbugs", "slack", "outlook", "calendar", "github"
     }
+
+
+def test_parse_mcp_list_output_supports_codex_table() -> None:
+    from agent_me.dashboard.state_reader import parse_mcp_list_output
+
+    output = """Name                  Url                                                   Bearer Token Env Var                Status   Auth
+maas-jira             https://nvaihub.nvidia.com/maas/jira/mcp/             AGENT_ME_MCP_TOKEN_MAAS_JIRA        enabled  Bearer token
+maas-nvbugs           https://nvaihub.nvidia.com/maas/nvbugs/mcp/           AGENT_ME_MCP_TOKEN_MAAS_NVBUGS      enabled  Needs authentication
+maas-playwright       npx -y @playwright/mcp@latest                         -                                   enabled  Unsupported
+"""
+
+    servers = parse_mcp_list_output(output)
+
+    assert [(s.name, s.connected, s.needs_auth) for s in servers] == [
+        ("maas-jira", True, False),
+        ("maas-nvbugs", False, True),
+        ("maas-playwright", True, False),
+    ]
+
+
+def test_parse_mcp_list_output_supports_legacy_lines() -> None:
+    from agent_me.dashboard.state_reader import parse_mcp_list_output
+
+    servers = parse_mcp_list_output(
+        "maas-jira: https://example/mcp - ✓ Connected\n"
+        "maas-gitlab: https://example/mcp - ! Needs authentication\n"
+    )
+
+    assert [(s.name, s.connected, s.needs_auth) for s in servers] == [
+        ("maas-jira", True, False),
+        ("maas-gitlab", False, True),
+    ]

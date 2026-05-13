@@ -64,7 +64,13 @@ from agent_me.codex_app_server import (
 from agent_me.codex_app_server import (
     parse_app_server_final_message as _parse_app_server_final_message,
 )
-from agent_me.mcp_tokens import codex_mcp_token_env
+from agent_me.mcp_tokens import (
+    codex_mcp_env_file_path,
+    codex_mcp_token_env,
+    credentials_path,
+    refresh_codex_mcp_env_file,
+    refresh_mcp_tokens,
+)
 from agent_me.slack_bridge import approvals
 
 # ── Repo dir resolution ──────────────────────────────────────────────────
@@ -747,10 +753,22 @@ def strip_bot_mention(text: str | None) -> str:
     return re.sub(r"^\s*<@[A-Z0-9]+>\s*", "", text or "").strip()
 
 
-async def run_command(cmd: list[str], cwd: str, timeout: float = 30.0) -> str:
+def codex_mcp_process_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.update(codex_mcp_token_env())
+    return env
+
+
+async def run_command(
+    cmd: list[str],
+    cwd: str,
+    timeout: float = 30.0,
+    env: dict[str, str] | None = None,
+) -> str:
     """Run an arbitrary command, capture stdout, raise on non-zero exit."""
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=cwd,
+        env=env,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -875,8 +893,7 @@ async def spawn_codex(
     log.info("codex_spawn", cwd=str(CHAT_CWD), model=MODEL,
              prompt_len=len(prompt), resume=resume_session_id)
 
-    spawn_env = os.environ.copy()
-    spawn_env.update(codex_mcp_token_env())
+    spawn_env = codex_mcp_process_env()
     if thread_ts:
         spawn_env["AGENT_ME_THREAD_TS"] = thread_ts
     proc = await asyncio.create_subprocess_exec(
@@ -1026,6 +1043,7 @@ HELP_TEXT = "\n".join((
     "• `auto sfa` — collect Auto SFA inputs, update `magic-auto/configs.json`, run `dtoperator.py sfa`, and stream logs",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
+    "• `mcp refresh` / `/mcp refresh` — force-refresh MaaS OAuth tokens, rewrite persistent Codex MCP env, and verify",
     "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
     "• `reset` / `clear` / `new` — start a fresh Codex session for this thread (drops prior context)",
     "• `whoami` / `/whoami` — show your Slack user id",
@@ -1055,17 +1073,56 @@ def _missing_codex_mcp_token_envs(mcp_list_output: str) -> list[str]:
     return sorted(missing)
 
 
-async def cmd_mcp() -> str:
-    out = await run_command([CODEX_BIN, "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+async def cmd_mcp(refresh: bool = False) -> str:
+    refresh_note = ""
+    if refresh:
+        report = refresh_mcp_tokens(force=True)
+        count = refresh_codex_mcp_env_file(refresh_tokens=False)
+        os.environ.update(codex_mcp_token_env())
+        attempted = len(report.attempted)
+        refreshed = len(report.refreshed)
+        if report.failed:
+            failed = ", ".join(
+                f"`{server}` ({reason})"
+                for server, reason in report.failed.items()
+            )
+            refresh_summary = (
+                f"Force-refreshed `{refreshed}/{attempted}` MaaS OAuth token(s). "
+                "The token endpoint rejected: "
+                f"{failed}. If any rejected server later returns 401, run "
+                "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac."
+            )
+        else:
+            refresh_summary = (
+                f"Force-refreshed all `{refreshed}` MaaS OAuth token(s) that have "
+                "refresh metadata."
+            )
+        refresh_note = (
+            "🔄 *Refreshed Codex MCP env* from "
+            f"`{credentials_path()}`.\n"
+            f"{refresh_summary}\n"
+            f"Wrote `{count}` token export(s) to `{codex_mcp_env_file_path()}` "
+            "and loaded them into the bridge process.\n\n"
+        )
+
+    out = await run_command(
+        [CODEX_BIN, "mcp", "list"],
+        cwd=str(REPO_DIR),
+        timeout=60.0,
+        env=codex_mcp_process_env(),
+    )
     missing_tokens = _missing_codex_mcp_token_envs(out)
     token_note = ""
     if missing_tokens:
         token_note = (
             "\n\n⚠️ Missing bearer token(s) in the local MaaS credential store: "
             + ", ".join(f"`{name}`" for name in missing_tokens)
-            + "\nRun `/reauth`, then `/mcp` again."
+            + "\nIf your Mac auth is still valid, run "
+            "`./scripts/sync-mcp-creds-to-host.sh <host>` on the Mac, then "
+            "`/mcp refresh` here. Otherwise run `/reauth`."
         )
     return (
+        refresh_note +
         "`codex mcp list`:\n```\n" + out.strip() + "\n```\n"
         "_Codex app plugins for Teams/Slack/Outlook/GDrive are enabled separately; "
         "this list shows extra Codex MCP servers such as MaaS/NVBugs._"
@@ -1428,7 +1485,8 @@ async def cmd_reauth() -> str:
         "🚀 *Codex MCP re-auth helper started* on the bridge host.\n\n"
         "It will refresh the MaaS token store used by Codex bearer-token MCPs "
         "and print/open auth URLs where possible. Output is written to "
-        f"`{reauth_log}`. When done, run `/mcp` here to verify."
+        f"`{reauth_log}`. When done, run `/mcp refresh` here to persist the "
+        "new env exports and verify."
     )
 
 
@@ -1731,6 +1789,9 @@ def _help_blocks() -> list[dict]:
              "text": {"type": "plain_text", "text": "🔄 Check MCP status"},
             "action_id": "menu_mcp_status"},
             {"type": "button",
+             "text": {"type": "plain_text", "text": "♻️ Refresh MCP env"},
+             "action_id": "menu_mcp_refresh"},
+            {"type": "button",
              "text": {"type": "plain_text", "text": "🔧 Reauth MCPs"},
              "action_id": "brief_reauth"},
         ]},
@@ -1747,7 +1808,14 @@ async def handle_slash(
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> str | SlashResult:
     if cmd == "/mcp":
-        return await cmd_mcp()
+        wants_refresh = args_text.strip().lower() in {
+            "refresh",
+            "reload",
+            "reload env",
+            "refresh env",
+            "load env",
+        }
+        return await cmd_mcp(refresh=wants_refresh)
     if cmd == "/version":
         return await cmd_version()
     if cmd == "/whoami":
@@ -1875,6 +1943,10 @@ PLAIN_COMMANDS: dict[str, tuple[str, str]] = {
     # other commands
     "mcp":            ("/mcp", ""),
     "status":         ("/mcp", ""),
+    "mcp refresh":    ("/mcp", "refresh"),
+    "refresh mcp":    ("/mcp", "refresh"),
+    "reload mcp":     ("/mcp", "refresh"),
+    "refresh env":    ("/mcp", "refresh env"),
     "reauth":         ("/reauth", ""),
     "auth":           ("/reauth", ""),
     "help":           ("/help", ""),
@@ -2329,6 +2401,17 @@ async def on_menu_mcp_status(ack, body, client):
     await _reply_in_thread(client, body, body_text)
 
 
+@app.action("menu_mcp_refresh")
+async def on_menu_mcp_refresh(ack, body, client):
+    await ack()
+    log.info("button_menu_mcp_refresh", user=body.get("user", {}).get("id"))
+    try:
+        body_text = await cmd_mcp(refresh=True)
+    except Exception as exc:
+        body_text = f"⚠️ `mcp refresh` failed: `{exc}`"
+    await _reply_in_thread(client, body, body_text)
+
+
 @app.action("menu_auto_sfa")
 async def on_menu_auto_sfa(ack, body, client):
     await ack()
@@ -2408,7 +2491,12 @@ async def ensure_dm_channel(client) -> str | None:
 async def check_mcp_auth(client) -> None:
     global _last_notify_ts, _last_need_auth_set
     try:
-        out = await run_command([CODEX_BIN, "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+        out = await run_command(
+            [CODEX_BIN, "mcp", "list"],
+            cwd=str(REPO_DIR),
+            timeout=60.0,
+            env=codex_mcp_process_env(),
+        )
     except Exception as exc:
         log.warning("mcp_list_failed", err=str(exc))
         return
@@ -2441,11 +2529,15 @@ async def check_mcp_auth(client) -> None:
         f"🔔 *{len(need_auth)} MCP server(s) need re-auth:* "
         + ", ".join(f"`{s}`" for s in need_auth),
         "",
-        "Run `/reauth` here, or on the bridge host:",
+        "If Mac auth is still valid, run this on the Mac first:",
+        "```",
+        "./scripts/sync-mcp-creds-to-host.sh <host>",
+        "```",
+        "Then run `/mcp refresh` here. If auth is actually expired, run `/reauth` here or on the bridge host:",
         "```",
         "uv run agent-me-codex-reauth",
         "```",
-        "Bridge picks up new tokens on the next call — no restart needed.",
+        "Bridge picks up refreshed tokens without a restart.",
     ))
     try:
         await client.chat_postMessage(channel=dm, text=text)
@@ -2491,6 +2583,9 @@ def _morning_menu_blocks(intro_text: str) -> list[dict]:
              "text": {"type": "plain_text", "text": "🔄 Verify MCPs"},
              "action_id": "menu_mcp_status"},
             {"type": "button",
+             "text": {"type": "plain_text", "text": "♻️ Refresh env"},
+             "action_id": "menu_mcp_refresh"},
+            {"type": "button",
              "text": {"type": "plain_text", "text": "❓ Help"},
              "action_id": "menu_help"},
         ]},
@@ -2535,12 +2630,18 @@ async def run_morning_routine(client) -> None:
 
     # Step 2: MCP probe.
     try:
-        out = await run_command([CODEX_BIN, "mcp", "list"], cwd=str(REPO_DIR), timeout=60.0)
+        out = await run_command(
+            [CODEX_BIN, "mcp", "list"],
+            cwd=str(REPO_DIR),
+            timeout=60.0,
+            env=codex_mcp_process_env(),
+        )
         need_auth = sorted(
             line.split(":")[0].strip()
             for line in out.splitlines()
             if "Needs authentication" in line
         )
+        need_auth = sorted(set(need_auth) | set(_missing_codex_mcp_token_envs(out)))
     except Exception as exc:
         log.error("morning_mcp_check_failed", err=str(exc))
         need_auth = ["(probe failed — see bridge.log)"]
@@ -2558,6 +2659,9 @@ async def run_morning_routine(client) -> None:
                 {"type": "button",
                  "text": {"type": "plain_text", "text": "🔧 Reauth now"},
                  "action_id": "morning_reauth", "style": "primary"},
+                {"type": "button",
+                 "text": {"type": "plain_text", "text": "♻️ Refresh env"},
+                 "action_id": "menu_mcp_refresh"},
                 {"type": "button",
                  "text": {"type": "plain_text", "text": "📅 Brief anyway"},
                  "action_id": "morning_brief_now"},

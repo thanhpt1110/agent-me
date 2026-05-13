@@ -8,11 +8,13 @@ external ASGI runners.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import sys
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,12 @@ from agent_me.dashboard.state_reader import (
     SOURCES,
     StateReader,
     check_mcp_health,
+)
+from agent_me.mcp_tokens import (
+    codex_mcp_env_file_path,
+    credentials_path,
+    refresh_codex_mcp_env_file,
+    refresh_mcp_tokens,
 )
 
 # ── Setup ────────────────────────────────────────────────────────────────
@@ -253,6 +261,29 @@ async def api_mcp_refresh(_request: Request):
     })
 
 
+async def api_mcp_auth_refresh(_request: Request):
+    """Refresh MaaS OAuth tokens, rewrite Codex env exports, then probe MCPs."""
+    report = await asyncio.to_thread(partial(refresh_mcp_tokens, force=True))
+    env_count = await asyncio.to_thread(
+        partial(refresh_codex_mcp_env_file, refresh_tokens=False)
+    )
+    servers, checked_at = await check_mcp_health()
+    _MCP_CACHE["servers"] = [s.__dict__ for s in servers]
+    _MCP_CACHE["checked_at"] = checked_at
+    return JSONResponse({
+        "attempted": list(report.attempted),
+        "refreshed": list(report.refreshed),
+        "failed": report.failed,
+        "skipped": list(report.skipped),
+        "env_exports": env_count,
+        "env_file": str(codex_mcp_env_file_path()),
+        "credentials": str(credentials_path()),
+        "needs_mac_sync": bool(report.failed),
+        "servers": _MCP_CACHE["servers"],
+        "checked_at": checked_at,
+    })
+
+
 async def api_mcp_status(_request: Request):
     """Return cached MCP probe; refresh in background if stale."""
     age = (time.time() * 1000 - _MCP_CACHE["checked_at"]) / 1000
@@ -412,6 +443,8 @@ def build_app() -> Starlette:
         Route("/api/mcp/status", api_mcp_status, name="api_mcp_status"),
         Route("/api/mcp/refresh", api_mcp_refresh, methods=["POST"],
               name="api_mcp_refresh"),
+        Route("/api/mcp/auth-refresh", api_mcp_auth_refresh, methods=["POST"],
+              name="api_mcp_auth_refresh"),
         Route("/api/auto-sfa/run", api_auto_sfa_run, methods=["POST"],
               name="api_auto_sfa_run"),
         Route("/api/sse/logs", sse_logs, name="sse_logs"),

@@ -36,8 +36,13 @@
          x-data="mcpPanel({{ mcp_cache | tojson }})">
   <header class="px-4 py-3 border-b border-ink-700 flex items-center justify-between bg-ink-800">
     <h2 class="font-semibold text-slate-100">MCP servers</h2>
-    <div class="flex items-center gap-3 text-xs">
+    <div class="flex flex-wrap items-center justify-end gap-3 text-xs">
       <span class="text-slate-500" x-text="checkedAtLabel()"></span>
+      <button @click="authRefresh()" :disabled="authBusy"
+              class="rounded border border-accent-700 bg-accent-900/30 px-2.5 py-1 text-accent-300 hover:bg-accent-900/50 disabled:opacity-50">
+        <span x-show="!authBusy">refresh auth</span>
+        <span x-show="authBusy" x-cloak>refreshing…</span>
+      </button>
       <button @click="refresh()" :disabled="busy"
               class="text-accent-400 hover:underline disabled:opacity-50">
         <span x-show="!busy">⟲ probe now</span>
@@ -50,6 +55,34 @@
       <p class="px-2 py-3 text-sm text-slate-400">
         No probe yet. Click <span class="text-accent-400">probe now</span> to run <code class="font-mono">codex mcp list</code>.
       </p>
+    </template>
+    <template x-if="authResult || authError">
+      <div class="mx-2 mb-2 rounded border px-3 py-2 text-xs"
+           :class="authError || authResult?.needs_mac_sync
+             ? 'border-amber-800 bg-amber-950/30 text-amber-200'
+             : 'border-emerald-800 bg-emerald-950/30 text-emerald-200'">
+        <template x-if="authError">
+          <div x-text="authError"></div>
+        </template>
+        <template x-if="authResult && !authError">
+          <div>
+            <div>
+              <span class="font-semibold">Auth refresh:</span>
+              <span x-text="`${authResult.refreshed.length}/${authResult.attempted.length} refreshed`"></span>
+              <span x-text="` · ${authResult.env_exports} env exports`"></span>
+            </div>
+            <template x-if="Object.keys(authResult.failed || {}).length">
+              <div class="mt-1 text-amber-200">
+                Rejected:
+                <span x-text="Object.entries(authResult.failed).map(([name, reason]) => `${name}: ${reason}`).join('; ')"></span>
+              </div>
+            </template>
+            <template x-if="!Object.keys(authResult.failed || {}).length">
+              <div class="mt-1">All refreshable MaaS tokens were updated.</div>
+            </template>
+          </div>
+        </template>
+      </div>
     </template>
     <template x-if="servers.length > 0">
       <ul class="divide-y divide-ink-700">
@@ -159,6 +192,9 @@
       servers: initial.servers || [],
       checkedAt: initial.checked_at || 0,
       busy: false,
+      authBusy: false,
+      authResult: null,
+      authError: "",
 
       checkedAtLabel() {
         if (!this.checkedAt) return "never probed";
@@ -177,6 +213,23 @@
           this.checkedAt = data.checked_at || Date.now();
         } finally {
           this.busy = false;
+        }
+      },
+
+      async authRefresh() {
+        this.authBusy = true;
+        this.authError = "";
+        try {
+          const r = await fetch("/api/mcp/auth-refresh", { method: "POST" });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          this.authResult = data;
+          this.servers = data.servers || [];
+          this.checkedAt = data.checked_at || Date.now();
+        } catch (err) {
+          this.authError = `Auth refresh failed: ${err.message || err}`;
+        } finally {
+          this.authBusy = false;
         }
       },
     };

@@ -29,6 +29,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import time
 from collections.abc import AsyncIterator
@@ -37,6 +38,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+
+from agent_me.mcp_tokens import codex_mcp_token_env
 
 log = structlog.get_logger("dashboard.state")
 
@@ -450,14 +453,69 @@ _MCP_LINE_RE = re.compile(
 )
 
 
+def resolve_codex_bin() -> str:
+    if env := os.environ.get("CODEX_BIN"):
+        p = Path(env).expanduser()
+        if p.exists():
+            return str(p)
+    local_bin = Path.home() / ".local" / "bin"
+    aug_path = f"{local_bin}:/usr/local/bin:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
+    if found := shutil.which("codex", path=aug_path):
+        return found
+    return "codex"
+
+
+def parse_mcp_list_output(output: str) -> list[McpStatus]:
+    servers: list[McpStatus] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("maas-"):
+            continue
+        name = stripped.split(None, 1)[0].rstrip(":")
+        if name in seen:
+            continue
+        seen.add(name)
+
+        old = _MCP_LINE_RE.search(stripped)
+        if old:
+            state = old.group("state")
+            servers.append(McpStatus(
+                name=old.group("name"),
+                connected=state.startswith("✓"),
+                needs_auth=state.startswith("!"),
+                raw_line=stripped,
+            ))
+            continue
+
+        lowered = stripped.lower()
+        needs_auth = "needs authentication" in lowered
+        connected = (
+            not needs_auth
+            and (
+                "bearer token" in lowered
+                or "✓ connected" in lowered
+                or (" enabled " in f" {lowered} " and "unsupported" in lowered)
+            )
+        )
+        servers.append(McpStatus(
+            name=name,
+            connected=connected,
+            needs_auth=needs_auth,
+            raw_line=stripped,
+        ))
+    return servers
+
+
 async def check_mcp_health(timeout_s: float = 15.0) -> tuple[list[McpStatus], int]:
     """Run `codex mcp list` and parse it. Returns (servers, checked_at_ms).
 
     Cached at the call site; this function is the raw probe.
     """
-    codex_bin = os.environ.get("CODEX_BIN", "codex")
+    codex_bin = resolve_codex_bin()
     proc = await asyncio.create_subprocess_exec(
         codex_bin, "mcp", "list",
+        env={**os.environ, **codex_mcp_token_env()},
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -469,16 +527,5 @@ async def check_mcp_health(timeout_s: float = 15.0) -> tuple[list[McpStatus], in
         await proc.wait()
         return [], int(time.time() * 1000)
 
-    servers: list[McpStatus] = []
-    for line in stdout.decode(errors="replace").splitlines():
-        m = _MCP_LINE_RE.search(line)
-        if not m:
-            continue
-        state = m.group("state")
-        servers.append(McpStatus(
-            name=m.group("name"),
-            connected=state.startswith("✓"),
-            needs_auth=state.startswith("!"),
-            raw_line=line.strip(),
-        ))
+    servers = parse_mcp_list_output(stdout.decode(errors="replace"))
     return servers, int(time.time() * 1000)

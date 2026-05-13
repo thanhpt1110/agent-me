@@ -77,6 +77,7 @@ def test_ops_page_renders(client: TestClient, with_token: str) -> None:
     assert r.status_code == 200
     assert "Operations" in r.text
     assert "MCP servers" in r.text
+    assert "refresh auth" in r.text
 
 
 def test_auto_sfa_page_renders(client: TestClient, with_token: str) -> None:
@@ -115,6 +116,47 @@ def test_api_source_returns_cached_snapshot(client: TestClient, temp_state_dir: 
     body = r.json()
     assert body["source"] == "jira"
     assert body["items_count"] == 1
+
+
+def test_api_mcp_auth_refresh_returns_report(client: TestClient, monkeypatch,
+                                             with_token: str) -> None:
+    from agent_me.dashboard import app as app_module
+    from agent_me.dashboard.state_reader import McpStatus
+    from agent_me.mcp_tokens import McpTokenRefreshReport
+
+    def fake_refresh_mcp_tokens(force: bool = False):
+        assert force is True
+        return McpTokenRefreshReport(
+            attempted=("maas-jira", "maas-nvbugs"),
+            refreshed=("maas-nvbugs",),
+            failed={"maas-jira": "HTTP 400: rejected"},
+        )
+
+    def fake_refresh_env(refresh_tokens: bool = True):
+        assert refresh_tokens is False
+        return 2
+
+    async def fake_check_mcp_health():
+        return [
+            McpStatus("maas-jira", connected=True, needs_auth=False),
+            McpStatus("maas-nvbugs", connected=True, needs_auth=False),
+        ], 12345
+
+    monkeypatch.setattr(app_module, "refresh_mcp_tokens", fake_refresh_mcp_tokens)
+    monkeypatch.setattr(app_module, "refresh_codex_mcp_env_file", fake_refresh_env)
+    monkeypatch.setattr(app_module, "check_mcp_health", fake_check_mcp_health)
+
+    r = client.post("/api/mcp/auth-refresh", headers=_auth(with_token))
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["attempted"] == ["maas-jira", "maas-nvbugs"]
+    assert body["refreshed"] == ["maas-nvbugs"]
+    assert body["failed"] == {"maas-jira": "HTTP 400: rejected"}
+    assert body["needs_mac_sync"] is True
+    assert body["env_exports"] == 2
+    assert body["checked_at"] == 12345
+    assert len(body["servers"]) == 2
 
 
 def test_api_source_unknown_returns_404(client: TestClient, with_token: str) -> None:
