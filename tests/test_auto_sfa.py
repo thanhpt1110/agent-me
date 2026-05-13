@@ -365,6 +365,20 @@ def test_auto_sfa_credentials_are_required_only_when_enabled() -> None:
     assert "dummy-password" not in json.dumps(public)
 
 
+def test_auto_sfa_use_default_credentials_ignores_stale_auth_fields() -> None:
+    request = build_auto_sfa_request(
+        _full_values(
+            use_default_credentials=True,
+            use_personal_credentials=True,
+            auth_username="thaphan",
+            auth_password="dummy-password",
+        )
+    )
+
+    assert request.auth_username is None
+    assert request.auth_password is None
+
+
 def test_auto_sfa_rejects_empty_task_ids_when_task_id_mode_enabled() -> None:
     with pytest.raises(AutoSFAValidationError) as exc:
         build_auto_sfa_request(_full_values(task_ids_enabled=True, task_ids=""))
@@ -376,6 +390,15 @@ def test_auto_sfa_blank_source_folder_id_preserves_config_default() -> None:
     request = build_auto_sfa_request(_full_values(source_folder_id=""))
 
     assert request.source_folder_id is None
+
+
+def test_auto_sfa_requires_source_folder_when_default_toggle_is_off() -> None:
+    with pytest.raises(AutoSFAValidationError) as exc:
+        build_auto_sfa_request(
+            _full_values(use_default_source_folder=False, source_folder_id="")
+        )
+
+    assert "source_folder_id is required when default source folder is disabled" in exc.value.errors
 
 
 @pytest.mark.asyncio

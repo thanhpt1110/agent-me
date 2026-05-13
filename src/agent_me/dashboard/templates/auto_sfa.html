@@ -15,33 +15,31 @@
 
 <section class="mb-4 rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
   <header class="px-4 py-3 border-b border-ink-700 bg-ink-800">
-    <label class="flex items-start gap-3">
-      <input type="checkbox" x-model="form.use_personal_credentials"
-             class="mt-1 accent-accent-500" />
-      <span class="min-w-0">
-      <h2 class="font-semibold text-slate-100">DevTest credentials</h2>
-      <p class="text-xs text-slate-500" x-text="credentialLabel()"></p>
-      </span>
+    <h2 class="font-semibold text-slate-100">DevTest credentials</h2>
+    <label class="mt-2 flex items-center gap-2 text-sm text-slate-300">
+      <input type="checkbox" x-model="form.use_default_credentials" class="accent-accent-500" />
+      <span>Use default host credentials</span>
     </label>
+      <p class="text-xs text-slate-500" x-text="credentialLabel()"></p>
   </header>
-  <div x-show="form.use_personal_credentials" x-cloak class="px-4 py-4">
+  <div x-show="!form.use_default_credentials" class="px-4 py-4">
     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-auth-username">USERNAME</label>
         <input id="sfa-auth-username" name="devtest-username" x-model="form.auth_username" type="text"
-               :required="form.use_personal_credentials" autocomplete="username"
+               :required="!form.use_default_credentials" autocomplete="username"
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
                placeholder="thaphan" />
       </div>
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-auth-password">PASSWORD</label>
         <input id="sfa-auth-password" name="devtest-password" x-model="form.auth_password" type="password"
-               :required="form.use_personal_credentials" autocomplete="current-password"
+               :required="!form.use_default_credentials" autocomplete="current-password"
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
                placeholder="••••••••" />
       </div>
       <p class="md:col-span-2 text-xs text-slate-500">
-        Use your browser password manager for the longest local cache. agent-me only sends these for this run and never saves them on the server.
+        Required by default. Check above to use host credentials instead.
       </p>
     </div>
   </div>
@@ -56,27 +54,37 @@
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
              placeholder="Thanh Phan" />
       <p class="mt-1 text-xs text-slate-500">
-        Required for both modes. This must match the DevTest <span class="font-mono text-slate-400">Automation Dev Linux</span> display name.
+        DevTest Automation Dev Linux name.
       </p>
     </div>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <div>
-        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-source-folder">source_folder_id</label>
-        <input id="sfa-source-folder" x-model="form.source_folder_id" type="number" min="1"
+        <div class="mb-1 flex items-center justify-between gap-3">
+          <label class="block text-xs uppercase tracking-wide text-slate-500" for="sfa-source-folder">source_folder_id</label>
+          <label class="flex items-center gap-1 text-xs text-slate-400">
+            <input type="checkbox" x-model="form.use_default_source_folder" class="accent-accent-500" />
+            use default
+          </label>
+        </div>
+        <input id="sfa-source-folder" x-model="form.source_folder_id" type="text" inputmode="numeric" pattern="[0-9]*"
+               :required="!form.use_default_source_folder"
+               :readonly="form.use_default_source_folder"
+               :disabled="form.use_default_source_folder"
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               :class="form.use_default_source_folder ? 'opacity-60 cursor-not-allowed' : ''"
                placeholder="{{ default_source_folder_id or '50722' }}" />
         <p class="mt-1 text-xs text-slate-500">
-          Leave blank to use the default source folder from <span class="font-mono text-slate-400">magic-auto/configs.json</span>.
+          Default: <span class="font-mono text-slate-400">{{ default_source_folder_id or 'configs.json' }}</span>.
         </p>
       </div>
       <div>
       <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-destination-folder">destination_folder_id</label>
-      <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="number" min="1" required
+      <input id="sfa-destination-folder" x-model="form.devtest_folder_id" type="text" inputmode="numeric" pattern="[0-9]*" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
              placeholder="1138081" />
       <p class="mt-1 text-xs text-slate-500">
-        Example folder: <span class="font-mono text-slate-400">05-2026/Week3-4</span>. Use the DevTest folder ID for that week release folder.
+        Release folder ID.
       </p>
       </div>
     </div>
@@ -110,7 +118,7 @@
         <div class="min-w-0">
           <label class="block text-xs uppercase tracking-wide text-slate-500">specific task IDs</label>
           <p class="mt-1 text-xs text-slate-500">
-            Optional: run only these DevTest task IDs instead of scanning every task for the display name.
+            Optional ID-only run.
           </p>
         </div>
         <button type="button" role="switch" :aria-checked="form.task_ids_enabled.toString()"
@@ -195,6 +203,7 @@
     return {
       form: {
         display_name: "",
+        use_default_source_folder: true,
         source_folder_id: "",
         devtest_folder_id: "",
         url_path: "",
@@ -202,7 +211,7 @@
         finish_date: "",
         task_ids_enabled: false,
         task_ids: "",
-        use_personal_credentials: false,
+        use_default_credentials: false,
         auth_username: "",
         auth_password: "",
       },
@@ -232,10 +241,10 @@
       },
 
       credentialLabel() {
-        if (this.form.use_personal_credentials) {
-          return "Custom credentials enabled for the next run";
+        if (this.form.use_default_credentials) {
+          return "Using default credentials loaded on the host";
         }
-        return "Using default credentials loaded on the host";
+        return "Enter DevTest username and password";
       },
 
       toggleTaskIds() {
@@ -269,10 +278,17 @@
           if (!payload.task_ids_enabled) {
             delete payload.task_ids;
           }
-          if (!payload.use_personal_credentials) {
+          if (payload.use_default_source_folder) {
+            delete payload.source_folder_id;
+          }
+          if (payload.use_default_credentials) {
             delete payload.auth_username;
             delete payload.auth_password;
+            payload.use_personal_credentials = false;
+          } else {
+            payload.use_personal_credentials = true;
           }
+          delete payload.use_default_credentials;
           const r = await fetch("/api/auto-sfa/run", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },

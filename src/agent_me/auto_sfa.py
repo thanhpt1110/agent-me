@@ -549,12 +549,16 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
     if task_ids_enabled and not task_ids and not task_id_errors:
         errors.append("task_ids is required when specific task ID mode is enabled")
 
+    use_default_credentials = _truthy(values.get("use_default_credentials"))
     raw_auth_username = str(values.get("auth_username") or "").strip()
     raw_auth_password = values.get("auth_password")
     use_personal_credentials = _truthy(values.get("use_personal_credentials"))
     auth_username = _derive_auth_username(raw_auth_username) if raw_auth_username else None
     auth_password = None if raw_auth_password in (None, "") else str(raw_auth_password)
-    if use_personal_credentials or auth_username or auth_password:
+    if use_default_credentials:
+        auth_username = None
+        auth_password = None
+    elif use_personal_credentials or auth_username or auth_password:
         if not auth_username:
             errors.append("USERNAME is required when custom DevTest credentials are enabled")
         elif not re.match(r"^[A-Za-z0-9._-]+$", auth_username):
@@ -574,9 +578,15 @@ def build_auto_sfa_request(values: dict[str, Any]) -> AutoSFARequest:
         devtest_project_id = 0
         errors.append("devtest_project_id must be a positive integer")
 
+    has_source_default_toggle = "use_default_source_folder" in values
+    use_default_source_folder = _truthy(values.get("use_default_source_folder"))
     source_raw = str(values.get("source_folder_id") or "").strip().lower()
+    if use_default_source_folder:
+        source_raw = ""
     if source_raw in {"", "none", "null", "default", "use_default", "leave_default"}:
         source_folder_id = None
+        if has_source_default_toggle and not use_default_source_folder:
+            errors.append("source_folder_id is required when default source folder is disabled")
     else:
         try:
             source_folder_id = int(source_raw)

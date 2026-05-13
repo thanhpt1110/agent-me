@@ -134,11 +134,15 @@ def test_auto_sfa_page_renders(
     assert "display_name" in r.text
     assert "placeholder=\"Thanh Phan\"" in r.text
     assert "DevTest credentials" in r.text
+    assert "Enter DevTest username and password" in r.text
+    assert "Use default host credentials" in r.text
+    assert "Required by default. Check above to use host credentials instead." in r.text
     assert "specific task IDs" in r.text
     assert "source_folder_id" in r.text
     assert "placeholder=\"50722\"" in r.text
+    assert "use default" in r.text
     assert "destination_folder_id" in r.text
-    assert "05-2026/Week3-4" in r.text
+    assert r.text.count('type="text" inputmode="numeric" pattern="[0-9]*"') >= 2
     assert "Merge Request / MR link" not in r.text
     assert "required templates already exist in SFA" in r.text
     assert "dashboard-date-input" in r.text
