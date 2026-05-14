@@ -72,13 +72,10 @@
   <form @submit.prevent="run()"
         class="rounded-lg border border-ink-700 bg-ink-900 p-4 space-y-4">
     <div>
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-display-name">display_name</label>
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-display-name">Display Name</label>
       <input id="sfa-display-name" x-model="form.display_name" type="text" required
              class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
              placeholder="Thanh Phan" />
-      <p class="mt-1 text-xs text-slate-500">
-        DevTest Automation Dev Linux name.
-      </p>
     </div>
 
     <div x-show="workflow === 'create'" x-cloak class="space-y-4">
@@ -91,6 +88,21 @@
         <p class="mt-1 text-xs text-slate-500">
           Folder mode filters by Template Owner = display_name.
         </p>
+      </div>
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-win-linux">Win_Linux</label>
+        <div class="relative">
+          <select id="sfa-win-linux" x-model="form.win_linux" @change="persistPreferences()"
+                  class="w-full appearance-none rounded border border-ink-700 bg-ink-950 px-3 py-2 pr-10 text-sm text-slate-100">
+            <option value="Linux Only">Linux Only</option>
+            <option value="Windows Only">Windows Only</option>
+            <option value="Both">Both</option>
+          </select>
+          <svg class="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+               aria-hidden="true" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd" />
+          </svg>
+        </div>
       </div>
       <div class="rounded border border-ink-700 bg-ink-950 p-3 space-y-3">
         <div class="flex items-start justify-between gap-3">
@@ -115,21 +127,35 @@
                   placeholder="5996784,5996785&#10;5996786"></textarea>
       </div>
       <div class="auto-sfa-note rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-        This updates matching templates: Automation Dev Linux = display_name, Automation Status Linux = In A&amp;T, Win_Linux = Linux_Only.
+        This updates matching templates: Automation Dev Linux = Display Name, Automation Status Linux = In A&amp;T, Win_Linux = selected value.
       </div>
     </div>
 
     <div x-show="workflow === 'release'" x-cloak class="space-y-4">
+    <div class="rounded border border-ink-700 bg-ink-950 p-3">
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-2">Type</label>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2" role="radiogroup" aria-label="Release type">
+        <template x-for="option in releaseTypeOptions" :key="option.value">
+          <button type="button" role="radio" :aria-checked="form.release_type === option.value"
+                  @click="selectReleaseType(option.value)" :disabled="busy"
+                  class="rounded border px-3 py-2 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-60"
+                  :class="form.release_type === option.value
+                    ? 'border-accent-500 bg-accent-600/15 text-slate-100'
+                    : 'border-ink-700 bg-ink-900 text-slate-400 hover:border-ink-600'">
+            <span class="font-semibold" x-text="option.label"></span>
+          </button>
+        </template>
+      </div>
+    </div>
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="sfa-source-folder">source_folder_id</label>
         <input id="sfa-source-folder" x-model="form.source_folder_id" type="text" inputmode="numeric" pattern="[0-9]*"
                :required="workflow === 'release'"
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-               placeholder="{{ default_source_folder_id or '50722' }}"
-               value="{{ default_source_folder_id or '50722' }}" />
+               :placeholder="releaseTypeSourceFolderId()" />
         <p class="mt-1 text-xs text-slate-500">
-          Default value: <span class="font-mono text-slate-400">{{ default_source_folder_id or '50722' }}</span>; keep it unless you need another source folder.
+          Default for <span x-text="releaseTypeLabel()"></span>: <span class="font-mono text-slate-400" x-text="releaseTypeSourceFolderId()"></span>.
         </p>
       </div>
       <div>
@@ -138,8 +164,11 @@
                :required="workflow === 'release'"
                class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
                placeholder="1138081" />
-        <p class="mt-1 text-xs text-slate-500">
-          Release folder ID.
+        <p x-show="destinationResolving" x-cloak class="mt-1 text-xs text-accent-300">Resolving current cycle folder...</p>
+        <p x-show="!destinationResolving && destinationResolveError" x-cloak class="mt-1 text-xs text-amber-300" x-text="destinationResolveError"></p>
+        <p x-show="!destinationResolving && !destinationResolveError" class="mt-1 text-xs text-slate-500">
+          <span class="font-mono text-slate-400" x-text="releaseDestinationPath()"></span>
+          <span> · auto by today; editable.</span>
         </p>
       </div>
     </div>
@@ -365,7 +394,16 @@
 {% block scripts %}
 <script>
   function autoSfaPage(activeJob, initialHistory) {
-    const defaultSourceFolderId = {{ (default_source_folder_id or "50722") | tojson }};
+    const releaseTypeOptions = [
+      { value: "linux_release", label: "Linux Release", source: "50722" },
+      { value: "release", label: "Release", source: "47877" },
+    ];
+    const defaultReleaseType = "linux_release";
+    const releaseTypeByValue = Object.fromEntries(
+      releaseTypeOptions.map((option) => [option.value, option])
+    );
+    const defaultSourceFolderId = releaseTypeByValue[defaultReleaseType].source;
+    const preferencesKey = "agent-me:auto-sfa:prefs:v1";
     const formatDateInput = (date) => {
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -380,8 +418,10 @@
     };
     return {
       workflow: "create",
+      releaseTypeOptions,
       form: {
         display_name: "",
+        release_type: defaultReleaseType,
         source_folder_id: defaultSourceFolderId,
         devtest_folder_id: "",
         url_path: "",
@@ -392,6 +432,7 @@
         template_folder_id: "",
         template_ids_enabled: false,
         template_ids: "",
+        win_linux: "Linux Only",
         use_default_credentials: false,
         auth_username: "",
         auth_password: "",
@@ -399,15 +440,21 @@
       busy: false,
       cancelling: false,
       error: null,
+      destinationResolving: false,
+      destinationResolveError: "",
       job: null,
       lines: [],
       history: Array.isArray(initialHistory) ? initialHistory : [],
       lastCommand: "",
       autoScroll: true,
       _es: null,
+      _destinationResolveTimer: null,
+      _destinationResolveSeq: 0,
+      _destinationCache: {},
       MAX: 1000,
 
       init() {
+        this.restorePreferences();
         if (activeJob) {
           this.job = activeJob;
           if (activeJob.request?.flow_type) {
@@ -424,6 +471,18 @@
           }
         }
         this.refreshHistory();
+        this.$watch("form.display_name", () => this.persistPreferences());
+        this.$watch("form.use_default_credentials", () => {
+          this.persistPreferences();
+        });
+        this.$watch("form.auth_username", () => {
+          this.persistPreferences();
+        });
+        this.$watch("form.auth_password", () => {
+          this.persistPreferences();
+        });
+        this.$watch("form.win_linux", () => this.persistPreferences());
+        this.$watch("form.release_type", () => this.persistPreferences());
       },
 
       switchWorkflow(next) {
@@ -434,6 +493,97 @@
 
       workflowLabel() {
         return this.workflow === "create" ? "Create SFA Tasks" : "Release SFA Tasks";
+      },
+
+      normalizeWinLinux(value) {
+        const raw = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+        if (raw === "both") return "Both";
+        if (raw === "windowsonly" || raw === "windows" || raw === "winonly") return "Windows Only";
+        return "Linux Only";
+      },
+
+      restorePreferences() {
+        let prefs = null;
+        try {
+          const raw = window.localStorage?.getItem(preferencesKey);
+          prefs = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+          prefs = null;
+        }
+        if (!prefs || typeof prefs !== "object") return;
+
+        if (typeof prefs.display_name === "string") {
+          this.form.display_name = prefs.display_name;
+        }
+        if (typeof prefs.use_default_credentials === "boolean") {
+          this.form.use_default_credentials = prefs.use_default_credentials;
+        }
+        if (typeof prefs.auth_username === "string") {
+          this.form.auth_username = prefs.auth_username;
+        }
+        if (typeof prefs.auth_password === "string") {
+          this.form.auth_password = prefs.auth_password;
+        }
+        if (typeof prefs.win_linux === "string") {
+          this.form.win_linux = this.normalizeWinLinux(prefs.win_linux);
+        }
+        if (typeof prefs.release_type === "string" && releaseTypeByValue[prefs.release_type]) {
+          this.form.release_type = prefs.release_type;
+          this.form.source_folder_id = releaseTypeByValue[prefs.release_type].source;
+          this.form.devtest_folder_id = "";
+        }
+      },
+
+      persistPreferences() {
+        try {
+          window.localStorage?.setItem(preferencesKey, JSON.stringify({
+            display_name: String(this.form.display_name || ""),
+            use_default_credentials: Boolean(this.form.use_default_credentials),
+            auth_username: String(this.form.auth_username || ""),
+            auth_password: String(this.form.auth_password || ""),
+            win_linux: this.normalizeWinLinux(this.form.win_linux),
+            release_type: releaseTypeByValue[this.form.release_type]
+              ? this.form.release_type
+              : defaultReleaseType,
+          }));
+        } catch (_) {}
+      },
+
+      releaseTypeOption() {
+        return releaseTypeByValue[this.form.release_type] || releaseTypeByValue[defaultReleaseType];
+      },
+
+      releaseTypeLabel() {
+        return this.releaseTypeOption().label;
+      },
+
+      releaseTypeSourceFolderId() {
+        return this.releaseTypeOption().source;
+      },
+
+      currentMonthLabel() {
+        const date = new Date();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        return `${month}-${date.getFullYear()}`;
+      },
+
+      currentWeekBucket() {
+        return new Date().getDate() <= 15 ? "Week1-2" : "Week3-4";
+      },
+
+      releaseDestinationPath() {
+        return `${this.releaseTypeLabel()}/${this.currentMonthLabel()}/${this.currentWeekBucket()}`;
+      },
+
+      selectReleaseType(next) {
+        if (this.busy || this.form.release_type === next) return;
+        const option = releaseTypeByValue[next] || releaseTypeByValue[defaultReleaseType];
+        this.form.release_type = option.value;
+        this.form.source_folder_id = option.source;
+        this.form.devtest_folder_id = "";
+        this.destinationResolveError = "";
+        this.persistPreferences();
+        this.resolveDestination(true);
       },
 
       jobLabel() {
@@ -478,6 +628,105 @@
           return "Using default credentials loaded on the host";
         }
         return "Enter DevTest username and password";
+      },
+
+      destinationCredentialPayload() {
+        if (this.form.use_default_credentials) {
+          return { use_default_credentials: true, use_personal_credentials: false };
+        }
+        const username = String(this.form.auth_username || "").trim();
+        const password = String(this.form.auth_password || "");
+        if (!username || !password) {
+          return null;
+        }
+        return {
+          use_default_credentials: false,
+          use_personal_credentials: true,
+          auth_username: username,
+          auth_password: password,
+        };
+      },
+
+      destinationCacheKey(sourceFolderId) {
+        const username = this.form.use_default_credentials
+          ? "default"
+          : String(this.form.auth_username || "").trim().toLowerCase();
+        return `${sourceFolderId}:${username}`;
+      },
+
+      async resolveDestination(force = false) {
+        const sourceFolderId = String(this.form.source_folder_id || "").trim();
+        const credentialPayload = this.destinationCredentialPayload();
+        if (this._destinationResolveTimer) {
+          clearTimeout(this._destinationResolveTimer);
+          this._destinationResolveTimer = null;
+        }
+        if (this.workflow !== "release" || this.busy) return;
+        if (!/^\d+$/.test(sourceFolderId)) {
+          this.destinationResolving = false;
+          this.destinationResolveError = sourceFolderId
+            ? "source_folder_id must be numeric to auto-resolve destination."
+            : "";
+          return;
+        }
+        if (!credentialPayload) {
+          this.destinationResolving = false;
+          this.destinationResolveError = "Enter DevTest credentials to resolve destination, or use default host credentials.";
+          return;
+        }
+        const key = this.destinationCacheKey(sourceFolderId);
+        if (!force && this._destinationCache[key]) {
+          this.form.devtest_folder_id = this._destinationCache[key];
+          return;
+        }
+        const seq = ++this._destinationResolveSeq;
+        this.destinationResolving = true;
+        this.destinationResolveError = "";
+        try {
+          const data = await this.fetchJson("/api/auto-sfa/resolve-destination", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify({
+              source_folder_id: sourceFolderId,
+              ...credentialPayload,
+            }),
+          });
+          if (seq !== this._destinationResolveSeq) return;
+          const destination = String(data.devtest_folder_id || "").trim();
+          if (!/^\d+$/.test(destination)) {
+            throw new Error("Resolver returned an invalid destination folder.");
+          }
+          this._destinationCache[key] = destination;
+          this.form.devtest_folder_id = destination;
+        } catch (err) {
+          if (seq === this._destinationResolveSeq) {
+            this.destinationResolveError = String(err.message || err);
+          }
+        } finally {
+          if (seq === this._destinationResolveSeq) {
+            this.destinationResolving = false;
+          }
+        }
+      },
+
+      async fetchJson(url, options = {}) {
+        const response = await fetch(url, options);
+        const text = await response.text();
+        let data = {};
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (_) {
+            data = { error: text };
+          }
+        }
+        if (!response.ok) {
+          const detail = Array.isArray(data.errors)
+            ? data.errors.join("; ")
+            : (data.error || text || response.statusText);
+          throw new Error(`HTTP ${response.status}: ${detail}`);
+        }
+        return data;
       },
 
       toggleTaskIds() {
@@ -577,11 +826,9 @@
 
       async refreshHistory() {
         try {
-          const r = await fetch("/api/auto-sfa/history", {
+          const data = await this.fetchJson("/api/auto-sfa/history", {
             headers: { "Accept": "application/json" },
           });
-          if (!r.ok) return;
-          const data = await r.json();
           if (Array.isArray(data.runs)) {
             this.history = data.runs;
           } else if (data.runs_by_flow && typeof data.runs_by_flow === "object") {
@@ -610,12 +857,19 @@
             auth_password: this.form.auth_password,
           };
           if (this.workflow === "create") {
+            this.form.win_linux = this.normalizeWinLinux(this.form.win_linux);
             payload.folder_id = this.form.template_folder_id;
+            payload.win_linux = this.form.win_linux;
             payload.template_ids_enabled = this.form.template_ids_enabled;
             if (this.form.template_ids_enabled) {
               payload.template_ids = this.form.template_ids;
             }
           } else {
+            const releaseType = releaseTypeByValue[this.form.release_type]
+              ? this.form.release_type
+              : defaultReleaseType;
+            this.form.release_type = releaseType;
+            payload.release_type = this.form.release_type;
             payload.source_folder_id = this.form.source_folder_id;
             payload.devtest_folder_id = this.form.devtest_folder_id;
             payload.url_path = this.form.url_path;
@@ -634,16 +888,12 @@
             payload.use_personal_credentials = true;
           }
           delete payload.use_default_credentials;
-          const r = await fetch("/api/auto-sfa/run", {
+          this.persistPreferences();
+          const data = await this.fetchJson("/api/auto-sfa/run", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = await r.json();
-          if (!r.ok) {
-            const detail = data.errors ? data.errors.join("; ") : data.error;
-            throw new Error(detail || `HTTP ${r.status}`);
-          }
           this.job = data;
           window.localStorage?.setItem("agent-me:auto-sfa:last-job", data.job_id);
           this.append(`job ${data.job_id} accepted by dashboard runner`, "system");
@@ -662,12 +912,10 @@
         this.cancelling = true;
         this.append(`cancel requested for job ${this.job.job_id}`, "system");
         try {
-          const r = await fetch(`/api/auto-sfa/${this.job.job_id}/cancel`, {
+          const data = await this.fetchJson(`/api/auto-sfa/${this.job.job_id}/cancel`, {
             method: "POST",
             headers: { "Accept": "application/json" },
           });
-          const data = await r.json();
-          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
           this.job = { ...this.job, ...data };
         } catch (err) {
           this.error = String(err.message || err);
@@ -690,6 +938,7 @@
             this.append(`config project=${data.devtest_project_id} source=${data.source_folder_id || "default"} destination=${data.devtest_folder_id} provider=${data.log_file_provider}`, "system");
           } else if (data.event === "template_configured") {
             this.append(`template folder=${data.folder_id}`, "system");
+            this.append(`Win_Linux=${data.win_linux || this.form.win_linux}`, "system");
             this.append(data.template_ids ? `template IDs ${data.template_ids}` : `filter Template Owner = ${data.display_name}`, "system");
           } else if (data.event === "started") {
             this.lastCommand = data.command || this.lastCommand;

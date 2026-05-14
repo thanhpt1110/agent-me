@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-13 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the refreshed two-flow Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has `Create SFA Tasks` and `Release SFA Tasks` under one dashboard entry point. Create updates project-1072 templates by `display_name`, `folder_id`, and optional `template_ids`; Release uses the existing SFA release fields. Dashboard jobs run independently with one child process and one temp config per run, per-process DevTest credentials, SSE terminal output, cancel support, and flow-separated trigger history. The password is not written to server config or public job history. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard route tests._
+_Last updated: 2026-05-14 by Codex — **Codex-first migration complete** plus **daily brief thread/mirror delivery**, direct MCP JSON-RPC fetchers for Jira, GitLab, and NVBugs, Outlook Calendar brief source, the `Model Free 2.0` Outlook reply-all draft standing rule and Slack routing fix, the new agent-me avatar/logo asset set, the Slack chat `chat-cwd` Codex trust-dir fix, repo-facing English copy normalization, a generalized permissioned connector/MCP write route, and the refreshed two-flow Auto SFA Slack/dashboard runner. Runtime decision: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has `Create SFA Tasks` and `Release SFA Tasks` under one dashboard entry point. Dashboard Create supports explicit `Win_Linux` choices; dashboard Release supports Linux Release/Release type selection with destination-folder auto-resolve only when type changes. Slack Create requires only Display Name and folder id, defaults `Win_Linux` to `Linux Only`, and can override with `Win_Linux: Windows Only` or `Win_Linux: Both`; Slack Release requires only Display Name and URL_PATH, defaults Type/source/dates, can override with `type: Release` or `type: Linux Release`, and resolves the matching destination folder before launching. Slack Auto SFA help, start summaries, missing-field prompts, resolver errors, and cancel replies are English-only; Vietnamese natural-language input is still accepted where supported. Dashboard jobs run independently with one child process and one temp config per run, per-process DevTest credentials, SSE terminal output, cancel support, flow-separated trigger history, and browser localStorage for the requested user settings. The password is not written to server config or public job history. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md`](discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md), [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: full ruff and full pytest, plus focused Auto SFA parser/config/dashboard/Slack route tests._
 
 ## Phase
 
@@ -19,20 +19,39 @@ to the dashboard service on port 8765. Current live services:
 `agent-me-dashboard.service` active, `agent-me-bridge.service` active.
 Latest Auto SFA deployment commit is `6c8aa18 Add Auto SFA trigger history`.
 
-## Current Auto SFA State — 2026-05-13
+## Current Auto SFA State — 2026-05-14
 
 - Dashboard `/auto-sfa` is the single Auto SFA entry point with two tabs:
   `Create SFA Tasks` and `Release SFA Tasks`.
 - `Create SFA Tasks` is the template-prep step for `magic-auto`
   `update-template`. The only required user inputs are `display_name` and
-  `folder_id`; `template_ids` is optional for specific-ID mode. Agent-me keeps
-  DevTest project id fixed at `1072` internally and does not ask users to fill
-  release-only fields.
-- `Release SFA Tasks` keeps the existing SFA release form:
-  `display_name`, `source_folder_id`, `destination_folder_id`, `url_path`,
-  `start`, `end`, optional task IDs, and optional host-default credentials.
-  The dashboard defaults `end` to the browser's current day and `start` to
-  seven days before `end`.
+  `folder_id`; `template_ids` is optional for specific-ID mode. Dashboard users
+  can choose `Win_Linux` as `Linux Only`, `Windows Only`, or `Both`; Slack
+  defaults it to `Linux Only`. Agent-me keeps DevTest project id fixed at
+  `1072` internally and does not ask users to fill release-only fields.
+- `Release SFA Tasks` keeps the existing SFA release form, but the dashboard
+  now has a type selector above source/destination: `Linux Release` (default,
+  source `50722`) or `Release` (source `47877`). Changing the type calls
+  `magic-auto resolve-destination-folder -s <source>` and fills the current
+  cycle destination. Source and destination remain editable and are not
+  re-resolved when the user edits either input.
+- Slack Release uses a compact contract: `Release SFA Tasks for "<Display Name>"
+  with URL_PATH <link>`. It defaults Type to `Linux Release`, source to `50722`,
+  destination to the backend resolver output, `end` to today's Vietnam date,
+  `start` to seven days earlier, and complexity to `L2`. Users can override
+  type in Slack with `type: Release` or `type: Linux Release`; the source
+  folder is switched to `47877` or `50722` respectively before destination
+  resolution.
+- Slack Create uses the compact contract: `Create SFA Tasks for "<Display Name>"
+  in folder "<folder_id>"`. It understands English and Vietnamese phrasing and
+  defaults `Win_Linux` to `Linux Only`. Users can override in Slack with
+  `Win_Linux: Windows Only` or `Win_Linux: Both`.
+- Slack Auto SFA user-facing copy is English for help text, button-opened
+  flows, missing-field prompts, start summaries, resolver errors, and cancel
+  replies. Vietnamese input remains accepted by the parser where supported.
+- Dashboard localStorage persists the requested user settings for the longest
+  practical browser lifetime: DevTest credentials, Display Name, Create
+  `Win_Linux`, and Release type.
 - Dashboard and Slack Auto SFA triggers are persisted in SQLite table
   `auto_sfa_runs` with `flow_type` (`create` or `release`), run id, trigger
   time, display name, status, and trigger source. The dashboard shows
@@ -129,20 +148,26 @@ Latest Auto SFA deployment commit is `6c8aa18 Add Auto SFA trigger history`.
   app-server helper. The generic `codex exec` chat prompt is read-first and
   refuses connector/MCP writes that escape the router, avoiding
   hallucinated `user cancelled MCP tool call` outcomes.
-- [x] **Auto SFA (2026-05-12; refreshed 2026-05-13)** — Slack `/help` and dashboard
+- [x] **Auto SFA (2026-05-12; refreshed 2026-05-14)** — Slack `/help` and dashboard
   `/auto-sfa` expose two workflows under the same Auto SFA entry point:
   `Create SFA Tasks` and `Release SFA Tasks`. Create runs `magic-auto`
   `update-template` for project `1072` from `display_name`, `folder_id`, and
   optional `template_ids`, updating `Automation Dev Linux`,
-  `Automation Status Linux`, and `Win_Linux` on matching templates. Release
-  runs the existing `dtoperator.py sfa` path from `display_name`,
-  `source_folder_id`, `destination_folder_id`, `url_path`, `start`, `end`, and
-  optional task IDs. Release runs use a per-job temp config passed with `-c`
-  instead of mutating the shared `magic-auto/configs.json`; credentials are
-  per-process env vars. The dashboard runner supports concurrent jobs, cancel,
-  new terminal, SSE log streaming, and flow-separated trigger history persisted
-  in `auto_sfa_runs.flow_type`. Slack instructions/buttons route users to the
-  correct create or release flow.
+  `Automation Status Linux`, and `Win_Linux` on matching templates. Dashboard
+  users can choose `Linux Only`, `Windows Only`, or `Both`; Slack defaults to
+  `Linux Only`, with Slack overrides for `Windows Only` and `Both`. Release
+  runs the existing `dtoperator.py sfa` path. Dashboard users choose
+  `Linux Release`/`Release` type and get destination-folder auto-resolve on
+  type change only; Slack Release asks only for Display Name and URL_PATH, then
+  defaults Linux Release source/dates unless overridden with `type: Release` or
+  `type: Linux Release`, and resolves the destination before launching. Release
+  runs use a per-job temp config passed
+  with `-c` instead of mutating the shared `magic-auto/configs.json`;
+  credentials are per-process env vars. The dashboard runner supports
+  concurrent jobs, cancel, new terminal, SSE log streaming, browser
+  localStorage for requested settings, and flow-separated trigger history
+  persisted in `auto_sfa_runs.flow_type`. Slack instructions/buttons route
+  users to the correct create or release flow.
 - [x] **Dashboard operator action guard (2026-05-13)** — public team dashboard
   viewers can browse read surfaces, but `Refresh all` and `Refresh MCP auth`
   now open an operator-check modal and the corresponding POST endpoints require

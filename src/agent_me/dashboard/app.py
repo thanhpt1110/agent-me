@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import sys
 import time
@@ -38,6 +39,7 @@ from agent_me.auto_sfa import (
     AutoSFAValidationError,
     build_auto_sfa_request,
     build_update_template_request,
+    resolve_destination_folder_id,
 )
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
@@ -489,6 +491,42 @@ def _auto_sfa_default_source_folder_id() -> str:
     return os.environ.get("AUTO_SFA_DEFAULT_SOURCE_FOLDER_ID", "50722")
 
 
+def _truthy_payload(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
+
+
+def _derive_devtest_auth_username(value: Any) -> str:
+    raw = str(value or "").strip()
+    if "@" in raw:
+        raw = raw.split("@", 1)[0]
+    return raw.strip().lower()
+
+
+def _auto_sfa_credentials_from_payload(
+    payload: dict[str, Any],
+) -> tuple[str | None, str | None, list[str]]:
+    use_default = _truthy_payload(payload.get("use_default_credentials"))
+    use_personal = _truthy_payload(payload.get("use_personal_credentials"))
+    raw_username = str(payload.get("auth_username") or "").strip()
+    raw_password = payload.get("auth_password")
+    has_credentials = bool(raw_username or raw_password not in (None, ""))
+    if use_default or not (use_personal or has_credentials):
+        return None, None, []
+
+    errors: list[str] = []
+    auth_username = _derive_devtest_auth_username(raw_username) if raw_username else None
+    auth_password = None if raw_password in (None, "") else str(raw_password)
+    if not auth_username:
+        errors.append("USERNAME is required to resolve destination folder")
+    elif not re.match(r"^[A-Za-z0-9._-]+$", auth_username):
+        errors.append("USERNAME must be a short DevTest login like thaphan")
+    if not auth_password:
+        errors.append("PASSWORD is required to resolve destination folder")
+    return auth_username, auth_password, errors
+
+
 async def page_auto_sfa(request: Request):
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
         "sources": SOURCES,
@@ -634,6 +672,54 @@ async def api_mcp_status(_request: Request):
     })
 
 
+async def api_auto_sfa_resolve_destination(request: Request):
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "JSON body must be an object"}, status_code=400)
+
+    source_raw = str(payload.get("source_folder_id") or "").strip()
+    try:
+        source_folder_id = int(source_raw)
+        if source_folder_id <= 0:
+            raise ValueError
+    except ValueError:
+        return JSONResponse(
+            {"error": "source_folder_id must be a positive integer"},
+            status_code=400,
+        )
+
+    auth_username, auth_password, credential_errors = _auto_sfa_credentials_from_payload(
+        payload
+    )
+    if credential_errors:
+        return JSONResponse(
+            {"error": "invalid DevTest credentials", "errors": credential_errors},
+            status_code=400,
+        )
+
+    try:
+        destination_folder_id = await resolve_destination_folder_id(
+            source_folder_id,
+            auth_username=auth_username,
+            auth_password=auth_password,
+        )
+    except Exception as exc:
+        log.warning(
+            "auto_sfa_destination_resolve_failed",
+            source_folder_id=source_folder_id,
+            err=str(exc),
+        )
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+    return JSONResponse({
+        "source_folder_id": source_folder_id,
+        "devtest_folder_id": destination_folder_id,
+    })
+
+
 async def api_auto_sfa_run(request: Request):
     try:
         payload = await request.json()
@@ -689,6 +775,41 @@ async def api_auto_sfa_run(request: Request):
             values["finish_date"] = payload.get("finish")
         if "end" in payload and "finish_date" not in values:
             values["finish_date"] = payload.get("end")
+        if (
+            _truthy_payload(values.get("auto_resolve_destination"))
+            and not str(values.get("devtest_folder_id") or "").strip()
+        ):
+            source_raw = str(values.get("source_folder_id") or "").strip()
+            try:
+                source_folder_id = int(source_raw)
+                if source_folder_id <= 0:
+                    raise ValueError
+            except ValueError:
+                return JSONResponse(
+                    {"error": "source_folder_id must be a positive integer"},
+                    status_code=400,
+                )
+            auth_username, auth_password, credential_errors = (
+                _auto_sfa_credentials_from_payload(values)
+            )
+            if credential_errors:
+                return JSONResponse(
+                    {"error": "invalid DevTest credentials", "errors": credential_errors},
+                    status_code=400,
+                )
+            try:
+                values["devtest_folder_id"] = await resolve_destination_folder_id(
+                    source_folder_id,
+                    auth_username=auth_username,
+                    auth_password=auth_password,
+                )
+            except Exception as exc:
+                log.warning(
+                    "auto_sfa_destination_resolve_failed",
+                    source_folder_id=source_folder_id,
+                    err=str(exc),
+                )
+                return JSONResponse({"error": str(exc)}, status_code=502)
     try:
         sfa_request = (
             build_update_template_request(values)
@@ -829,6 +950,8 @@ def build_app() -> Starlette:
               name="api_mcp_refresh"),
         Route("/api/mcp/auth-refresh", api_mcp_auth_refresh, methods=["POST"],
               name="api_mcp_auth_refresh"),
+        Route("/api/auto-sfa/resolve-destination", api_auto_sfa_resolve_destination,
+              methods=["POST"], name="api_auto_sfa_resolve_destination"),
         Route("/api/auto-sfa/run", api_auto_sfa_run, methods=["POST"],
               name="api_auto_sfa_run"),
         Route("/api/auto-sfa/{job_id}/cancel", api_auto_sfa_cancel, methods=["POST"],

@@ -14,6 +14,8 @@ from agent_me.auto_sfa import (
     missing_update_template_fields,
     parse_auto_sfa_message,
     parse_update_template_message,
+    resolve_destination_folder_command,
+    resolve_destination_folder_id,
     run_auto_sfa,
     run_update_template,
     update_magic_auto_config,
@@ -28,6 +30,8 @@ def _sample_config() -> dict:
         "source_folder_id": 50722,
         "log_file_provider": "Manual",
         "log_file_base_url": "https://old.example/mr",
+        "template_folder_id": 494139,
+        "win_linux": "Linux Only",
         "release_configs": {
             "planned_dev_start_date": "2026-01-01",
             "planned_dev_finish_date": "2026-01-02",
@@ -84,6 +88,7 @@ def test_update_template_parse_and_build_folder_mode() -> None:
     assert request.display_name == "Thanh Phan"
     assert request.folder_id == 494139
     assert request.template_ids is None
+    assert request.win_linux == "Linux Only"
 
 
 def test_update_template_template_ids_are_optional_command_mode() -> None:
@@ -108,8 +113,63 @@ def test_update_template_template_ids_are_optional_command_mode() -> None:
         "5996784,5996785,5996786",
         "--folder-id",
         "494139",
+        "--win-linux",
+        "Linux Only",
         "-f",
     ]
+
+
+def test_update_template_win_linux_option_is_normalized() -> None:
+    values = parse_update_template_message(
+        """
+        display_name: Thanh Phan
+        folder_id: 494139
+        win_linux: Windows_Only
+        """
+    )
+
+    request = build_update_template_request(values)
+    args = update_template_command(request, uv_bin="/usr/bin/uv")
+
+    assert request.win_linux == "Windows Only"
+    assert args == [
+        "/usr/bin/uv",
+        "run",
+        "dtoperator.py",
+        "update-template",
+        "-u",
+        "Thanh Phan",
+        "--folder-id",
+        "494139",
+        "--win-linux",
+        "Windows Only",
+        "-f",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_win_linux"),
+    (
+        ('Create SFA Tasks for "Thanh Phan" in folder "422490"', "Linux Only"),
+        ("Tạo SFA Tasks cho Thanh Phan trong folder 422490", "Linux Only"),
+        ('Create SFA Tasks for "Thanh Phan" in folder "422490" Win_Linux: Both', "Both"),
+        (
+            'Create SFA Tasks for "Thanh Phan" in folder 422490 with Win_Linux Windows Only',
+            "Windows Only",
+        ),
+    ),
+)
+def test_update_template_parse_natural_create_prompt(
+    text: str,
+    expected_win_linux: str,
+) -> None:
+    values = parse_update_template_message(text)
+    request = build_update_template_request(values)
+
+    assert missing_update_template_fields(values) == []
+    assert request.display_name == "Thanh Phan"
+    assert request.folder_id == 422490
+    assert request.win_linux == expected_win_linux
 
 
 def test_update_template_rejects_non_template_project() -> None:
@@ -248,6 +308,42 @@ def test_auto_sfa_parse_slack_link_url() -> None:
     assert request.log_file_base_url == "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123"
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_release_type"),
+    (
+        (
+            'Release SFA Tasks for "Thanh Phan" with URL_PATH https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123',
+            None,
+        ),
+        (
+            "Phát hành SFA Tasks cho Thanh Phan với link https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+            None,
+        ),
+        (
+            'Release SFA Tasks for "Thanh Phan" with URL_PATH https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123 type: Release',
+            "Release",
+        ),
+        (
+            'Release SFA Tasks for "Thanh Phan" type Linux Release with URL_PATH https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123',
+            "Linux Release",
+        ),
+    ),
+)
+def test_auto_sfa_parse_natural_release_prompt(
+    text: str,
+    expected_release_type: str | None,
+) -> None:
+    values = parse_auto_sfa_message(text)
+
+    assert values["display_name"] == "Thanh Phan"
+    assert values["url_path"] == "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123"
+    assert values["log_file_base_url"] == values["url_path"]
+    assert values["source_code_path"] == values["url_path"]
+    assert values["code_review_path"] == values["url_path"]
+    if expected_release_type is not None:
+        assert values["release_type"] == expected_release_type
+
+
 def test_auto_sfa_parse_ordered_compact_message() -> None:
     values = parse_auto_sfa_message(
         "\n".join(
@@ -381,7 +477,7 @@ def test_auto_sfa_command_uses_display_name_as_single_argv() -> None:
         "run",
         "dtoperator.py",
         "sfa",
-        "--user-login",
+        "-u",
         "Thanh Phan",
         "-f",
     ]
@@ -402,10 +498,86 @@ def test_auto_sfa_task_ids_are_optional_command_mode() -> None:
         "sfa",
         "-i",
         "824423,824424,824425",
-        "--user-login",
+        "-u",
         "Thanh Phan",
         "-f",
     ]
+
+
+def test_resolve_destination_folder_command_uses_source_and_credentials() -> None:
+    args = resolve_destination_folder_command(
+        50722,
+        uv_bin="/usr/bin/uv",
+        auth_username="thaphan",
+        auth_password="dummy-password",
+    )
+
+    assert args == [
+        "/usr/bin/uv",
+        "run",
+        "dtoperator.py",
+        "resolve-destination-folder",
+        "-s",
+        "50722",
+        "-q",
+        "--username",
+        "thaphan",
+        "--password",
+        "dummy-password",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_destination_folder_ignores_uv_warning_and_unsets_virtualenv(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("VIRTUAL_ENV", "/localhome/local-thaphan/agent-me/.venv")
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                b"warning: `VIRTUAL_ENV=/localhome/local-thaphan/agent-me/.venv` "
+                b"does not match the project environment path `.venv`\n1155188\n",
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    folder_id = await resolve_destination_folder_id(
+        50722,
+        repo_dir=repo,
+        auth_username="thaphan",
+        auth_password="dummy-password",
+        uv_bin="/usr/bin/uv",
+    )
+
+    assert folder_id == 1155188
+    assert captured["args"] == (
+        "/usr/bin/uv",
+        "run",
+        "dtoperator.py",
+        "resolve-destination-folder",
+        "-s",
+        "50722",
+        "-q",
+        "--username",
+        "thaphan",
+        "--password",
+        "dummy-password",
+    )
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert "VIRTUAL_ENV" not in env
 
 
 def test_auto_sfa_credentials_are_required_only_when_enabled() -> None:
@@ -462,7 +634,7 @@ def test_auto_sfa_requires_source_folder_when_default_toggle_is_off() -> None:
 
 
 @pytest.mark.asyncio
-async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_env(
+async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_argv(
     tmp_path, monkeypatch
 ) -> None:
     repo = tmp_path / "magic-auto"
@@ -504,11 +676,13 @@ async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_env(
 
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["DEVTEST_USERNAME"] == "thaphan"
-    assert env["DEVTEST_PASSWORD"] == "dummy-password"
     args = captured["args"]
     assert isinstance(args, tuple)
     assert "-c" in args
+    assert args[-4:] == ("--username", "thaphan", "--password", "dummy-password")
+    assert env.get("DEVTEST_USERNAME") != "thaphan"
+    assert env.get("DEVTEST_PASSWORD") != "dummy-password"
+    assert "VIRTUAL_ENV" not in env
     temp_config_path = Path(str(args[args.index("-c") + 1]))
     assert not temp_config_path.exists()
     base_config = json.loads((repo / "configs.json").read_text())
@@ -517,19 +691,22 @@ async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_env(
 
 
 @pytest.mark.asyncio
-async def test_update_template_run_passes_custom_credentials_to_magic_auto_env(
+async def test_update_template_run_passes_custom_credentials_to_magic_auto_argv(
     tmp_path, monkeypatch
 ) -> None:
     repo = tmp_path / "magic-auto"
     repo.mkdir()
+    (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_update_template_request({
         "display_name": "Thanh Phan",
         "folder_id": "494139",
+        "win_linux": "Both",
         "use_personal_credentials": True,
         "auth_username": "thaphan@nvidia.com",
         "auth_password": "dummy-password",
     })
     captured: dict[str, object] = {}
+    events: list[dict] = []
 
     class FakeStdout:
         def __aiter__(self):
@@ -554,20 +731,43 @@ async def test_update_template_run_passes_custom_credentials_to_magic_auto_env(
 
     monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
 
-    await run_update_template(request, repo_dir=repo, uv_bin="/usr/bin/uv")
+    async def progress_cb(event):
+        events.append(event)
 
-    assert captured["args"] == (
+    await run_update_template(
+        request, repo_dir=repo, uv_bin="/usr/bin/uv", progress_cb=progress_cb
+    )
+
+    args = captured["args"]
+    assert isinstance(args, tuple)
+    assert args[:6] == (
         "/usr/bin/uv",
         "run",
         "dtoperator.py",
         "update-template",
         "-u",
         "Thanh Phan",
+    )
+    assert "-c" in args
+    temp_config_path = Path(str(args[args.index("-c") + 1]))
+    assert not temp_config_path.exists()
+    assert args[-9:] == (
         "--folder-id",
         "494139",
+        "--win-linux",
+        "Both",
         "-f",
+        "--username",
+        "thaphan",
+        "--password",
+        "dummy-password",
     )
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["DEVTEST_USERNAME"] == "thaphan"
-    assert env["DEVTEST_PASSWORD"] == "dummy-password"
+    assert env.get("DEVTEST_USERNAME") != "thaphan"
+    assert env.get("DEVTEST_PASSWORD") != "dummy-password"
+    assert "VIRTUAL_ENV" not in env
+    started = [event for event in events if event.get("event") == "started"]
+    assert started
+    assert "--win-linux Both" in started[0]["command"]
+    assert "--win-linux 'Linux Only'" not in started[0]["command"]

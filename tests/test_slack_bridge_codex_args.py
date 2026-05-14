@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import date
 
 
 def test_codex_args_skip_git_check_for_chat_cwd(monkeypatch, tmp_path) -> None:
@@ -250,7 +251,7 @@ def test_auto_sfa_start_remembers_thread(monkeypatch, tmp_path) -> None:
     )
     flow = asyncio.run(app.get_auto_sfa_flow("1700000000.000011"))
 
-    assert "Auto SFA" in text
+    assert "Release SFA Tasks" in text
     assert blocks
     assert flow is not None
     assert flow["status"] == "active"
@@ -282,6 +283,138 @@ def test_auto_sfa_create_start_remembers_flow_type(monkeypatch, tmp_path) -> Non
     assert blocks
     assert flow is not None
     assert flow["inputs"]["flow_type"] == "create"
+
+
+def test_auto_sfa_natural_prompt_flow_detection(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert app._auto_sfa_flow_type_from_text(
+        'Create SFA Tasks for "Thanh Phan" in folder "422490"'
+    ) == "create"
+    assert app._auto_sfa_flow_type_from_text(
+        "Tạo SFA Tasks cho Thanh Phan trong folder 422490"
+    ) == "create"
+    assert app._auto_sfa_flow_type_from_text(
+        "Phát hành SFA Tasks cho Thanh Phan với link https://example.test/mr/123"
+    ) == "release"
+    assert app._auto_sfa_flow_type_from_text("create a normal task") is None
+
+
+def test_auto_sfa_slack_release_defaults_and_destination(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+    values = app._apply_slack_release_defaults(
+        {
+            "display_name": "Thanh Phan",
+            "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+        },
+        today=date(2026, 5, 14),
+    )
+
+    assert values["source_folder_id"] == "50722"
+    assert values["start_date"] == "2026-05-07"
+    assert values["finish_date"] == "2026-05-14"
+    assert values["release_type"] == "Linux Release"
+    assert app._missing_slack_release_fields(values) == []
+
+    calls: list[int] = []
+
+    async def fake_resolve_destination_folder_id(source_folder_id: int, **kwargs) -> int:
+        calls.append(source_folder_id)
+        return 1155188
+
+    monkeypatch.setattr(
+        app,
+        "resolve_destination_folder_id",
+        fake_resolve_destination_folder_id,
+    )
+
+    import asyncio
+
+    resolved = asyncio.run(app._resolve_slack_release_destination(values))
+    request = app.build_auto_sfa_request(resolved)
+
+    assert calls == [50722]
+    assert request.display_name == "Thanh Phan"
+    assert request.source_folder_id == 50722
+    assert request.devtest_folder_id == 1155188
+    assert request.planned_dev_start_date == "2026-05-07"
+    assert request.planned_dev_finish_date == "2026-05-14"
+
+
+def test_auto_sfa_slack_release_type_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+    values = app._apply_slack_release_defaults(
+        {
+            "display_name": "Thanh Phan",
+            "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+            "release_type": "Release",
+            "source_folder_id": "50722",
+            "devtest_folder_id": "1155188",
+        },
+        today=date(2026, 5, 14),
+        release_type_explicit=True,
+    )
+
+    assert values["release_type"] == "Release"
+    assert values["source_folder_id"] == "47877"
+    assert "devtest_folder_id" not in values
+
+    calls: list[int] = []
+
+    async def fake_resolve_destination_folder_id(source_folder_id: int, **kwargs) -> int:
+        calls.append(source_folder_id)
+        return 891171
+
+    monkeypatch.setattr(
+        app,
+        "resolve_destination_folder_id",
+        fake_resolve_destination_folder_id,
+    )
+
+    import asyncio
+
+    resolved = asyncio.run(app._resolve_slack_release_destination(values))
+
+    assert calls == [47877]
+    assert resolved["devtest_folder_id"] == 891171
+
+
+def test_auto_sfa_slack_help_text_is_english_and_mentions_overrides(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+
+    assert "Required fields:" in app.AUTO_SFA_CREATE_HELP_TEXT
+    assert "Win_Linux: Windows Only" in app.AUTO_SFA_CREATE_HELP_TEXT
+    assert "Win_Linux: Both" in app.AUTO_SFA_CREATE_HELP_TEXT
+    assert "Required fields:" in app.AUTO_SFA_RELEASE_HELP_TEXT
+    assert "type: Release" in app.AUTO_SFA_RELEASE_HELP_TEXT
+    assert "type: Linux Release" in app.AUTO_SFA_RELEASE_HELP_TEXT
+    assert "Mình chỉ cần" not in app.AUTO_SFA_CREATE_HELP_TEXT
+    assert "Mặc định Slack" not in app.AUTO_SFA_RELEASE_HELP_TEXT
+    assert app.AUTO_SFA_CANCELLED_TEXT == "Auto SFA cancelled. Send `auto sfa` to start again."
+    assert "Gõ" not in app.AUTO_SFA_CANCELLED_TEXT
 
 
 def test_model_free_subject_pattern_is_exact(monkeypatch, tmp_path) -> None:

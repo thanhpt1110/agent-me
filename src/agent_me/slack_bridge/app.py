@@ -37,7 +37,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -50,7 +50,6 @@ from slack_bolt.async_app import AsyncApp
 
 from agent_me.auto_sfa import (
     AUTO_SFA_FIELD_LABELS,
-    AUTO_SFA_FIELD_ORDER,
     UPDATE_TEMPLATE_FIELD_LABELS,
     UPDATE_TEMPLATE_FIELD_ORDER,
     AutoSFARequest,
@@ -58,10 +57,10 @@ from agent_me.auto_sfa import (
     TemplateSFARequest,
     build_auto_sfa_request,
     build_update_template_request,
-    missing_auto_sfa_fields,
     missing_update_template_fields,
     parse_auto_sfa_message,
     parse_update_template_message,
+    resolve_destination_folder_id,
     run_auto_sfa,
     run_update_template,
 )
@@ -1504,65 +1503,64 @@ async def cmd_reauth() -> str:
 AUTO_SFA_LOG_CHUNK_SIZE = 1_900
 AUTO_SFA_LOG_FLUSH_INTERVAL_S = 2.0
 AUTO_SFA_SLACK_TASKS: set[asyncio.Task[None]] = set()
+AUTO_SFA_SLACK_DEFAULT_SOURCE_FOLDER_ID = 50722
+AUTO_SFA_SLACK_DEFAULT_RELEASE_TYPE = "Linux Release"
+AUTO_SFA_CANCELLED_TEXT = "Auto SFA cancelled. Send `auto sfa` to start again."
+AUTO_SFA_SLACK_RELEASE_TYPE_SOURCES = {
+    "Linux Release": 50722,
+    "Release": 47877,
+}
 
 AUTO_SFA_RELEASE_INPUT_TEMPLATE = "\n".join((
-    "display_name: Thanh Phan",
-    "destination_folder_id: 1138081",
-    "url_path: https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
-    "start: 2026-04-16",
-    "end: 2026-04-27",
+    'Release SFA Tasks for "Thanh Phan" with URL_PATH https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123',
+    'Optional override: add `type: Release` to use the Release source folder instead of Linux Release.',
 ))
 
 AUTO_SFA_CREATE_INPUT_TEMPLATE = "\n".join((
-    "display_name: Thanh Phan",
-    "folder_id: 494139",
+    'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+    'Optional override: add `Win_Linux: Both` or `Win_Linux: Windows Only`.',
 ))
 
 AUTO_SFA_RELEASE_HELP_TEXT = "\n".join((
-    "*Release SFA Tasks* — mình sẽ chuẩn bị config và release các task đã có trong SFA.",
+    "*Release SFA Tasks* — prepares config and releases existing SFA tasks.",
     "",
-    "Mình cần 5 thông tin bắt buộc. Các field dùng chung sẽ được tự map vào config `magic-auto`:",
-    "• *display_name* — DevTest `Automation Dev Linux` display name, ví dụ `Thanh Phan`. Bắt buộc cả khi chạy theo task ID.",
-    "• *destination_folder_id* — DevTest release folder id, ví dụ folder week `05-2026/Week3-4`.",
-    "• *url_path* — link dùng chung cho log, source code, và code review.",
-    "• *start* và *end* — ngày theo format `yyyy-MM-dd`.",
-    "• *source_folder_id* — optional. Thêm `source_folder_id: 50722` nếu muốn override pool/source folder; bỏ trống thì dùng default trong `magic-auto/configs.json`.",
-    "• *task_ids* — optional. Thêm `task_ids: 824423,824424` nếu muốn chạy đúng danh sách task ID; bỏ trống thì bot release theo display name.",
+    "Required fields:",
+    "• *Display Name* — DevTest `Automation Dev Linux`, for example `Thanh Phan`.",
+    "• *URL_PATH* — one link reused for log, source code, and code review.",
     "",
-    "Ví dụ nhanh:",
+    "Example:",
     "```",
     AUTO_SFA_RELEASE_INPUT_TEMPLATE,
     "```",
-    "Ví dụ chạy task IDs cụ thể: thêm dòng `task_ids: 824423,824424` vào mẫu trên.",
     "",
-    "Mặc định: `devtest_project_id=1074`, `log_file_provider=Manual`, `complexity_level=L2`; source folder giữ theo config hiện tại của `magic-auto`.",
-    "Slack dùng DevTest credentials mặc định trên host. Nếu cần credential riêng, dùng dashboard Auto SFA để tránh paste password vào Slack.",
-    "Khi đủ dữ liệu, mình sẽ update `magic-auto/configs.json`, chạy `uv run dtoperator.py sfa [-i <task_ids>] --user-login <display_name> -f`, rồi stream log lại ngay trong thread này.",
-    "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
+    "Defaults: type `Linux Release`, source `50722`, destination auto-resolved for the current cycle, `end=today`, `start=end-7d`, `complexity=L2`.",
+    "Override type with `type: Release` or `type: Linux Release`; the bot will switch the source folder and resolve the matching destination.",
+    "Slack uses host DevTest credentials. Use the dashboard if you need personal credentials.",
+    "When the fields are ready, the bot resolves destination, writes a temp config, runs `uv run dtoperator.py sfa -u <display_name> -f`, and streams logs in this thread.",
+    "Send `cancel auto sfa` to cancel before launch.",
 ))
 
 AUTO_SFA_CREATE_HELP_TEXT = "\n".join((
-    "*Create SFA Tasks* — bước chuẩn bị template trước khi release task.",
+    "*Create SFA Tasks* — prepares templates before releasing SFA tasks.",
     "",
-    "Flow này gọi `magic-auto` command `update-template` trên project `1072` và update 3 field:",
-    "• `Automation Dev Linux` = `display_name`",
+    "This flow calls `magic-auto update-template` in project `1072` and updates:",
+    "• `Automation Dev Linux` = Display Name",
     "• `Automation Status Linux` = `In A&T`",
-    "• `Win_Linux` = `Linux_Only`",
+    "• `Win_Linux` = selected platform",
     "",
-    "Mình cần 2 thông tin bắt buộc:",
-    "• *display_name* — bắt buộc là Template Owner theo Display Name, ví dụ `Thanh Phan`.",
-    "• *folder_id* — template folder ID trong project `1072`.",
-    "• *template_ids* — optional. Thêm `template_ids: 5996784,5996785` nếu muốn update đúng danh sách template ID; bỏ trống thì filter theo Template Owner trong folder.",
+    "Required fields:",
+    "• *Display Name* — Template Owner / Automation Dev Linux, for example `Thanh Phan`.",
+    "• *folder_id* — template folder ID in project `1072`.",
     "",
-    "Ví dụ nhanh:",
+    "Example:",
     "```",
     AUTO_SFA_CREATE_INPUT_TEMPLATE,
     "```",
-    "Ví dụ chạy template IDs cụ thể: thêm dòng `template_ids: 5996784,5996785` vào mẫu trên.",
     "",
-    "Slack dùng DevTest credentials mặc định trên host. Nếu cần credential riêng, dùng dashboard Auto SFA để tránh paste password vào Slack.",
-    "Khi đủ dữ liệu, mình sẽ chạy `uv run dtoperator.py update-template -u <display_name> --folder-id <folder_id> [-i <template_ids>] -f`, rồi stream log lại ngay trong thread này.",
-    "Gõ `cancel auto sfa` nếu muốn hủy trước khi chạy.",
+    "Default: `Win_Linux = Linux Only`. Override with `Win_Linux: Windows Only` or `Win_Linux: Both`.",
+    "Slack uses host DevTest credentials. Use the dashboard if you need personal credentials.",
+    "When the fields are ready, the bot runs `uv run dtoperator.py update-template -u <display_name> --folder-id <folder_id> --win-linux <value> -f` and streams logs in this thread.",
+    "Send `cancel auto sfa` to cancel before launch.",
 ))
 
 AUTO_SFA_INPUT_TEMPLATE = AUTO_SFA_RELEASE_INPUT_TEMPLATE
@@ -1588,6 +1586,107 @@ def _auto_sfa_blocks(text: str) -> list[dict]:
     ]
 
 
+def _slack_auto_sfa_today() -> date:
+    return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
+
+
+def _normalize_slack_release_type(value: Any) -> str:
+    raw = str(value or "").strip()
+    compact = re.sub(r"[^a-z0-9]+", "", raw.lower())
+    if compact == "release":
+        return "Release"
+    if compact in {"linuxrelease", "linux"}:
+        return "Linux Release"
+    return AUTO_SFA_SLACK_DEFAULT_RELEASE_TYPE
+
+
+def _slack_release_source_for_type(release_type: str) -> int:
+    normalized = _normalize_slack_release_type(release_type)
+    return AUTO_SFA_SLACK_RELEASE_TYPE_SOURCES[normalized]
+
+
+def _slack_release_type_for_source(source_folder_id: int | None) -> str:
+    for release_type, folder_id in AUTO_SFA_SLACK_RELEASE_TYPE_SOURCES.items():
+        if source_folder_id == folder_id:
+            return release_type
+    return AUTO_SFA_SLACK_DEFAULT_RELEASE_TYPE
+
+
+def _slack_release_type_mentioned(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?is)\b(?:release[-_ ]?type|type)\b"
+            r"\s*(?:[:=]|\bis\b|\bla\b|\blà\b)?\s*"
+            r"(?:linux\s+release|release)\b",
+            text or "",
+        )
+    )
+
+
+def _slack_source_folder_mentioned(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?is)\b(?:source[-_ ]?folder(?:[-_ ]?id)?|source[-_ ]?fodler(?:[-_ ]?id)?|from[-_ ]?folder(?:[-_ ]?id)?)\b",
+            text or "",
+        )
+    )
+
+
+def _apply_slack_release_defaults(
+    values: dict[str, Any],
+    *,
+    today: date | None = None,
+    release_type_explicit: bool = False,
+    source_folder_explicit: bool = False,
+) -> dict[str, Any]:
+    normalized = dict(values)
+    end_date = today or _slack_auto_sfa_today()
+    start_date = end_date - timedelta(days=7)
+    release_type = _normalize_slack_release_type(
+        normalized.get("release_type") or AUTO_SFA_SLACK_DEFAULT_RELEASE_TYPE
+    )
+    normalized["release_type"] = release_type
+    if release_type_explicit and not source_folder_explicit:
+        normalized["source_folder_id"] = str(_slack_release_source_for_type(release_type))
+        normalized.pop("devtest_folder_id", None)
+    else:
+        normalized.setdefault("source_folder_id", str(_slack_release_source_for_type(release_type)))
+    normalized.setdefault("start_date", start_date.isoformat())
+    normalized.setdefault("finish_date", end_date.isoformat())
+    return normalized
+
+
+def _missing_slack_release_fields(values: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    if not str(values.get("display_name") or "").strip():
+        missing.append("display_name")
+    if not str(values.get("url_path") or values.get("log_file_base_url") or "").strip():
+        missing.append("url_path")
+    return missing
+
+
+async def _resolve_slack_release_destination(values: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(values)
+    if str(normalized.get("devtest_folder_id") or "").strip():
+        return normalized
+    source_folder_id = int(normalized.get("source_folder_id") or AUTO_SFA_SLACK_DEFAULT_SOURCE_FOLDER_ID)
+    normalized["devtest_folder_id"] = await resolve_destination_folder_id(source_folder_id)
+    return normalized
+
+
+def _auto_sfa_flow_type_from_text(text: str) -> str | None:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    lowered = normalized.lower()
+    if "sfa" not in lowered or "task" not in lowered:
+        return None
+    if re.search(r"\b(create|tao|make|prep|prepare|update)\b", lowered):
+        return "create"
+    if re.search(r"\b(release|phat\s*hanh)\b", lowered):
+        return "release"
+    return None
+
+
 def _auto_sfa_missing_text(values: dict[str, Any]) -> str:
     flow_type = str(values.get("flow_type") or "release")
     if flow_type == "create":
@@ -1596,27 +1695,31 @@ def _auto_sfa_missing_text(values: dict[str, Any]) -> str:
         field_order = UPDATE_TEMPLATE_FIELD_ORDER
         field_labels = UPDATE_TEMPLATE_FIELD_LABELS
     else:
-        missing = missing_auto_sfa_fields(values)
+        missing = _missing_slack_release_fields(values)
         labels = ", ".join(f"`{AUTO_SFA_FIELD_LABELS[field]}`" for field in missing)
-        field_order = AUTO_SFA_FIELD_ORDER
+        field_order = ("display_name", "url_path")
         field_labels = AUTO_SFA_FIELD_LABELS
     present = [
         f"- `{field_labels[field]}`: `{values[field]}`"
         for field in field_order
         if values.get(field)
     ]
-    example = "folder_id: 494139" if flow_type == "create" else "end: 2026-04-27"
+    example = (
+        'Create SFA Tasks for "Thanh Phan" in folder "494139" Win_Linux: Both'
+        if flow_type == "create"
+        else 'Release SFA Tasks for "Thanh Phan" with URL_PATH https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123 type: Release'
+    )
     body = [
-        "Mình nhận được một phần thông tin rồi.",
-        f"Còn thiếu: {labels}.",
+        "I got part of the Auto SFA input.",
+        f"Still missing: {labels}.",
         "",
-        f"Bạn chỉ cần gửi tiếp phần còn thiếu, ví dụ `{example}`, hoặc paste lại đủ mẫu này:",
+        f"Send the missing fields only, for example `{example}`, or paste the full template:",
         "```",
         _auto_sfa_input_template(flow_type),
         "```",
     ]
     if present:
-        body.extend(("", "Phần mình đã ghi nhận:", *present))
+        body.extend(("", "Already captured:", *present))
     return "\n".join(body)
 
 
@@ -1798,21 +1901,24 @@ async def _run_auto_sfa_slack_job(
 def _auto_sfa_start_summary(request: AutoSFARequest | TemplateSFARequest) -> str:
     if isinstance(request, TemplateSFARequest):
         return (
-            "Đã đủ thông tin. Mình bắt đầu Create SFA Tasks ngay bây giờ.\n"
+            "All required fields are ready. Starting Create SFA Tasks now.\n"
             f"- Display name / Template Owner: `{request.display_name}`\n"
             "- Project: `1072`\n"
             f"- Folder: `{request.folder_id}`\n"
+            f"- Win_Linux: `{request.win_linux}`\n"
             f"- Template mode: `{('specific IDs ' + request.template_ids) if request.template_ids else 'Template Owner filter'}`\n"
-            "Log terminal sẽ được gửi tiếp trong thread này."
+            "Terminal logs will stream in this thread."
         )
+    release_type = _slack_release_type_for_source(request.source_folder_id)
     return (
-        "Đã đủ thông tin. Mình bắt đầu Release SFA Tasks ngay bây giờ.\n"
+        "All required fields are ready. Starting Release SFA Tasks now.\n"
         f"- Display name: `{request.display_name}`\n"
         f"- Task mode: `{('specific IDs ' + request.task_ids) if request.task_ids else 'display name filter'}`\n"
-        f"- Source folder: `{request.source_folder_id or 'default from magic-auto/configs.json'}`\n"
+        f"- Type: `{release_type}` · Source folder: `{request.source_folder_id or _slack_release_source_for_type(release_type)}`\n"
         f"- Destination folder: `{request.devtest_folder_id}`\n"
+        f"- Dates: `{request.planned_dev_start_date}` → `{request.planned_dev_finish_date}`\n"
         f"- URL_PATH: `{request.code_review_path}`\n"
-        "Log terminal sẽ được gửi tiếp trong thread này."
+        "Terminal logs will stream in this thread."
     )
 
 
@@ -1835,7 +1941,7 @@ async def handle_auto_sfa_flow_message(
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
-            text="Auto SFA cancelled. Gõ `auto sfa` để bắt đầu lại.",
+            text=AUTO_SFA_CANCELLED_TEXT,
         )
         return
 
@@ -1843,7 +1949,7 @@ async def handle_auto_sfa_flow_message(
         await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
-            text="Auto SFA đang chạy trong thread này. Log mới sẽ tiếp tục được post ở đây.",
+            text="Auto SFA is already running in this thread. Logs will keep posting here.",
         )
         return
 
@@ -1856,7 +1962,12 @@ async def handle_auto_sfa_flow_message(
     else:
         values = parse_auto_sfa_message(cleaned, existing_inputs)
         values["flow_type"] = "release"
-        missing = missing_auto_sfa_fields(values)
+        values = _apply_slack_release_defaults(
+            values,
+            release_type_explicit=_slack_release_type_mentioned(cleaned),
+            source_folder_explicit=_slack_source_folder_mentioned(cleaned),
+        )
+        missing = _missing_slack_release_fields(values)
     if missing:
         await update_auto_sfa_flow(thread_ts, inputs=values, status="active")
         await client.chat_postMessage(
@@ -1867,6 +1978,21 @@ async def handle_auto_sfa_flow_message(
         return
 
     try:
+        if flow_type == "release":
+            try:
+                values = await _resolve_slack_release_destination(values)
+            except Exception as exc:
+                await update_auto_sfa_flow(thread_ts, inputs=values, status="active")
+                await client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    text=(
+                        "Could not resolve the destination folder for "
+                        f"`{values.get('release_type') or AUTO_SFA_SLACK_DEFAULT_RELEASE_TYPE}` "
+                        f"source `{values.get('source_folder_id')}`: `{str(exc)[:500]}`"
+                    ),
+                )
+                return
         request = (
             build_update_template_request(values)
             if flow_type == "create"
@@ -1878,9 +2004,9 @@ async def handle_auto_sfa_flow_message(
             channel=channel,
             thread_ts=thread_ts,
             text=(
-                "Mình đọc được đủ field, nhưng có giá trị chưa hợp lệ:\n"
+                "The required fields are present, but one or more values are invalid:\n"
                 + "\n".join(f"- {err}" for err in exc.errors)
-                + "\n\nBạn gửi lại field sai hoặc paste lại đủ mẫu này nhé:\n```"
+                + "\n\nSend the corrected field or paste the full template again:\n```"
                 + _auto_sfa_input_template(flow_type)
                 + "```"
             ),
@@ -2171,6 +2297,26 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     if plain_key in PLAIN_COMMANDS:
         cmd, args_text = PLAIN_COMMANDS[plain_key]
         await _dispatch(cmd, args_text, "plain")
+        return
+
+    auto_sfa_flow_type = _auto_sfa_flow_type_from_text(cleaned)
+    if auto_sfa_flow_type and channel and thread_ts:
+        await remember_auto_sfa_flow(
+            thread_ts, channel, user_id, {"flow_type": auto_sfa_flow_type}
+        )
+        flow = await get_auto_sfa_flow(thread_ts) or {
+            "inputs": {"flow_type": auto_sfa_flow_type},
+            "status": "active",
+        }
+        await handle_auto_sfa_flow_message(
+            client=client,
+            channel=channel,
+            thread_ts=thread_ts,
+            user_id=user_id,
+            cleaned=cleaned,
+            event_ts=event_ts,
+            flow=flow,
+        )
         return
 
     # Slash-prefix intercept: route /mcp etc. without spawning the agent.
@@ -2615,7 +2761,7 @@ async def on_auto_sfa_cancel(ack, body, client):
     await _reply_in_thread(
         client,
         body,
-        "Auto SFA cancelled. Gõ `auto sfa` để bắt đầu lại.",
+        AUTO_SFA_CANCELLED_TEXT,
     )
 
 

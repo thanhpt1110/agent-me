@@ -221,19 +221,38 @@ def test_auto_sfa_page_renders(
     assert "Create SFA Tasks" in r.text
     assert "Release SFA Tasks" in r.text
     assert "display_name" in r.text
+    assert "Display Name" in r.text
     assert "placeholder=\"Thanh Phan\"" in r.text
+    assert "DevTest Automation Dev Linux Display Name." not in r.text
     assert "DevTest credentials" in r.text
     assert "Enter DevTest username and password" in r.text
     assert "Use default host credentials" in r.text
     assert "Required by default. Check above to use host credentials instead." in r.text
     assert "specific task IDs" in r.text
     assert "specific template IDs" in r.text
+    assert "Win_Linux" in r.text
+    assert "appearance-none" in r.text
+    assert "right-3" in r.text
+    assert "Linux Only" in r.text
+    assert "Windows Only" in r.text
+    assert "Both" in r.text
     assert "folder_id" in r.text
     assert "project_id is fixed to" not in r.text
     assert "project 1072" not in r.text
     assert "source_folder_id" in r.text
-    assert "placeholder=\"50722\"" in r.text
-    assert "Default value:" in r.text
+    assert "Linux Release" in r.text
+    assert "source: \"50722\"" in r.text
+    assert "source: \"47877\"" in r.text
+    assert "`source ${option.source}`" not in r.text
+    assert "Default for" in r.text
+    assert "releaseDestinationPath" in r.text
+    assert "auto by today; editable." in r.text
+    assert "Current cycle folder; editable after auto-resolve." not in r.text
+    assert "/api/auto-sfa/resolve-destination" in r.text
+    assert "display_name: String(this.form.display_name" in r.text
+    assert "async fetchJson" in r.text
+    assert "scheduleDestinationResolve" not in r.text
+    assert "auto_resolve_destination" not in r.text
     assert "use_default_source_folder" not in r.text
     assert "destination_folder_id" in r.text
     assert r.text.count('type="text" inputmode="numeric" pattern="[0-9]*"') >= 2
@@ -703,6 +722,7 @@ def test_api_auto_sfa_run_starts_create_job(client: TestClient, monkeypatch,
             "flow_type": "create",
             "display_name": "Thanh Phan",
             "folder_id": "494139",
+            "win_linux": "Windows Only",
             "template_ids_enabled": True,
             "template_ids": "5996784,5996785",
             "use_personal_credentials": True,
@@ -715,13 +735,47 @@ def test_api_auto_sfa_run_starts_create_job(client: TestClient, monkeypatch,
     assert r.status_code == 202
     body = r.json()
     assert body["request"]["flow_type"] == "create"
+    assert body["request"]["win_linux"] == "Windows Only"
     assert captured["request"].display_name == "Thanh Phan"
     assert captured["request"].template_project_id == 1072
     assert captured["request"].folder_id == 494139
     assert captured["request"].template_ids == "5996784,5996785"
+    assert captured["request"].win_linux == "Windows Only"
     assert captured["request"].auth_username == "thaphan"
     assert captured["request"].auth_password == "dummy-password"
     assert "dummy-password" not in json.dumps(body)
+
+
+def test_api_auto_sfa_resolve_destination(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, with_token: str
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    captured: dict[str, object] = {}
+
+    async def fake_resolve(source_folder_id, **kwargs):
+        captured["source_folder_id"] = source_folder_id
+        captured["kwargs"] = kwargs
+        return 1155189
+
+    monkeypatch.setattr(app_module, "resolve_destination_folder_id", fake_resolve)
+
+    r = client.post(
+        "/api/auto-sfa/resolve-destination",
+        json={
+            "source_folder_id": "50722",
+            "use_personal_credentials": True,
+            "auth_username": "thaphan@nvidia.com",
+            "auth_password": "dummy-password",
+        },
+        headers=_auth(with_token),
+    )
+
+    assert r.status_code == 200
+    assert r.json() == {"source_folder_id": 50722, "devtest_folder_id": 1155189}
+    assert captured["source_folder_id"] == 50722
+    assert captured["kwargs"]["auth_username"] == "thaphan"
+    assert captured["kwargs"]["auth_password"] == "dummy-password"
 
 
 def test_api_auto_sfa_run_infers_create_job_from_folder_id(
