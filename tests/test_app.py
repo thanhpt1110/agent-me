@@ -61,9 +61,12 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "Refresh MCP auth" in body
     assert "Pending across platforms" in body
     assert "Briefs by source" not in body
+    assert "agent-me.theme.v1" in body
+    assert "data-theme-toggle" in body
+    assert "prefers-color-scheme: dark" in body
     # All brief sources should appear in the nav at minimum
-    for label in ("Jira", "GitLab", "NVBugs",
-                  "Slack", "Outlook", "Outlook Calendar", "GitHub"):
+    for label in ("NVBugs", "GitLab", "GitHub", "Meetings",
+                  "Email", "Jira", "Teams", "Slack"):
         assert label in body
 
 
@@ -122,7 +125,19 @@ def test_index_pending_calendar_shows_meeting_time(client: TestClient, temp_stat
 
     assert r.status_code == 200
     assert "Model Free 2.0 sync" in r.text
-    assert "Mon 05/11 09:00-09:30" in r.text
+    assert "09:00" in r.text
+    assert "09:30" in r.text
+    assert "Mon 2026-05-11 09:00-09:30" in r.text
+    assert "Meetings" in r.text
+    assert "Last updated" in r.text
+
+    api = client.get("/api/source/calendar", headers=_auth(with_token))
+    assert api.status_code == 200
+    item = api.json()["items"][0]
+    assert item["meeting_time"] == "Mon 2026-05-11 09:00-09:30"
+    assert item["meeting_time_display"] == "Mon 2026-05-11 09:00-09:30"
+    assert item["meeting_start_time"] == "09:00"
+    assert item["meeting_end_time"] == "09:30"
 
 
 def test_source_calendar_shows_meeting_time(client: TestClient, temp_state_dir: Path,
@@ -152,7 +167,8 @@ def test_source_calendar_shows_meeting_time(client: TestClient, temp_state_dir: 
 
     assert r.status_code == 200
     assert "Model Free 2.0 sync" in r.text
-    assert "Mon 05/11 09:00-09:30" in r.text
+    assert "Mon 2026-05-11 09:00-09:30" in r.text
+    assert "meeting_time_display" in r.text
 
 
 def test_source_page_known_source_renders(client: TestClient, with_token: str) -> None:
@@ -166,6 +182,16 @@ def test_static_avatar_asset_served(client: TestClient) -> None:
     assert r.status_code == 200
     assert "image/svg+xml" in r.headers.get("content-type", "")
     assert "agent-me avatar" in r.text
+
+
+def test_static_css_includes_auto_sfa_light_theme(client: TestClient) -> None:
+    r = client.get("/static/app.css")
+    assert r.status_code == 200
+    assert ".auto-sfa-terminal-body" in r.text
+    assert "html.theme-light .auto-sfa-terminal-body" in r.text
+    assert "html.theme-light .auto-sfa-cancel-button" in r.text
+    assert "html.theme-light input::placeholder" in r.text
+    assert "color: #94a3b8" in r.text
 
 
 def test_source_page_unknown_source_404(client: TestClient, with_token: str) -> None:
@@ -221,8 +247,12 @@ def test_auto_sfa_page_renders(
     assert "defaultReleaseEndDate" in r.text
     assert "agent-me terminal" not in r.text
     assert "Cancel operation" in r.text
-    assert "new terminal" in r.text
+    assert "Open new terminal" in r.text
+    assert "auto-sfa-terminal-action" in r.text
+    assert "clearTerminal" not in r.text
+    assert ">clear<" not in r.text
     assert "Auto SFA realtime terminal output" in r.text
+    assert "auto-sfa-terminal-body" in r.text
     assert "streaming stdout" in r.text
     assert "terminal-cursor" in r.text
     assert "terminalLineClass" in r.text
@@ -423,10 +453,12 @@ def test_api_state_returns_all_snapshots(client: TestClient, with_token: str) ->
     assert r.status_code == 200
     body = r.json()
     assert "uptime_s" in body
-    assert len(body["snapshots"]) == 7
-    sources = {s["source"] for s in body["snapshots"]}
-    assert sources == {"jira", "gitlab", "nvbugs",
-                       "slack", "outlook", "calendar", "github"}
+    assert len(body["snapshots"]) == 8
+    sources = [s["source"] for s in body["snapshots"]]
+    assert sources == [
+        "nvbugs", "gitlab", "github", "calendar",
+        "outlook", "jira", "teams", "slack",
+    ]
 
 
 def test_api_source_returns_cached_snapshot(client: TestClient, temp_state_dir: Path,
@@ -538,13 +570,61 @@ def test_refresh_all_returns_all_jobs(client: TestClient, monkeypatch,
     r = client.post("/api/refresh/_all", headers=_operator_auth(with_token))
     assert r.status_code == 202
     body = r.json()
-    assert len(body["jobs"]) == 7
-    assert sorted(j["source"] for j in body["jobs"]) == sorted([
-        "calendar", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
-    ])
-    assert sorted(started) == sorted([
-        "calendar", "github", "gitlab", "jira", "nvbugs", "outlook", "slack"
-    ])
+    assert len(body["jobs"]) == 8
+    assert [j["source"] for j in body["jobs"]] == [
+        "nvbugs", "gitlab", "github", "calendar",
+        "outlook", "jira", "teams", "slack",
+    ]
+    assert started == [
+        "nvbugs", "gitlab", "github", "calendar",
+        "outlook", "jira", "teams", "slack",
+    ]
+    assert r.headers.get("x-agent-me-operator-token")
+
+
+def test_refresh_one_requires_passcode_and_accepts_operator_token(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    with_token: str,
+) -> None:
+    import uuid
+
+    from agent_me.dashboard import app as app_module
+    from agent_me.dashboard.brief_runner import BriefJob
+
+    started: list[str] = []
+
+    async def fake_start(self, source: str, period_days: int = 1):
+        started.append(f"{source}:{period_days}")
+        return BriefJob(
+            job_id=uuid.uuid4().hex[:8],
+            source=source,
+            started_at=int(time.time() * 1000),
+            status="pending",
+        )
+
+    monkeypatch.setattr(app_module.RUNNER.__class__, "start", fake_start)
+
+    denied = client.post("/api/refresh/calendar", headers=_auth(with_token))
+    assert denied.status_code == 403
+
+    first = client.post(
+        "/api/refresh/calendar?period=week",
+        headers=_operator_auth(with_token),
+    )
+    assert first.status_code == 202
+    token = first.headers.get("x-agent-me-operator-token")
+    assert token
+
+    second = client.post(
+        "/api/refresh/jira?period=day",
+        headers={
+            **_auth(with_token),
+            "X-Agent-Me-Operator-Token": token,
+        },
+    )
+    assert second.status_code == 202
+    assert started == ["calendar:7", "jira:1"]
 
 
 def test_api_auto_sfa_run_starts_job(client: TestClient, monkeypatch,
@@ -712,6 +792,10 @@ def test_api_auto_sfa_cancel_job(client: TestClient, monkeypatch,
 
 def test_operator_action_endpoints_require_passcode(client: TestClient,
                                                     with_token: str) -> None:
+    r = client.post("/api/refresh/calendar", headers=_auth(with_token))
+    assert r.status_code == 403
+    assert r.json()["error"] == "operator passcode required"
+
     r = client.post("/api/refresh/_all", headers=_auth(with_token))
     assert r.status_code == 403
     assert r.json()["error"] == "operator passcode required"

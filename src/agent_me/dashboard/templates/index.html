@@ -18,10 +18,13 @@
       <option value="week">Week</option>
       <option value="month">Month</option>
     </select>
+    <span x-show="busy" x-cloak class="text-xs text-slate-400"
+          x-text="`${doneCount}/${totalCount} sources…`"></span>
     <button @click="requestOperatorAction('refresh_all')" :disabled="busy"
-            class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed text-white">
-      <span x-show="!busy">⟲ Refresh all</span>
-      <span x-show="busy" x-cloak x-text="`${doneCount}/${totalCount} sources…`"></span>
+            class="action-icon-btn action-icon-refresh"
+            aria-label="Refresh all sources" title="Refresh all sources">
+      <span x-show="!busy" class="action-icon-symbol" aria-hidden="true">⟳</span>
+      <span x-show="busy" x-cloak class="action-icon-symbol action-icon-spin" aria-hidden="true">⟳</span>
     </button>
   </div>
 </section>
@@ -63,9 +66,10 @@
       </div>
       <div class="space-y-3">
         <button @click="requestOperatorAction('mcp_auth')" :disabled="authBusy"
-                class="inline-flex w-fit items-center rounded bg-accent-600 px-4 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed">
-          <span x-show="!authBusy">Refresh MCP auth</span>
-          <span x-show="authBusy" x-cloak>Refreshing…</span>
+                class="operator-refresh-button operator-refresh-button-icon"
+                aria-label="Refresh MCP auth" title="Refresh MCP auth">
+          <span x-show="!authBusy" class="action-icon-symbol text-lg" aria-hidden="true">⟳</span>
+          <span x-show="authBusy" x-cloak class="action-icon-symbol action-icon-spin text-lg" aria-hidden="true">⟳</span>
         </button>
         <template x-if="authResult || authError">
           <div class="rounded border px-3 py-2 text-xs"
@@ -147,15 +151,29 @@
     <template x-for="g in groups" :key="g.group_id">
       <article class="rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
         <header class="px-4 py-3 flex items-center justify-between border-b border-ink-700 bg-ink-800">
-          <button @click="toggle(g.group_id)" class="flex items-center gap-2 text-left flex-1">
+          <div @click="toggle(g.group_id)"
+               @keydown.enter.prevent="toggle(g.group_id)"
+               @keydown.space.prevent="toggle(g.group_id)"
+               role="button"
+               tabindex="0"
+               class="flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-left">
             <span class="text-xl" x-text="g.icon"></span>
-            <span class="font-semibold text-slate-100" x-text="g.label"></span>
-            <span class="text-xs px-1.5 py-0.5 rounded border"
-                  :class="g.pending_count > 0
-                    ? 'bg-nvgreen-900/40 text-accent-400 border-accent-600/40'
-                    : 'bg-ink-800 text-slate-500 border-ink-700'"
-                  x-text="g.pending_count + (g.pending_count === 1 ? ' pending' : ' pending')"></span>
-          </button>
+            <span class="min-w-0">
+              <span class="flex flex-wrap items-center gap-2">
+                <a :href="g.source_url"
+                   @click.stop
+                   class="font-semibold text-slate-100 hover:text-accent-400"
+                   x-text="g.label"></a>
+                <span class="text-xs px-1.5 py-0.5 rounded border"
+                      :class="g.pending_count > 0
+                        ? 'bg-nvgreen-900/40 text-accent-400 border-accent-600/40'
+                        : 'bg-ink-800 text-slate-500 border-ink-700'"
+                      x-text="g.pending_count + (g.pending_count === 1 ? ' pending' : ' pending')"></span>
+              </span>
+              <span class="mt-0.5 block text-xs text-slate-500 truncate"
+                    x-text="lastUpdateLabel(g)"></span>
+            </span>
+          </div>
           <div class="flex items-center gap-2 shrink-0">
             <span x-show="!jobStatus[g.group_id]"
                   class="text-xs px-2 py-0.5 rounded border"
@@ -170,55 +188,83 @@
                   class="text-xs px-2 py-0.5 rounded border"
                   :class="badgeClass(jobStatus[g.group_id])"
                   x-text="badgeText(g.group_id)"></span>
-            <a :href="g.source_url"
-               class="text-xs text-slate-400 hover:text-accent-400" title="Open source">open</a>
-            <button @click="toggle(g.group_id)"
-                    class="text-xs text-slate-400 hover:text-accent-400 w-5 text-center"
-                    :aria-expanded="expanded[g.group_id] ? 'true' : 'false'"
-                    x-text="expanded[g.group_id] ? '−' : '+'"></button>
+            <button @click.stop="requestOperatorAction('refresh_source', g.group_id)"
+                    :disabled="busy || jobStatus[g.group_id] === 'running'"
+                    class="action-icon-btn action-icon-btn-sm action-icon-refresh"
+                    :aria-label="`Refresh ${g.label}`"
+                    :title="`Refresh ${g.label}`">
+              <span class="action-icon-symbol"
+                    :class="jobStatus[g.group_id] === 'running' ? 'action-icon-spin' : ''"
+                    aria-hidden="true">⟳</span>
+            </button>
           </div>
         </header>
         <div x-show="expanded[g.group_id]" x-cloak x-transition>
-          <ul class="divide-y divide-ink-700">
-            <template x-for="i in g.items" :key="i.item_id">
-              <li class="px-4 py-2 hover:bg-ink-800/60">
-                <div class="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1 sm:gap-3">
+          <template x-if="g.group_id === 'calendar'">
+            <div class="divide-y divide-ink-700">
+              <div class="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] gap-3 px-4 py-2 text-xs uppercase tracking-wide text-slate-500">
+                <div>Meeting</div>
+                <div class="text-right">Start</div>
+                <div class="text-right">End</div>
+              </div>
+              <template x-for="i in g.items" :key="`${i.item_id || ''}-${i.title}`">
+                <div class="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] gap-3 px-4 py-2 hover:bg-ink-800/60">
                   <a :href="i.url" :target="i.url.startsWith('/') ? '_self' : '_blank'" rel="noopener"
-                     class="text-sm text-slate-100 hover:text-accent-400 break-words sm:truncate flex-1">
-                    <span class="font-mono text-xs text-slate-500" x-text="i.item_id"></span>
-                    <span class="ml-2" x-text="i.title"></span>
+                     class="truncate text-sm text-slate-100 hover:text-accent-400"
+                     :title="i.title">
+                    <span x-text="i.title"></span>
                   </a>
-                  <div class="flex items-center flex-wrap gap-2 text-xs sm:shrink-0">
-                    <template x-if="i.meeting_time">
-                      <span class="text-accent-400" x-text="i.meeting_time"></span>
-                    </template>
-                    <template x-if="i.priority === 'P0'">
-                      <span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-800">P0</span>
-                    </template>
-                    <template x-if="i.priority === 'P1'">
-                      <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">P1</span>
-                    </template>
-                    <template x-if="i.priority === 'P2'">
-                      <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">P2</span>
-                    </template>
-                    <template x-if="i.due">
-                      <span class="text-rose-300" x-text="'due ' + i.due"></span>
-                    </template>
-                    <span class="text-slate-500" x-text="i.age_label"></span>
-                  </div>
+                  <span class="text-right font-mono text-xs text-accent-400" x-text="i.meeting_start_time || '—'"></span>
+                  <span class="text-right font-mono text-xs text-slate-300" x-text="i.meeting_end_time || '—'"></span>
                 </div>
-              </li>
-            </template>
-            <template x-if="g.items.length === 0">
-              <li class="px-4 py-3 text-sm text-slate-500 italic">
-                No pending items from this source.
-              </li>
-            </template>
-          </ul>
-          <div class="px-4 py-2 border-t border-ink-700 bg-ink-800/40 flex items-center justify-between text-xs">
-            <span class="text-slate-500" x-text="g.note"></span>
-            <a :href="g.source_url" class="text-accent-400 hover:underline">Open <span x-text="g.label"></span></a>
-          </div>
+              </template>
+              <template x-if="g.items.length === 0">
+                <div class="px-4 py-3 text-sm text-slate-500 italic">
+                  No pending items from this source.
+                </div>
+              </template>
+            </div>
+          </template>
+          <template x-if="g.group_id !== 'calendar'">
+            <ul class="divide-y divide-ink-700">
+              <template x-for="i in g.items" :key="`${i.item_id || ''}-${i.title}`">
+                <li class="px-4 py-2 hover:bg-ink-800/60">
+                  <div class="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1 sm:gap-3">
+                    <a :href="i.url" :target="i.url.startsWith('/') ? '_self' : '_blank'" rel="noopener"
+                       class="text-sm text-slate-100 hover:text-accent-400 break-words sm:truncate flex-1">
+                      <span class="font-mono text-xs text-slate-500" x-text="i.item_id"></span>
+                      <span class="ml-2" x-text="i.title"></span>
+                    </a>
+                    <div class="flex items-center flex-wrap gap-2 text-xs sm:shrink-0">
+                      <template x-if="i.priority === 'P0'">
+                        <span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-800">P0</span>
+                      </template>
+                      <template x-if="i.priority === 'P1'">
+                        <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">P1</span>
+                      </template>
+                      <template x-if="i.priority === 'P2'">
+                        <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">P2</span>
+                      </template>
+                      <template x-if="i.due">
+                        <span class="text-rose-300" x-text="'due ' + i.due"></span>
+                      </template>
+                      <span class="text-slate-500" x-text="i.age_label"></span>
+                    </div>
+                  </div>
+                </li>
+              </template>
+              <template x-if="g.items.length === 0">
+                <li class="px-4 py-3 text-sm text-slate-500 italic">
+                  No pending items from this source.
+                </li>
+              </template>
+            </ul>
+          </template>
+          <a :href="g.source_url"
+             class="flex items-center justify-between gap-3 border-t border-ink-700 bg-ink-800/40 px-4 py-2 text-xs hover:bg-ink-800">
+            <span class="min-w-0 truncate text-slate-500" x-text="g.note"></span>
+            <span class="shrink-0 text-accent-400">Details</span>
+          </a>
         </div>
       </article>
     </template>
@@ -271,6 +317,11 @@
           .map((g, i) => [g.group_id, i < 3])
       ),
       toggle(gid) { this.expanded[gid] = !this.expanded[gid]; },
+      lastUpdateLabel(g) {
+        if (!g.fetched_at) return "Last updated: no cache yet";
+        const via = g.updated_by ? ` · via ${g.updated_by}` : "";
+        return `Last updated ${g.last_update_label} (${g.last_update_age})${via}`;
+      },
       expandAll() {
         for (const g of this.groups) this.expanded[g.group_id] = true;
       },
@@ -287,14 +338,41 @@
       authBusy: false,
       authResult: null,
       authError: "",
-      operatorGate: { open: false, action: "", code: "", error: "", busy: false },
+      operatorGate: { open: false, action: "", source: "", code: "", error: "", busy: false },
       jobStatus: {},   // { source: "running" | "done" | "error" }
       jobMeta: {},     // { source: { item_count, seconds, error } }
+      lastFetchedBySource: Object.fromEntries(
+        (snapshots || []).map((s) => [s.source, s.fetched_at || 0])
+      ),
       _es: {},
+      _poll: null,
 
       get totalCount() { return Object.keys(this.jobStatus).length; },
       get doneCount() {
         return Object.values(this.jobStatus).filter(s => s === "done" || s === "error").length;
+      },
+
+      init() {
+        this._poll = setInterval(() => this.checkForExternalUpdates(), 30000);
+      },
+
+      async checkForExternalUpdates() {
+        if (
+          this.busy || this.authBusy || this.operatorGate.open ||
+          Object.keys(this._es).length > 0 || document.hidden
+        ) return;
+        try {
+          const r = await fetch("/api/state", { headers: { "Accept": "application/json" } });
+          if (!r.ok) return;
+          const data = await r.json();
+          for (const snap of (data.snapshots || [])) {
+            const previous = this.lastFetchedBySource[snap.source] || 0;
+            if ((snap.fetched_at || 0) > previous) {
+              location.reload();
+              return;
+            }
+          }
+        } catch {}
       },
 
       aggregateLabel() {
@@ -321,8 +399,12 @@
         return "";
       },
 
-      requestOperatorAction(action) {
-        this.operatorGate = { open: true, action, code: "", error: "", busy: false };
+      async requestOperatorAction(action, source = "") {
+        if (window.agentMeOperatorAccess?.token()) {
+          const ok = await this.runOperatorAction(action, source, "");
+          if (ok) return;
+        }
+        this.operatorGate = { open: true, action, source, code: "", error: "", busy: false };
         this.$nextTick(() => {
           const input = document.getElementById("operator-passcode");
           if (input) input.focus();
@@ -331,7 +413,7 @@
 
       closeOperatorGate() {
         if (this.operatorGate.busy) return;
-        this.operatorGate = { open: false, action: "", code: "", error: "", busy: false };
+        this.operatorGate = { open: false, action: "", source: "", code: "", error: "", busy: false };
       },
 
       async submitOperatorAction() {
@@ -339,15 +421,36 @@
         this.operatorGate.busy = true;
         this.operatorGate.error = "";
         const action = this.operatorGate.action;
+        const source = this.operatorGate.source;
         const code = this.operatorGate.code;
-        const ok = action === "refresh_all"
-          ? await this.refreshAll(code)
-          : await this.authRefresh(code);
+        const ok = await this.runOperatorAction(action, source, code);
         if (ok) {
-          this.operatorGate = { open: false, action: "", code: "", error: "", busy: false };
+          this.operatorGate = { open: false, action: "", source: "", code: "", error: "", busy: false };
         } else {
           this.operatorGate.busy = false;
         }
+      },
+
+      async runOperatorAction(action, source, actionCode) {
+        if (action === "refresh_all") return await this.refreshAll(actionCode);
+        if (action === "refresh_source") return await this.refreshSource(source, actionCode);
+        return await this.authRefresh(actionCode);
+      },
+
+      operatorHeaders(actionCode, extra = {}) {
+        if (actionCode) return { ...extra, "X-Agent-Me-Action-Code": actionCode };
+        return window.agentMeOperatorAccess.headers(extra);
+      },
+
+      handleOperatorResponse(response, actionCode) {
+        if (response.ok) {
+          if (actionCode) window.agentMeOperatorAccess.remember(response);
+          return true;
+        }
+        if (!actionCode && response.status === 403) {
+          window.agentMeOperatorAccess.forget();
+        }
+        return false;
       },
 
       async refreshAll(actionCode) {
@@ -357,12 +460,11 @@
         this.jobMeta = {};
         try {
           const r = await fetch(`/api/refresh/_all?period=${this.period}`,
-                                { method: "POST", headers: {
+                                { method: "POST", headers: this.operatorHeaders(actionCode, {
                                   "Accept": "application/json",
-                                  "X-Agent-Me-Action-Code": actionCode || "",
-                                } });
+                                }) });
           const data = await r.json();
-          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          if (!this.handleOperatorResponse(r, actionCode)) throw new Error(data.error || `HTTP ${r.status}`);
           for (const job of (data.jobs || [])) {
             this.jobStatus[job.source] = "running";
             this.jobMeta[job.source] = {};
@@ -377,6 +479,28 @@
         }
       },
 
+      async refreshSource(source, actionCode) {
+        if (!source || this.jobStatus[source] === "running") return true;
+        this.jobStatus[source] = "running";
+        this.jobMeta[source] = {};
+        try {
+          const r = await fetch(`/api/refresh/${source}?period=${this.period}`,
+                                { method: "POST", headers: this.operatorHeaders(actionCode, {
+                                  "Accept": "application/json",
+                                }) });
+          const data = await r.json();
+          if (!this.handleOperatorResponse(r, actionCode)) throw new Error(data.error || `HTTP ${r.status}`);
+          this.subscribe(source, data.job_id);
+          return true;
+        } catch (err) {
+          delete this.jobStatus[source];
+          this.jobMeta[source] = { error: err.message || String(err) };
+          this.operatorGate.error = `Access denied or refresh failed: ${err.message || err}`;
+          console.error("refreshSource failed", err);
+          return false;
+        }
+      },
+
       async authRefresh(actionCode) {
         if (this.authBusy) return;
         this.authBusy = true;
@@ -384,13 +508,12 @@
         try {
           const r = await fetch("/api/mcp/auth-refresh", {
             method: "POST",
-            headers: {
+            headers: this.operatorHeaders(actionCode, {
               "Accept": "application/json",
-              "X-Agent-Me-Action-Code": actionCode || "",
-            },
+            }),
           });
           const data = await r.json();
-          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          if (!this.handleOperatorResponse(r, actionCode)) throw new Error(data.error || `HTTP ${r.status}`);
           this.authResult = data;
           return true;
         } catch (err) {

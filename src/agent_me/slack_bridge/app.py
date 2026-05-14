@@ -1046,7 +1046,7 @@ HELP_TEXT = "\n".join((
     "",
     "Type any of these as `/cmd`, plain text (`brief`, `mcp`, `reauth`…), or click buttons in posted messages — all three work.",
     "",
-    "• `brief` / `/brief` — daily brief (Jira + GitLab + GitHub + NVBugs + Outlook + Calendar)",
+    "• `brief` / `/brief` — daily brief (NVBugs + GitLab + GitHub + Meetings + Email + Jira + Teams + Slack)",
     "• `brief week` / `/brief week` — weekly recap (last 7 days)",
     "• `brief month` / `/brief month` — monthly recap (last 30 days)",
     "• `create sfa tasks` — update project 1072 templates before release by Template Owner or optional template IDs",
@@ -1365,7 +1365,8 @@ async def cmd_brief(
     return (
         f"📅 *{label} brief generation started.* "
         "Each platform will post as its own message in this thread, and the same brief "
-        "will be mirrored to `thaphan@nvidia.com`. Total time ~30-90s.\n"
+        "will be mirrored to `thaphan@nvidia.com`. The dashboard cache will update "
+        "when fetches finish. Total time ~30-90s.\n"
         f"_If something goes wrong, tail `{BRIEF_LOG_FILE}` for crash details "
         "or run `/mcp` + `/reauth` for stale tokens._"
     )

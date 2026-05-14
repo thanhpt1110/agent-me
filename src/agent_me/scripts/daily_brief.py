@@ -11,14 +11,15 @@ Architecture (2026-05-10 refactor):
 
     Python orchestrator
       ├── post root header DM ("📅 Daily Brief — running…")
-      └── asyncio.gather (7 subagents in parallel):
-            ├── jira       → direct MCP JSON-RPC (maas-jira)
-            ├── gitlab     → direct MCP JSON-RPC (maas-gitlab)
+      └── asyncio.gather (8 subagents in parallel):
             ├── nvbugs     → direct MCP JSON-RPC (maas-nvbugs)
-            ├── slack      → codex exec (Slack app tools)
-            ├── outlook    → codex exec (Outlook Email app tools)
+            ├── gitlab     → direct MCP JSON-RPC (maas-gitlab)
+            ├── github     → `gh` CLI directly
             ├── calendar   → codex exec (Outlook Calendar app tools)
-            └── github     → `gh` CLI directly
+            ├── outlook    → codex exec (Outlook Email app tools)
+            ├── jira       → direct MCP JSON-RPC (maas-jira)
+            ├── teams      → codex exec (Microsoft Teams app tools)
+            └── slack      → codex exec (Slack app tools)
           Each subagent posts ONE threaded reply when done.
       └── final priority synthesis posted as last threaded reply.
       └── root header updated with item-count summary + actions buttons.
@@ -144,7 +145,7 @@ READONLY_MAAS_APPROVAL_CONFIGS = (
 
 @dataclass
 class BriefItem:
-    source: str        # "jira" | "gitlab" | "github" | "nvbugs" | "slack" | "outlook" | "calendar"
+    source: str        # "jira" | "gitlab" | "github" | "nvbugs" | "slack" | "outlook" | "calendar" | "teams"
     icon: str
     item_id: str
     title: str
@@ -275,6 +276,23 @@ def fmt_event_time(start: str | None, end: str | None) -> str:
     if end_dt:
         return f"{start_dt.strftime('%a %m/%d %H:%M')} -> {end_dt.strftime('%a %m/%d %H:%M')}"
     return start_dt.strftime("%a %m/%d %H:%M")
+
+
+def fmt_event_time_full(start: str | None, end: str | None) -> str:
+    start_dt = parse_datetime(start)
+    end_dt = parse_datetime(end)
+    if not start_dt:
+        return ""
+    if end_dt and start_dt.date() == end_dt.date():
+        time_part = f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}"
+    elif end_dt:
+        time_part = (
+            f"{start_dt.strftime('%H:%M')} -> "
+            f"{end_dt.strftime('%a %Y-%m-%d %H:%M')}"
+        )
+    else:
+        time_part = start_dt.strftime("%H:%M")
+    return f"{start_dt.strftime('%a %Y-%m-%d')} {time_part} {BRIEF_TIMEZONE}"
 
 
 def md_link(text: str, url: str) -> str:
@@ -490,6 +508,35 @@ def parse_slack(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     return out
 
 
+def parse_teams(data: dict, _spec: SourceSpec) -> list[BriefItem]:
+    out: list[BriefItem] = []
+    for t in data.get("items", []) or []:
+        chat = str(t.get("chat") or t.get("conversation") or "")
+        channel = str(t.get("channel") or "")
+        team = str(t.get("team") or "")
+        container = channel or chat or team or "Teams"
+        sender = str(t.get("user") or t.get("from") or t.get("sender") or "")
+        snippet = str(t.get("snippet") or t.get("text") or "")[:180]
+        out.append(BriefItem(
+            source="teams",
+            icon="👥",
+            item_id=f"@{sender}" if sender else str(t.get("message_id") or ""),
+            title=f"[{container}] {snippet}" if snippet else f"[{container}]",
+            url=str(t.get("url", "") or t.get("web_url", "") or t.get("link", "")),
+            group=_g(t, "group", container or "uncategorized"),
+            reason=t.get("reason"),
+            last_activity=t.get("timestamp") or t.get("created") or t.get("created_at"),
+            extras={
+                "team": team,
+                "channel": channel,
+                "chat": chat,
+                "sender": sender,
+                "reply_count": t.get("reply_count"),
+            },
+        ))
+    return out
+
+
 def parse_outlook(data: dict, _spec: SourceSpec) -> list[BriefItem]:
     out: list[BriefItem] = []
     for e in data.get("items", []) or []:
@@ -681,6 +728,37 @@ Each item:
     "timestamp": "<ISO 8601 or epoch>",
     "permalink": "<slack permalink if available>",
     "group": "<channel name>", "reason": "mentioned|dm|thread_reply"}}
+
+Top 25. If errors, return {{"error": "<exact tool error>", "items": []}}.
+Do not report errors as "nothing pending". JSON ONLY."""
+
+
+TEAMS_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
+
+You are READ-ONLY. Do NOT call any tool that posts, sends, replies,
+deletes, or modifies messages. Use Codex Microsoft Teams app read tools
+directly:
+  - `microsoft teams_list_chats`
+  - `microsoft teams_list_chat_messages`
+  - `microsoft teams_list_channel_messages`
+  - `microsoft teams_search`
+  - `microsoft teams_fetch` only for exact message paths returned by list/search
+
+User: `{user}` (NVIDIA). Find recent Microsoft Teams chat/channel messages in
+the last {period_days} day(s) where someone likely needs my attention:
+  - I'm @-mentioned in a chat or channel message
+  - DMs/group chats where the latest human message is from someone else
+  - Thread replies on conversations I started or participated in
+
+Skip: my own messages, bot-only notifications, join/leave noise, calendar
+invite artifacts, and messages without a clear action or reason to read.
+
+Each item:
+  {{"team": "<team name or empty>", "channel": "<channel name or empty>",
+    "chat": "<chat title or DM:user>", "user": "<sender display name>",
+    "snippet": "<first 200 chars of message text>",
+    "timestamp": "<ISO 8601 or epoch>", "url": "<Teams deeplink if available>",
+    "group": "<chat/channel/team name>", "reason": "mention|dm|thread_reply|action_required"}}
 
 Top 25. If errors, return {{"error": "<exact tool error>", "items": []}}.
 Do not report errors as "nothing pending". JSON ONLY."""
@@ -1343,32 +1421,36 @@ def parse_github(data: dict, _spec: SourceSpec) -> list[BriefItem]:
 
 
 SOURCES: list[SourceSpec] = [
-    SourceSpec(id="jira", label="Jira", icon="📋",
-               fetcher=jira_fetcher, parser=parse_jira,
-               allowed_tools="maas-jira",
-               prompt_template=JIRA_PROMPT),
-    SourceSpec(id="gitlab", label="GitLab", icon="🦊",
-               fetcher=gitlab_fetcher, parser=parse_gitlab,
-               allowed_tools="maas-gitlab",
-               prompt_template=GITLAB_PROMPT),
     SourceSpec(id="nvbugs", label="NVBugs", icon="🐛",
                fetcher=nvbugs_fetcher, parser=parse_nvbugs,
                allowed_tools="maas-nvbugs",
                prompt_template=NVBUGS_PROMPT),
+    SourceSpec(id="gitlab", label="GitLab", icon="🦊",
+               fetcher=gitlab_fetcher, parser=parse_gitlab,
+               allowed_tools="maas-gitlab",
+               prompt_template=GITLAB_PROMPT),
+    SourceSpec(id="github", label="GitHub", icon="🐱",
+               fetcher=github_fetcher, parser=parse_github),
+    SourceSpec(id="calendar", label="Meetings", icon="📅",
+               fetcher=codex_fetcher, parser=parse_calendar,
+               allowed_tools="codex-outlook-calendar-app",
+               prompt_template=CALENDAR_PROMPT),
+    SourceSpec(id="outlook", label="Email", icon="📧",
+               fetcher=outlook_fetcher, parser=parse_outlook,
+               allowed_tools="codex-outlook-email-app",
+               prompt_template=OUTLOOK_PROMPT),
+    SourceSpec(id="jira", label="Jira", icon="📋",
+               fetcher=jira_fetcher, parser=parse_jira,
+               allowed_tools="maas-jira",
+               prompt_template=JIRA_PROMPT),
+    SourceSpec(id="teams", label="Teams", icon="👥",
+               fetcher=codex_fetcher, parser=parse_teams,
+               allowed_tools="codex-teams-app",
+               prompt_template=TEAMS_PROMPT),
     SourceSpec(id="slack", label="Slack", icon="💬",
                fetcher=codex_fetcher, parser=parse_slack,
                allowed_tools="codex-slack-app",
                prompt_template=SLACK_PROMPT),
-    SourceSpec(id="outlook", label="Outlook", icon="📧",
-               fetcher=outlook_fetcher, parser=parse_outlook,
-               allowed_tools="codex-outlook-email-app",
-               prompt_template=OUTLOOK_PROMPT),
-    SourceSpec(id="calendar", label="Outlook Calendar", icon="📅",
-               fetcher=codex_fetcher, parser=parse_calendar,
-               allowed_tools="codex-outlook-calendar-app",
-               prompt_template=CALENDAR_PROMPT),
-    SourceSpec(id="github", label="GitHub", icon="🐱",
-               fetcher=github_fetcher, parser=parse_github),
 ]
 
 
@@ -1685,6 +1767,76 @@ async def run_subagent(spec: SourceSpec, period_days: int) -> SubagentResult:
                               seconds=int(time.time() - started))
 
 
+def brief_item_to_cache_dict(item: BriefItem) -> dict[str, Any]:
+    """Serialize one brief item for dashboard cache consumption."""
+    data = dict(item.__dict__)
+    data["extras"] = dict(item.extras or {})
+    if event_time := fmt_event_time(data["extras"].get("start"), data["extras"].get("end")):
+        data["meeting_time"] = event_time
+    if event_time_full := fmt_event_time_full(
+        data["extras"].get("start"),
+        data["extras"].get("end"),
+    ):
+        data["meeting_time_full"] = event_time_full
+    return data
+
+
+def build_dashboard_cache_payload(
+    result: SubagentResult,
+    period_days: int,
+    fetched_at_ms: int | None = None,
+    updated_by: str = "brief",
+) -> dict[str, Any]:
+    return {
+        "source": result.spec.id,
+        "items": [brief_item_to_cache_dict(i) for i in result.items],
+        "error": result.error,
+        "fetched_at": fetched_at_ms or int(time.time() * 1000),
+        "seconds": result.seconds,
+        "period_days": period_days,
+        "updated_by": updated_by,
+    }
+
+
+def write_dashboard_cache(
+    results: list[SubagentResult],
+    period_days: int,
+    updated_by: str = "brief",
+) -> None:
+    """Mirror a completed Slack/cron brief into the dashboard cache."""
+    try:
+        from agent_me.dashboard.state_reader import StateReader
+    except Exception as exc:
+        log.warning("dashboard_cache_import_failed", err=str(exc)[:300])
+        return
+
+    fetched_at_ms = int(time.time() * 1000)
+    for result in results:
+        try:
+            StateReader.write_cache(
+                result.spec.id,
+                build_dashboard_cache_payload(
+                    result,
+                    period_days,
+                    fetched_at_ms=fetched_at_ms,
+                    updated_by=updated_by,
+                ),
+            )
+            log.info(
+                "dashboard_cache_written",
+                source=result.spec.id,
+                item_count=len(result.items),
+                error=bool(result.error),
+                fetched_at=fetched_at_ms,
+            )
+        except Exception as exc:
+            log.warning(
+                "dashboard_cache_write_failed",
+                source=result.spec.id,
+                err=str(exc)[:300],
+            )
+
+
 async def main_async(
     period: str = "day",
     dry_run: bool = False,
@@ -1724,10 +1876,11 @@ async def main_async(
         else:
             root_channel = target
 
+        source_labels = " / ".join(s.label.lower() for s in SOURCES)
         root_text = (
             f"📅 *{preset['title']} — {local_today().isoformat()}*\n"
             f"🔄 _Fanning out {len(SOURCES)} subagents in parallel "
-            "(jira / gitlab / nvbugs / slack / outlook / calendar / github)…_\n"
+            f"({source_labels})…_\n"
             "_Each platform will post as its own message._"
         )
         try:
@@ -1752,7 +1905,7 @@ async def main_async(
 
     # ── Fan out subagents in parallel ───────────────────────────────────
     # Each post is serialized through this lock so we don't hit Slack with
-    # 7 simultaneous chat.postMessage calls and trip the per-channel rate
+    # simultaneous chat.postMessage calls and trip the per-channel rate
     # limit. Fetches still run in parallel; only the post step waits.
     post_lock = asyncio.Lock()
 
@@ -1786,6 +1939,9 @@ async def main_async(
     log.info("fan_out_done", total_items=total_items, err_count=err_count,
              total_seconds=total_seconds,
              per_source={r.spec.id: (len(r.items), r.seconds) for r in results})
+
+    if not dry_run:
+        write_dashboard_cache(results, preset["days"], updated_by="slack-brief")
 
     # ── Synthesise priority list across all sources, post as last reply ─
     all_items = [i for r in results for i in r.items]
@@ -1846,7 +2002,7 @@ async def main_async(
                     "seconds": r.seconds,
                     "error": r.error,
                     "item_count": len(r.items),
-                    "items": [i.__dict__ for i in r.items[:50]],
+                    "items": [brief_item_to_cache_dict(i) for i in r.items[:50]],
                 }
                 for r in results
             },

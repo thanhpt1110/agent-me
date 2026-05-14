@@ -5,6 +5,83 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}agent-me dashboard{% endblock %}</title>
 
+  <script>
+    (function () {
+      const key = "agent-me.theme.v1";
+      const root = document.documentElement;
+      const media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+      function storedTheme() {
+        try {
+          const value = localStorage.getItem(key);
+          return value === "light" || value === "dark" ? value : "";
+        } catch (_) {
+          return "";
+        }
+      }
+
+      function systemTheme() {
+        return media && media.matches ? "dark" : "light";
+      }
+
+      function updateButtons(theme) {
+        document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
+          const next = theme === "dark" ? "light" : "dark";
+          button.setAttribute("aria-label", `Switch to ${next} theme`);
+          button.setAttribute("title", `Switch to ${next} theme`);
+          const icon = button.querySelector("[data-theme-toggle-icon]");
+          const label = button.querySelector("[data-theme-toggle-label]");
+          if (icon) icon.textContent = theme === "dark" ? "☾" : "☀";
+          if (label) label.textContent = theme === "dark" ? "Dark" : "Light";
+        });
+      }
+
+      function applyTheme(theme, persist) {
+        const next = theme === "dark" ? "dark" : "light";
+        root.dataset.theme = next;
+        root.classList.toggle("dark", next === "dark");
+        root.classList.toggle("theme-dark", next === "dark");
+        root.classList.toggle("theme-light", next === "light");
+        root.style.colorScheme = next;
+        if (persist) {
+          try { localStorage.setItem(key, next); } catch (_) {}
+        }
+        updateButtons(next);
+      }
+
+      function currentTheme() {
+        return root.dataset.theme || storedTheme() || systemTheme();
+      }
+
+      window.agentMeTheme = {
+        apply: applyTheme,
+        current: currentTheme,
+        reset() {
+          try { localStorage.removeItem(key); } catch (_) {}
+          applyTheme(systemTheme(), false);
+        },
+        toggle() {
+          applyTheme(currentTheme() === "dark" ? "light" : "dark", true);
+        },
+      };
+
+      applyTheme(storedTheme() || systemTheme(), false);
+
+      if (media && media.addEventListener) {
+        media.addEventListener("change", () => {
+          if (!storedTheme()) applyTheme(systemTheme(), false);
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        updateButtons(currentTheme());
+        document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
+          button.addEventListener("click", () => window.agentMeTheme.toggle());
+        });
+      });
+    })();
+  </script>
+
   <!-- Tailwind via CDN keeps the draft zero-build. Switch to compiled
        Tailwind once the layout settles. -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -60,8 +137,30 @@
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="icon" type="image/svg+xml" href="/static/agent-me-avatar.svg" />
   <link rel="apple-touch-icon" href="/static/agent-me-avatar-512.png" />
+  <script>
+    window.agentMeOperatorAccess = {
+      key: "agent-me.operator-token.v1",
+      token() {
+        try { return localStorage.getItem(this.key) || ""; } catch { return ""; }
+      },
+      headers(extra = {}) {
+        const headers = { ...extra };
+        const token = this.token();
+        if (token) headers["X-Agent-Me-Operator-Token"] = token;
+        return headers;
+      },
+      remember(response) {
+        const token = response.headers.get("X-Agent-Me-Operator-Token");
+        if (!token) return;
+        try { localStorage.setItem(this.key, token); } catch {}
+      },
+      forget() {
+        try { localStorage.removeItem(this.key); } catch {}
+      },
+    };
+  </script>
 </head>
-<body class="h-full bg-ink-950 text-slate-200 font-sans antialiased dark">
+<body class="h-full bg-ink-950 text-slate-200 font-sans antialiased">
   <div class="min-h-full">
     {% include "partials/nav.html" %}
 

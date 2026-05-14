@@ -1,4 +1,4 @@
-# 2026-05-10 — Phase 4 dashboard draft
+# 2026-05-10 - Phase 4 dashboard
 
 _Session run while user waited on Phase 3 Colossus MCP-reauth verification._
 

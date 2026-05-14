@@ -166,10 +166,51 @@ def test_gitlab_prompt_covers_requested_review_groups() -> None:
     assert 'role="reviewer"' in daily_brief.GITLAB_PROMPT
 
 
-def test_brief_sources_exclude_confluence() -> None:
-    source_ids = {s.id for s in daily_brief.SOURCES}
+def test_brief_sources_are_in_dashboard_order() -> None:
+    source_ids = [s.id for s in daily_brief.SOURCES]
 
-    assert source_ids == {"jira", "gitlab", "nvbugs", "slack", "outlook", "calendar", "github"}
+    assert source_ids == [
+        "nvbugs", "gitlab", "github", "calendar",
+        "outlook", "jira", "teams", "slack",
+    ]
+
+
+def test_parse_teams_preserves_chat_context() -> None:
+    spec = next(s for s in daily_brief.SOURCES if s.id == "teams")
+    items = daily_brief.parse_teams(
+        {
+            "items": [
+                {
+                    "team": "AI Blueprint",
+                    "channel": "developer-examples",
+                    "user": "Sam",
+                    "snippet": "Can you check the failing pipeline?",
+                    "timestamp": "2026-05-14T08:00:00Z",
+                    "url": "https://teams.microsoft.com/l/message/1",
+                    "group": "developer-examples",
+                    "reason": "mention",
+                }
+            ]
+        },
+        spec,
+    )
+
+    assert len(items) == 1
+    assert items[0].source == "teams"
+    assert items[0].title == "[developer-examples] Can you check the failing pipeline?"
+    assert items[0].url == "https://teams.microsoft.com/l/message/1"
+    assert items[0].group == "developer-examples"
+    assert items[0].reason == "mention"
+    assert items[0].extras["team"] == "AI Blueprint"
+
+
+def test_teams_source_uses_codex_app_prompt() -> None:
+    spec = next(s for s in daily_brief.SOURCES if s.id == "teams")
+
+    assert spec.fetcher is daily_brief.codex_fetcher
+    assert spec.parser is daily_brief.parse_teams
+    assert "microsoft teams_list_chats" in daily_brief.TEAMS_PROMPT
+    assert "READ-ONLY" in daily_brief.TEAMS_PROMPT
 
 
 def test_outlook_prompt_requires_recent_list_before_empty() -> None:
@@ -215,6 +256,83 @@ def test_parse_calendar_preserves_meeting_context() -> None:
     assert items[0].extras["start"] == "2026-05-11T09:00:00+07:00"
     assert "Daily test status" in items[0].extras["body_summary"]
     assert "09:00-09:30" in daily_brief._format_item_line(items[0])
+
+
+def test_dashboard_cache_payload_includes_calendar_meeting_time() -> None:
+    spec = next(s for s in daily_brief.SOURCES if s.id == "calendar")
+    item = daily_brief.BriefItem(
+        source="calendar",
+        icon="📅",
+        item_id="",
+        title="Model Free 2.0 sync",
+        url="https://outlook.office.com/calendar/item/1",
+        group="2026-05-11",
+        extras={
+            "start": "2026-05-11T09:00:00+07:00",
+            "end": "2026-05-11T09:30:00+07:00",
+        },
+    )
+    result = daily_brief.SubagentResult(
+        spec=spec,
+        items=[item],
+        error=None,
+        seconds=4,
+    )
+
+    payload = daily_brief.build_dashboard_cache_payload(
+        result,
+        period_days=1,
+        fetched_at_ms=123456,
+    )
+
+    assert payload["source"] == "calendar"
+    assert payload["fetched_at"] == 123456
+    assert payload["items"][0]["meeting_time"] == "Mon 05/11 09:00-09:30"
+    assert payload["items"][0]["meeting_time_full"] == (
+        "Mon 2026-05-11 09:00-09:30 Asia/Ho_Chi_Minh"
+    )
+    assert payload["updated_by"] == "brief"
+
+
+def test_write_dashboard_cache_updates_state_reader(temp_state_dir: Path) -> None:
+    from agent_me.dashboard.state_reader import StateReader
+
+    spec = next(s for s in daily_brief.SOURCES if s.id == "calendar")
+    result = daily_brief.SubagentResult(
+        spec=spec,
+        items=[
+            daily_brief.BriefItem(
+                source="calendar",
+                icon="📅",
+                item_id="",
+                title="NFP4 Office Hour",
+                url="",
+                group="2026-05-14",
+                status="busy",
+                extras={
+                    "start": "2026-05-14T06:00:00+07:00",
+                    "end": "2026-05-14T07:00:00+07:00",
+                },
+            )
+        ],
+        error=None,
+        seconds=7,
+    )
+
+    daily_brief.write_dashboard_cache(
+        [result],
+        period_days=1,
+        updated_by="slack-brief",
+    )
+    snap = StateReader.brief_snapshot("calendar")
+
+    assert snap.fetched_at > 0
+    assert snap.seconds == 7
+    assert snap.updated_by == "slack-brief"
+    assert snap.items[0]["title"] == "NFP4 Office Hour"
+    assert snap.items[0]["meeting_time_full"] == (
+        "Thu 2026-05-14 06:00-07:00 Asia/Ho_Chi_Minh"
+    )
 
 
 def test_slack_destination_replies_to_existing_thread_when_present() -> None:

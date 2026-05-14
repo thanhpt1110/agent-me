@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import sys
 import time
 from dataclasses import replace
@@ -23,6 +24,7 @@ from typing import Any
 import structlog
 import uvicorn
 from dotenv import load_dotenv
+from itsdangerous import BadSignature, URLSafeSerializer
 from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -64,7 +66,12 @@ from agent_me.mcp_tokens import (
     refresh_codex_mcp_env_file,
     refresh_mcp_tokens,
 )
-from agent_me.scripts.daily_brief import fmt_event_time
+from agent_me.scripts.daily_brief import (
+    BRIEF_TIMEZONE,
+    LOCAL_TZ,
+    fmt_event_time_full,
+    parse_datetime,
+)
 
 # ── Setup ────────────────────────────────────────────────────────────────
 
@@ -94,6 +101,7 @@ START_TS = time.time()
 RUNNER = BriefRunner()
 AUTO_SFA_RUNNER = AutoSFARunner()
 OPERATOR_ACTION_CODE_HEADER = "x-agent-me-action-code"
+OPERATOR_ACTION_TOKEN_HEADER = "x-agent-me-operator-token"
 
 # Cached MCP probe — `codex mcp list` takes ~1s and we don't want
 # every page hit to trigger one.
@@ -105,9 +113,49 @@ def _operator_action_code() -> str:
     return os.environ.get("DASHBOARD_OPERATOR_ACTION_CODE", "")
 
 
-def _operator_action_denied(request: Request) -> JSONResponse | None:
-    if request.headers.get(OPERATOR_ACTION_CODE_HEADER) == _operator_action_code():
-        return None
+def _operator_token_serializer() -> URLSafeSerializer:
+    secret = (
+        os.environ.get("DASHBOARD_OPERATOR_TOKEN_SECRET")
+        or _operator_action_code()
+        or os.environ.get("DASHBOARD_TOKEN")
+        or "agent-me-operator-dev"
+    )
+    return URLSafeSerializer(secret, salt="agent-me-operator-action")
+
+
+def _issue_operator_token() -> str:
+    return _operator_token_serializer().dumps({
+        "scope": "operator-action",
+        "user": "Thanh Phan",
+        "version": 1,
+    })
+
+
+def _operator_token_valid(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        data = _operator_token_serializer().loads(token)
+    except BadSignature:
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("scope") == "operator-action"
+        and data.get("version") == 1
+    )
+
+
+def _operator_action_headers_or_denied(request: Request) -> dict[str, str] | JSONResponse:
+    if _operator_token_valid(request.headers.get(OPERATOR_ACTION_TOKEN_HEADER)):
+        return {}
+
+    configured_code = _operator_action_code()
+    submitted_code = request.headers.get(OPERATOR_ACTION_CODE_HEADER) or ""
+    if configured_code and secrets.compare_digest(submitted_code, configured_code):
+        return {"X-Agent-Me-Operator-Token": _issue_operator_token()}
+
+    if not configured_code:
+        return JSONResponse({"error": "operator passcode not configured"}, status_code=403)
     return JSONResponse({"error": "operator passcode required"}, status_code=403)
 
 
@@ -124,6 +172,13 @@ def _ms_to_human(ms: int | None) -> str:
     if delta_s < 86400:
         return f"{delta_s // 3600}h ago"
     return f"{delta_s // 86400}d ago"
+
+
+def _ms_to_datetime_label(ms: int | None) -> str:
+    if not ms:
+        return "—"
+    dt = datetime.fromtimestamp(ms / 1000, tz=UTC).astimezone(LOCAL_TZ)
+    return f"{dt.strftime('%a %Y-%m-%d %H:%M')} {BRIEF_TIMEZONE}"
 
 
 def _coerce_epoch_ms(value: Any) -> int | None:
@@ -179,20 +234,87 @@ def _brief_priority(value: Any) -> str | None:
 def _calendar_meeting_time(item: dict[str, Any], source: str) -> str | None:
     if source != "calendar" and item.get("source") != "calendar":
         return None
+    if full_time := item.get("meeting_time_full"):
+        return str(full_time)
+    if meeting_time := item.get("meeting_time"):
+        return str(meeting_time)
 
     extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
     start = extras.get("start")
     end = extras.get("end")
-    meeting_time = fmt_event_time(
+    meeting_time = fmt_event_time_full(
         start if isinstance(start, str) else None,
         end if isinstance(end, str) else None,
     )
     return meeting_time or None
 
 
+def _calendar_datetimes(item: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
+    extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
+    start = extras.get("start")
+    end = extras.get("end")
+    return (
+        parse_datetime(start if isinstance(start, str) else None),
+        parse_datetime(end if isinstance(end, str) else None),
+    )
+
+
+def _clock_label(dt: datetime | None) -> str:
+    return dt.strftime("%H:%M") if dt else ""
+
+
+def _calendar_meeting_time_display(item: dict[str, Any]) -> str | None:
+    start_dt, end_dt = _calendar_datetimes(item)
+    if not start_dt:
+        return None
+    if end_dt and start_dt.date() == end_dt.date():
+        return f"{start_dt.strftime('%a %Y-%m-%d')} {start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}"
+    if end_dt:
+        return (
+            f"{start_dt.strftime('%a %Y-%m-%d %H:%M')} -> "
+            f"{end_dt.strftime('%a %Y-%m-%d %H:%M')}"
+        )
+    return start_dt.strftime("%a %Y-%m-%d %H:%M")
+
+
+def _relative_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{max(minutes, 1)}m"
+    hours = round(minutes / 60)
+    if hours < 48:
+        return f"{hours}h"
+    return f"{round(hours / 24)}d"
+
+
+def _calendar_relative_status(item: dict[str, Any]) -> str | None:
+    start_dt, end_dt = _calendar_datetimes(item)
+    if not start_dt:
+        return None
+    now = datetime.now(LOCAL_TZ)
+    if now < start_dt:
+        return f"starts in {_relative_duration((start_dt - now).total_seconds())}"
+    if end_dt and now <= end_dt:
+        return f"in progress · ends in {_relative_duration((end_dt - now).total_seconds())}"
+    anchor = end_dt or start_dt
+    return f"ended {_relative_duration((now - anchor).total_seconds())} ago"
+
+
 def _brief_item_with_ui_fields(item: dict[str, Any], source: str) -> dict[str, Any]:
     enriched = dict(item)
-    if meeting_time := _calendar_meeting_time(item, source):
+    is_calendar = source == "calendar" or item.get("source") == "calendar"
+    if is_calendar:
+        enriched.pop("meeting_time_full", None)
+        start_dt, end_dt = _calendar_datetimes(item)
+        enriched["meeting_start_time"] = _clock_label(start_dt)
+        enriched["meeting_end_time"] = _clock_label(end_dt)
+        if display_time := _calendar_meeting_time_display(item):
+            enriched["meeting_time"] = display_time
+            enriched["meeting_time_display"] = display_time
+        if relative_status := _calendar_relative_status(item):
+            enriched["status"] = relative_status
+    elif meeting_time := _calendar_meeting_time(item, source):
         enriched["meeting_time"] = meeting_time
     return enriched
 
@@ -213,8 +335,15 @@ def _brief_item_to_pending_item(item: dict[str, Any], source: str,
         "mock": False,
         "reason": item.get("reason"),
     }
-    if meeting_time := _calendar_meeting_time(item, source):
+    is_calendar = source == "calendar" or item.get("source") == "calendar"
+    if not is_calendar and (meeting_time := _calendar_meeting_time(item, source)):
         pending["meeting_time"] = meeting_time
+    if is_calendar:
+        start_dt, end_dt = _calendar_datetimes(item)
+        pending["meeting_start_time"] = _clock_label(start_dt)
+        pending["meeting_end_time"] = _clock_label(end_dt)
+        if display_time := _calendar_meeting_time_display(item):
+            pending["meeting_time_display"] = display_time
     return pending
 
 
@@ -238,7 +367,12 @@ def _pending_groups_from_snapshots(snapshots: list[Any]) -> list[dict[str, Any]]
                 _brief_item_to_pending_item(item, snap.source, snap.fetched_at)
                 for item in snap.items
             ]
-            note = f"Brief cache · fetched {_ms_to_human(snap.fetched_at)} · {snap.seconds}s"
+            updated_by = snap.updated_by or "cache"
+            note = (
+                f"Last updated {_ms_to_datetime_label(snap.fetched_at)} "
+                f"({_ms_to_human(snap.fetched_at)}) · via {updated_by} · "
+                f"{snap.seconds}s fetch"
+            )
             cache_state = "error" if snap.error else ("stale" if snap.stale else "fresh")
             cache_label = "error" if snap.error else ("stale" if snap.stale else "fresh")
             mock_flag = False
@@ -272,12 +406,16 @@ def _pending_groups_from_snapshots(snapshots: list[Any]) -> list[dict[str, Any]]
             "cache_label": cache_label,
             "fetched_at": snap.fetched_at,
             "seconds": snap.seconds,
+            "updated_by": snap.updated_by,
+            "last_update_label": _ms_to_datetime_label(snap.fetched_at),
+            "last_update_age": _ms_to_human(snap.fetched_at) if snap.fetched_at else "",
             "error": snap.error,
         })
     return groups
 
 
 TEMPLATES.env.filters["age"] = _ms_to_human
+TEMPLATES.env.filters["datetime_label"] = _ms_to_datetime_label
 
 
 # ── Routes: HTML pages ───────────────────────────────────────────────────
@@ -379,6 +517,10 @@ async def api_source(request: Request):
     if source_id not in SOURCE_IDS:
         return JSONResponse({"error": "unknown source"}, status_code=404)
     snap = StateReader.brief_snapshot(source_id)
+    snap = replace(
+        snap,
+        items=[_brief_item_with_ui_fields(item, source_id) for item in snap.items],
+    )
     return JSONResponse({
         **snap.__dict__,
         "items_count": len(snap.items),
@@ -389,6 +531,10 @@ async def api_refresh(request: Request):
     source_id = request.path_params["source_id"]
     if source_id not in SOURCE_IDS:
         return JSONResponse({"error": "unknown source"}, status_code=404)
+    operator_headers = _operator_action_headers_or_denied(request)
+    if isinstance(operator_headers, JSONResponse):
+        return operator_headers
+
     period = request.query_params.get("period", "day")
     period_days = {"day": 1, "week": 7, "month": 30}.get(period, 1)
 
@@ -397,9 +543,10 @@ async def api_refresh(request: Request):
         return JSONResponse(
             {**existing.public_dict(), "coalesced": True},
             status_code=200,
+            headers=operator_headers,
         )
     job = await RUNNER.start(source_id, period_days=period_days)
-    return JSONResponse(job.public_dict(), status_code=202)
+    return JSONResponse(job.public_dict(), status_code=202, headers=operator_headers)
 
 
 async def api_refresh_all(request: Request):
@@ -410,8 +557,9 @@ async def api_refresh_all(request: Request):
     existing job. Returns the list of job descriptors so the browser
     can subscribe to each one.
     """
-    if denied := _operator_action_denied(request):
-        return denied
+    operator_headers = _operator_action_headers_or_denied(request)
+    if isinstance(operator_headers, JSONResponse):
+        return operator_headers
 
     period = request.query_params.get("period", "day")
     period_days = {"day": 1, "week": 7, "month": 30}.get(period, 1)
@@ -426,8 +574,11 @@ async def api_refresh_all(request: Request):
     log.info("refresh_all_started",
              period_days=period_days,
              jobs={j["source"]: j["job_id"] for j in jobs})
-    return JSONResponse({"jobs": jobs, "period_days": period_days},
-                        status_code=202)
+    return JSONResponse(
+        {"jobs": jobs, "period_days": period_days},
+        status_code=202,
+        headers=operator_headers,
+    )
 
 
 async def api_mcp_refresh(_request: Request):
@@ -443,8 +594,9 @@ async def api_mcp_refresh(_request: Request):
 
 async def api_mcp_auth_refresh(request: Request):
     """Refresh MaaS OAuth tokens, rewrite Codex env exports, then probe MCPs."""
-    if denied := _operator_action_denied(request):
-        return denied
+    operator_headers = _operator_action_headers_or_denied(request)
+    if isinstance(operator_headers, JSONResponse):
+        return operator_headers
 
     report = await asyncio.to_thread(partial(refresh_mcp_tokens, force=True))
     env_count = await asyncio.to_thread(
@@ -464,7 +616,7 @@ async def api_mcp_auth_refresh(request: Request):
         "needs_mac_sync": bool(report.failed),
         "servers": _MCP_CACHE["servers"],
         "checked_at": checked_at,
-    })
+    }, headers=operator_headers)
 
 
 async def api_mcp_status(_request: Request):

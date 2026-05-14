@@ -155,15 +155,14 @@ class BriefRunner:
                               "seconds": result.seconds})
                 else:
                     job.status = "done"
-                    payload = {
-                        "source": job.source,
-                        "items": [i.__dict__ for i in result.items],
-                        "error": None,
-                        "fetched_at": int(time.time() * 1000),
-                        "seconds": result.seconds,
-                        "period_days": period_days,
-                    }
-                    StateReader.write_cache(job.source, payload)
+                    StateReader.write_cache(
+                        job.source,
+                        daily_brief.build_dashboard_cache_payload(
+                            result,
+                            period_days,
+                            updated_by="dashboard-source-refresh",
+                        ),
+                    )
                     job.emit({
                         "event": "done",
                         "item_count": job.item_count,

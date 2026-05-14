@@ -62,17 +62,17 @@ BRIEF_LOG = STATE_DIR / "brief.log"
 CACHE_DIR = STATE_DIR / "dashboard-cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Sources mirrored from `daily_brief.py`. Keep manually in sync; the
-# brief refactor that introduced fan-out hard-codes these too, so this
-# is acceptable duplication for the draft.
+# Sources mirrored from `daily_brief.py`. Keep manually in sync so dashboard
+# ordering matches Slack brief fan-out ordering.
 SOURCES: tuple[tuple[str, str, str], ...] = (
-    ("jira", "Jira", "📋"),
-    ("gitlab", "GitLab", "🦊"),
     ("nvbugs", "NVBugs", "🐛"),
-    ("slack", "Slack", "💬"),
-    ("outlook", "Outlook", "📧"),
-    ("calendar", "Outlook Calendar", "📅"),
+    ("gitlab", "GitLab", "🦊"),
     ("github", "GitHub", "🐱"),
+    ("calendar", "Meetings", "📅"),
+    ("outlook", "Email", "📧"),
+    ("jira", "Jira", "📋"),
+    ("teams", "Teams", "👥"),
+    ("slack", "Slack", "💬"),
 )
 SOURCE_IDS = {s[0] for s in SOURCES}
 
@@ -137,6 +137,8 @@ class BriefSnapshot:
     fetched_at: int  # ms epoch
     seconds: int = 0
     stale: bool = False  # True if older than 24h OR cache file missing
+    period_days: int | None = None
+    updated_by: str | None = None
 
 
 @dataclass
@@ -273,6 +275,11 @@ class StateReader:
             try:
                 blob = json.loads(path.read_text())
                 fetched_at = int(blob.get("fetched_at", 0))
+                raw_period_days = blob.get("period_days")
+                try:
+                    period_days = int(raw_period_days) if raw_period_days else None
+                except (TypeError, ValueError):
+                    period_days = None
                 stale = (now_ms - fetched_at) > 24 * 60 * 60 * 1000
                 return BriefSnapshot(
                     source=src_id,
@@ -283,6 +290,8 @@ class StateReader:
                     fetched_at=fetched_at,
                     seconds=int(blob.get("seconds", 0)),
                     stale=stale,
+                    period_days=period_days,
+                    updated_by=blob.get("updated_by"),
                 )
             except (json.JSONDecodeError, OSError) as exc:
                 log.warning("cache_read_failed", source=source, err=str(exc))

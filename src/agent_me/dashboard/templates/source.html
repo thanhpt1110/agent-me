@@ -2,7 +2,7 @@
 {% block title %}{{ snapshot.label }} · agent-me dashboard{% endblock %}
 
 {% block content %}
-<div x-data='sourcePage({{ snapshot.source | tojson }}, {{ active_job | tojson }})'>
+<div x-data='sourcePage({{ snapshot.source | tojson }}, {{ active_job | tojson }}, {{ snapshot.fetched_at | tojson }})'>
 
 <section class="mb-6 flex items-center justify-between flex-wrap gap-3">
   <div>
@@ -21,7 +21,11 @@
     </div>
     <p class="mt-1 text-sm text-slate-400">
       {{ snapshot.items|length }} item(s)
-      {% if snapshot.fetched_at %} · cached {{ snapshot.fetched_at | age }} · {{ snapshot.seconds }}s fetch{% endif %}
+      {% if snapshot.fetched_at %}
+        · last updated {{ snapshot.fetched_at | datetime_label }} ({{ snapshot.fetched_at | age }})
+        {% if snapshot.updated_by %} · via {{ snapshot.updated_by }}{% endif %}
+        · {{ snapshot.seconds }}s fetch
+      {% endif %}
     </p>
   </div>
 
@@ -32,10 +36,13 @@
       <option value="week">Week</option>
       <option value="month">Month</option>
     </select>
-    <button @click="refresh()" :disabled="busy"
-            class="px-3 py-1.5 text-sm rounded bg-accent-600 hover:bg-accent-500 disabled:opacity-50 disabled:cursor-not-allowed text-white">
-      <span x-show="!busy">⟲ Refresh now</span>
-      <span x-show="busy" x-cloak>… running</span>
+    <span x-show="busy" x-cloak class="text-xs text-slate-400">running...</span>
+    <button @click="requestOperatorAction()" :disabled="busy"
+            class="action-icon-btn action-icon-refresh"
+            aria-label="Refresh {{ snapshot.label }}"
+            title="Refresh {{ snapshot.label }}">
+      <span x-show="!busy" class="action-icon-symbol" aria-hidden="true">⟳</span>
+      <span x-show="busy" x-cloak class="action-icon-symbol action-icon-spin" aria-hidden="true">⟳</span>
     </button>
   </div>
 </section>
@@ -80,7 +87,7 @@
     <div class="rounded-lg border border-ink-700 bg-ink-900 p-8 text-center text-slate-400">
       <div class="text-3xl mb-2">{{ snapshot.icon }}</div>
       <p class="text-sm">No items cached yet for {{ snapshot.label }}.</p>
-      <p class="text-xs text-slate-500 mt-1">Click <span class="text-accent-400">Refresh now</span> to fetch.</p>
+      <p class="text-xs text-slate-500 mt-1">Use the refresh control to fetch.</p>
     </div>
   </template>
 
@@ -106,7 +113,8 @@
                 </a>
                 <div class="flex items-center flex-wrap gap-2 text-xs text-slate-500 sm:shrink-0">
                   <template x-if="i.meeting_time">
-                    <span class="text-accent-400" x-text="i.meeting_time"></span>
+                    <span class="text-sm font-semibold text-accent-400 sm:text-base"
+                          x-text="i.meeting_time_display || i.meeting_time"></span>
                   </template>
                   <template x-if="i.priority">
                     <span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300" x-text="i.priority"></span>
@@ -131,12 +139,44 @@
   </template>
 </section>
 
+<div x-show="operatorGate.open" x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+  <form @submit.prevent="submitOperatorAction()"
+        class="w-full max-w-md rounded-lg border border-ink-700 bg-ink-900 p-5 shadow-2xl">
+    <h2 class="text-lg font-semibold text-slate-100">Operator check</h2>
+    <p class="mt-2 text-sm text-slate-300">
+      Hey hey hey, this button is for Thanh Phan only :)
+    </p>
+    <label class="mt-4 block text-xs uppercase tracking-wide text-slate-500" for="source-operator-passcode">
+      Passcode
+    </label>
+    <input id="source-operator-passcode" x-model="operatorGate.code" type="password" autocomplete="off"
+           class="mt-1 w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+           autofocus />
+    <template x-if="operatorGate.error">
+      <div class="mt-3 rounded border border-rose-800 bg-rose-950/30 px-3 py-2 text-sm text-rose-200"
+           x-text="operatorGate.error"></div>
+    </template>
+    <div class="mt-5 flex justify-end gap-2">
+      <button type="button" @click="closeOperatorGate()"
+              class="rounded border border-ink-600 px-3 py-2 text-sm text-slate-200 hover:border-accent-600">
+        Close
+      </button>
+      <button type="submit" :disabled="operatorGate.busy"
+              class="rounded bg-accent-600 px-3 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50">
+        <span x-show="!operatorGate.busy">Continue</span>
+        <span x-show="operatorGate.busy" x-cloak>Checking...</span>
+      </button>
+    </div>
+  </form>
+</div>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  function sourcePage(sourceId, initialJob) {
+  function sourcePage(sourceId, initialJob, initialFetchedAt) {
     return {
       source: sourceId,
       busy: !!(initialJob && (initialJob.status === "pending" || initialJob.status === "running")),
@@ -144,11 +184,74 @@
       job: initialJob || null,
       events: [],
       _es: null,
+      _poll: null,
+      lastFetchedAt: initialFetchedAt || 0,
+      operatorGate: { open: false, code: "", error: "", busy: false },
 
       init() {
         if (initialJob && this.busy) {
           this.subscribe(initialJob.job_id);
         }
+        this._poll = setInterval(() => this.checkForExternalUpdate(), 30000);
+      },
+
+      async checkForExternalUpdate() {
+        if (this.busy || document.hidden) return;
+        try {
+          const r = await fetch(`/api/source/${this.source}`, {
+            headers: { "Accept": "application/json" },
+          });
+          if (!r.ok) return;
+          const data = await r.json();
+          if (data.fetched_at && data.fetched_at > this.lastFetchedAt) {
+            location.reload();
+          }
+        } catch {}
+      },
+
+      async requestOperatorAction() {
+        if (window.agentMeOperatorAccess?.token()) {
+          const ok = await this.refresh("");
+          if (ok) return;
+        }
+        this.operatorGate = { open: true, code: "", error: "", busy: false };
+        this.$nextTick(() => {
+          const input = document.getElementById("source-operator-passcode");
+          if (input) input.focus();
+        });
+      },
+
+      closeOperatorGate() {
+        if (this.operatorGate.busy) return;
+        this.operatorGate = { open: false, code: "", error: "", busy: false };
+      },
+
+      async submitOperatorAction() {
+        if (this.operatorGate.busy) return;
+        this.operatorGate.busy = true;
+        this.operatorGate.error = "";
+        const ok = await this.refresh(this.operatorGate.code);
+        if (ok) {
+          this.operatorGate = { open: false, code: "", error: "", busy: false };
+        } else {
+          this.operatorGate.busy = false;
+        }
+      },
+
+      operatorHeaders(actionCode, extra = {}) {
+        if (actionCode) return { ...extra, "X-Agent-Me-Action-Code": actionCode };
+        return window.agentMeOperatorAccess.headers(extra);
+      },
+
+      handleOperatorResponse(response, actionCode) {
+        if (response.ok) {
+          if (actionCode) window.agentMeOperatorAccess.remember(response);
+          return true;
+        }
+        if (!actionCode && response.status === 403) {
+          window.agentMeOperatorAccess.forget();
+        }
+        return false;
       },
 
       groupBy(items, key) {
@@ -163,19 +266,23 @@
           .sort((a, b) => b.items.length - a.items.length);
       },
 
-      async refresh() {
+      async refresh(actionCode) {
         if (this.busy) return;
         this.busy = true;
         this.events = [];
         try {
           const r = await fetch(`/api/refresh/${this.source}?period=${this.period}`,
-                                { method: "POST", headers: { "Accept": "application/json" } });
+                                { method: "POST", headers: this.operatorHeaders(actionCode, { "Accept": "application/json" }) });
           const job = await r.json();
+          if (!this.handleOperatorResponse(r, actionCode)) throw new Error(job.error || `HTTP ${r.status}`);
           this.job = job;
           this.subscribe(job.job_id);
+          return true;
         } catch (err) {
           this.busy = false;
+          this.operatorGate.error = `Access denied or refresh failed: ${err.message || err}`;
           this.events.push({ event: "error", error: String(err) });
+          return false;
         }
       },
 
