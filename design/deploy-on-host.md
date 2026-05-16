@@ -385,6 +385,9 @@ The dashboard is a read-only web view over the bridge's state. Reads
 the same SQLite the bridge writes, tails `bridge.log`, fans out
 on-demand brief refreshes per source, and shows three live log
 streams (watcher / Slack interactions / Claude session traces).
+It also serves the Auto SFA MCP endpoint at `/mcp/` from the same
+dashboard service; MCP has its own DevTest Basic Auth and does not use
+the dashboard bearer/cookie auth middleware.
 
 The default install assumes you're putting it behind a reverse proxy
 on the NVIDIA-internal network — `https://agent-me.nvidia.com`.
@@ -392,6 +395,14 @@ Setup for the proxy host itself lives in
 `design/deploy-proxy-on-host.md`. **You can skip this step entirely**
 if the operator only wants the Slack interface; everything above is
 sufficient for that.
+
+If the public agent-me URL is not the default HTTPS origin, set
+`AUTO_SFA_MCP_PUBLIC_BASE_URL` in `configs/.env` before restarting the
+dashboard. For example, an intentionally HTTP-only internal proxy can
+set `AUTO_SFA_MCP_PUBLIC_BASE_URL=http://agent-me.nvidia.com`; because
+MCP uses DevTest Basic Auth, prefer HTTPS whenever the proxy supports
+it. Add matching `AUTO_SFA_MCP_ALLOWED_ORIGINS` only when an MCP
+browser client sends an `Origin` header that differs from the default.
 
 ```bash
 cd ~/agent-me
@@ -418,6 +429,8 @@ systemctl --user is-active agent-me-dashboard.service   # active
 curl -sSL http://127.0.0.1:8765/healthz                 # {"ok":true,...}
 curl -sI http://127.0.0.1:8765/ | grep -i x-dashboard-auth
 # Expected: x-dashboard-auth: trust-network
+curl -sI http://127.0.0.1:8765/mcp/ | head
+# Expected: reachable MCP endpoint; unauthenticated calls get a DevTest Basic Auth challenge
 ```
 
 The dashboard is now reachable from any host on the NVIDIA private

@@ -14,12 +14,12 @@ bridge talks to Slack via outbound Socket Mode regardless.
 
 | Requirement | Why |
 |---|---|
-| **Forward all paths** (`/`, `/source/*`, `/ops`, `/logs`, `/api/**`, `/static/*`) | The dashboard is monolithic — Jinja-rendered HTML and JSON API live on the same origin. |
+| **Forward all paths** (`/`, `/source/*`, `/ops`, `/logs`, `/api/**`, `/mcp/**`, `/static/*`) | The dashboard is monolithic — Jinja-rendered HTML, JSON API, and the Auto SFA MCP endpoint live on the same origin. |
 | **Allow `text/event-stream`** responses on `/api/sse/**` to stream without buffering | SSE is the live channel for log tails, brief refresh progress, and session traces. Buffering breaks the live UX. |
 | **Long read timeout** for `/api/sse/**` (≥ 1 hour) | SSE connections stay open for the duration the operator's tab is open. |
 | **Forward `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-For`** | Starlette's `request.url` reads these to construct the canonical URL (cookies need `Secure=true` to know the upstream is HTTPS). |
 | **Don't strip `Cookie` / `Set-Cookie`** | Browser-based session cookie flow. |
-| **Don't strip `Authorization`** (if `DASHBOARD_TOKEN` defense-in-depth is enabled) | Bearer token auth path used by API clients. |
+| **Don't strip `Authorization`** | Dashboard API clients may use Bearer auth, and `/mcp/` uses HTTP Basic Auth with the caller's DevTest credentials. |
 | **Health-check `GET /healthz`** is unauthenticated and returns JSON | Use it for upstream liveness if your proxy supports it. |
 | **Buffer size for normal `POST /api/**`** ≥ 64 KB | Approval payloads + brief result blobs occasionally hit ~16-32 KB. |
 
@@ -46,6 +46,20 @@ bridge talks to Slack via outbound Socket Mode regardless.
                    │  agent-me-dashboard.service │
                    └─────────────────────────────┘
 ```
+
+## Auto SFA MCP path
+
+The dashboard service mounts Streamable HTTP MCP at `/mcp/`. Agent
+clients should add the public endpoint shown in the Auto SFA page's
+`MCP` dropdown and authenticate with DevTest username/password. The
+server does not persist those credentials; each HTTP MCP request carries
+the client's Basic Auth header, and the tools pass those credentials to
+`magic-auto` for that run.
+
+When the public URL is intentionally HTTP-only, set
+`AUTO_SFA_MCP_PUBLIC_BASE_URL=http://agent-me.nvidia.com` on the
+dashboard host so the UI code block matches the real endpoint. Prefer
+HTTPS for this path because Basic Auth is replayable over plain HTTP.
 
 ## nginx snippet
 
