@@ -31,7 +31,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -46,6 +46,13 @@ from agent_me.auto_sfa_mcp import (
     auto_sfa_mcp_asgi_app,
     create_auto_sfa_mcp,
     public_mcp_endpoint_url,
+)
+from agent_me.auto_sfa_mcp_store import (
+    create_mcp_token,
+    cursor_config_json,
+    install_command,
+    install_script,
+    normalize_devtest_username,
 )
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
@@ -533,32 +540,140 @@ def _auto_sfa_credentials_from_payload(
     return auth_username, auth_password, errors
 
 
-def _mcp_endpoint_url_for_request(request: Request) -> str:
+def _public_base_url_for_request(request: Request) -> str | None:
     configured_base = (
         os.environ.get("AUTO_SFA_MCP_PUBLIC_BASE_URL")
         or os.environ.get("DASHBOARD_PUBLIC_BASE_URL")
     )
     if configured_base:
-        return f"{configured_base.rstrip('/')}/mcp/"
+        return configured_base.rstrip("/")
 
     forwarded_host = request.headers.get("x-forwarded-host")
     host = (forwarded_host or request.headers.get("host") or "").split(",", 1)[0].strip()
     if host and not host.startswith("testserver"):
         forwarded_proto = request.headers.get("x-forwarded-proto")
         scheme = (forwarded_proto or request.url.scheme or "https").split(",", 1)[0].strip()
-        return f"{scheme}://{host}/mcp/"
+        return f"{scheme}://{host}"
+
+    return None
+
+
+def _mcp_endpoint_url_for_request(request: Request) -> str:
+    public_base = _public_base_url_for_request(request)
+    if public_base:
+        return f"{public_base}/mcp/"
 
     return public_mcp_endpoint_url()
 
 
+def _mcp_setup_base_context(request: Request) -> dict[str, Any]:
+    public_base = _public_base_url_for_request(request)
+    if public_base is None:
+        public_base = _mcp_endpoint_url_for_request(request).removesuffix("/mcp/")
+    endpoint = f"{public_base.rstrip('/')}/mcp/"
+    return {
+        "mcp_endpoint_url": endpoint,
+        "setup_url": f"{public_base.rstrip('/')}/mcp/setup",
+        "install_url": f"{public_base.rstrip('/')}/mcp/install",
+    }
+
+
 async def page_auto_sfa(request: Request):
+    mcp_context = _mcp_setup_base_context(request)
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
         "sources": SOURCES,
         "active_job": None,
         "default_source_folder_id": _auto_sfa_default_source_folder_id(),
         "run_history": AUTO_SFA_RUNNER.recent_history(limit=100),
-        "mcp_endpoint_url": _mcp_endpoint_url_for_request(request),
+        "mcp_endpoint_url": mcp_context["mcp_endpoint_url"],
+        "mcp_setup_url": mcp_context["setup_url"],
     })
+
+
+async def page_mcp_setup(request: Request):
+    return TEMPLATES.TemplateResponse(request, "mcp_setup.html", {
+        **_mcp_setup_base_context(request),
+        "username": "",
+        "label": "",
+    })
+
+
+async def api_mcp_setup(request: Request):
+    form = await request.form()
+    username = normalize_devtest_username(str(form.get("username") or ""))
+    password = str(form.get("password") or "")
+    label = str(form.get("label") or "").strip()
+    context = {
+        **_mcp_setup_base_context(request),
+        "username": username,
+        "label": label,
+    }
+    errors: list[str] = []
+    if not username:
+        errors.append("DevTest username is required")
+    elif not re.fullmatch(r"[A-Za-z0-9._-]+", username):
+        errors.append("DevTest username must look like thaphan")
+    if not password:
+        errors.append("DevTest password is required")
+    if errors:
+        return TEMPLATES.TemplateResponse(
+            request,
+            "mcp_setup.html",
+            {**context, "errors": errors},
+            status_code=400,
+        )
+
+    try:
+        await resolve_destination_folder_id(
+            int(os.environ.get("AUTO_SFA_MCP_VERIFY_SOURCE_FOLDER_ID", "50722")),
+            auth_username=username,
+            auth_password=password,
+            timeout_s=float(os.environ.get("AUTO_SFA_MCP_VERIFY_TIMEOUT_S", "60")),
+        )
+    except Exception as exc:
+        log.warning("auto_sfa_mcp_setup_verify_failed", username=username, err=str(exc))
+        return TEMPLATES.TemplateResponse(
+            request,
+            "mcp_setup.html",
+            {
+                **context,
+                "errors": [
+                    "Could not verify DevTest credentials. Check username/password and try again.",
+                ],
+            },
+            status_code=400,
+        )
+
+    created = create_mcp_token(username=username, password=password, label=label)
+    install_base = (_public_base_url_for_request(request) or "").rstrip("/")
+    if not install_base:
+        install_base = _mcp_setup_base_context(request)["setup_url"].removesuffix("/mcp/setup")
+    endpoint = context["mcp_endpoint_url"]
+    return TEMPLATES.TemplateResponse(request, "mcp_setup.html", {
+        **context,
+        "created": created,
+        "mcp_token": created.token,
+        "authorization_header": f"Bearer {created.token}",
+        "cursor_config": cursor_config_json(endpoint=endpoint, token=created.token),
+        "install_command": install_command(base_url=install_base, token=created.token),
+        "claude_command": (
+            "claude mcp add --transport http --scope user "
+            f'--header "Authorization: Bearer {created.token}" '
+            f"agent-me {endpoint}"
+        ),
+        "codex_config": (
+            "[mcp_servers.agent-me]\n"
+            f'url = "{endpoint}"\n'
+            f'http_headers = {{ Authorization = "Bearer {created.token}" }}\n'
+        ),
+    })
+
+
+async def mcp_install(request: Request):
+    return PlainTextResponse(
+        install_script(endpoint=_mcp_endpoint_url_for_request(request)),
+        media_type="text/x-shellscript; charset=utf-8",
+    )
 
 
 # ── Routes: JSON API ─────────────────────────────────────────────────────
@@ -969,6 +1084,9 @@ def build_app() -> Starlette:
         Route("/ops", page_ops, name="ops"),
         Route("/logs", page_logs, name="logs"),
         Route("/auto-sfa", page_auto_sfa, name="auto_sfa"),
+        Route("/mcp/setup", page_mcp_setup, methods=["GET"], name="mcp_setup"),
+        Route("/mcp/setup", api_mcp_setup, methods=["POST"], name="api_mcp_setup"),
+        Route("/mcp/install", mcp_install, methods=["GET"], name="mcp_install"),
         Route("/login", page_login, name="login"),
         Route("/api/login", api_login, methods=["POST"], name="api_login"),
         Route("/api/state", api_state, name="api_state"),

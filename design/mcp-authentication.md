@@ -19,8 +19,9 @@
   list` and **DMs you** the re-auth one-liner so you don't have to remember
   to check.
 - Separate from those MaaS OAuth servers, agent-me also serves the Auto SFA MCP
-  endpoint at `/mcp/`. Auto SFA MCP uses DevTest HTTP Basic Auth supplied by
-  the caller's MCP client, not MaaS OAuth tokens.
+  endpoint at `/mcp/`. Auto SFA MCP users visit `/mcp/setup` once, verify
+  DevTest credentials, then connect clients with a long-lived Agent Me bearer
+  token.
 
 ## Auto SFA MCP auth
 
@@ -33,18 +34,20 @@ from the dashboard page origin.
 
 Credential model:
 
-- User enters DevTest username/password once when adding the MCP server in the
-  agent client.
-- The client sends those credentials as HTTP Basic Auth on MCP requests.
-- Agent-me does not store a server-side MCP session or password.
-- Tool calls receive credentials from the MCP transport and pass them to
-  `magic-auto` for that run.
-- Credentials do not expire inside agent-me; they stop working when DevTest
-  rejects them or the client changes/removes them.
+- User enters DevTest username/password once on `/mcp/setup`.
+- Agent-me verifies the credentials with `magic-auto resolve-destination-folder`.
+- Agent-me stores the DevTest password encrypted server-side and returns an
+  `agm_...` bearer token.
+- Cursor, Codex, and Claude Code send `Authorization: Bearer <token>` to
+  `/mcp/`.
+- Tool calls resolve the token to stored DevTest credentials and pass those
+  credentials to `magic-auto` for that run.
+- Tokens do not expire by default. Set `AUTO_SFA_MCP_TOKEN_TTL_DAYS` only if
+  automatic expiry is desired.
 
-Because this is Basic Auth, prefer HTTPS when the proxy supports it. For an
-intentionally HTTP-only internal proxy, no UI override is needed as long as the
-user opens the dashboard through the same HTTP origin. Add a matching
+Because this is a bearer-token flow, prefer HTTPS when the proxy supports it.
+For an intentionally HTTP-only internal proxy, no UI override is needed as long
+as the user opens the dashboard through the same HTTP origin. Add a matching
 `AUTO_SFA_MCP_ALLOWED_ORIGINS` value only if a browser MCP client sends an
 `Origin` header.
 

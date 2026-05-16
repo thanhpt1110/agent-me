@@ -1,8 +1,10 @@
 """MCP endpoint for Auto SFA.
 
-The MCP transport uses HTTP Basic auth with the caller's DevTest
-credentials. Tool calls reuse the existing Auto SFA parser/builders and
-runner; no agent/LLM is invoked inside this module.
+The MCP transport prefers Agent Me bearer tokens created by `/mcp/setup`.
+Those tokens resolve to encrypted server-side DevTest credentials. HTTP
+Basic auth with direct DevTest credentials remains a temporary fallback.
+Tool calls reuse the existing Auto SFA parser/builders and runner; no
+agent/LLM is invoked inside this module.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from agent_me.auto_sfa import (
     parse_update_template_message,
     resolve_destination_folder_id,
 )
+from agent_me.auto_sfa_mcp_store import credentials_for_bearer_token
 from agent_me.dashboard.auto_sfa_runner import AutoSFARunner
 
 AUTO_SFA_MCP_PATH = "/mcp/"
@@ -140,8 +143,17 @@ def _credentials_from_basic_authorization(value: str) -> DevTestCredentials | No
     return DevTestCredentials(username=username, password=password)
 
 
-class DevTestBasicAuthMiddleware:
-    """ASGI Basic Auth wrapper that exposes DevTest credentials to tools."""
+def _credentials_from_bearer_authorization(value: str) -> DevTestCredentials | None:
+    if not value.startswith("Bearer "):
+        return None
+    stored = credentials_for_bearer_token(value.removeprefix("Bearer ").strip())
+    if stored is None:
+        return None
+    return DevTestCredentials(username=stored.username, password=stored.password)
+
+
+class AutoSFAMCPAuthMiddleware:
+    """ASGI auth wrapper that exposes DevTest credentials to tools."""
 
     def __init__(self, app, *, realm: str = "Auto SFA MCP") -> None:
         self.app = app
@@ -157,15 +169,26 @@ class DevTestBasicAuthMiddleware:
             if key.lower() == b"authorization":
                 authorization = value.decode("latin-1")
                 break
-        credentials = _credentials_from_basic_authorization(authorization)
+        credentials = (
+            _credentials_from_bearer_authorization(authorization)
+            or _credentials_from_basic_authorization(authorization)
+        )
         if credentials is None:
             response = JSONResponse(
                 {
-                    "error": "DevTest Basic Auth is required",
-                    "detail": "Use your DevTest login and password as the MCP username/password.",
+                    "error": "Agent Me MCP token is required",
+                    "detail": (
+                        "Open /mcp/setup to create a long-lived Agent Me MCP token. "
+                        "DevTest Basic Auth is still accepted as a temporary fallback."
+                    ),
                 },
                 status_code=401,
-                headers={"WWW-Authenticate": f'Basic realm="{self.realm}", charset="UTF-8"'},
+                headers={
+                    "WWW-Authenticate": (
+                        f'Bearer realm="{self.realm}", '
+                        f'Basic realm="{self.realm}", charset="UTF-8"'
+                    )
+                },
             )
             await response(scope, receive, send)
             return
@@ -180,7 +203,7 @@ class DevTestBasicAuthMiddleware:
 def _require_credentials() -> DevTestCredentials:
     credentials = _CURRENT_DEVTEST_CREDENTIALS.get()
     if credentials is None:
-        raise RuntimeError("DevTest Basic Auth credentials are not available for this MCP request")
+        raise RuntimeError("DevTest credentials are not available for this MCP request")
     return credentials
 
 
@@ -543,9 +566,9 @@ def _new_fastmcp() -> FastMCP:
         "agent-me Auto SFA",
         instructions=(
             "Expose Auto SFA as deterministic tools for external agents. "
-            "Authenticate every MCP request with HTTP Basic Auth using the caller's "
-            "DevTest username and password. The tool descriptions define the "
-            "required plan/confirmation behavior."
+            "Authenticate every MCP request with an Agent Me bearer token from "
+            "/mcp/setup. The tool descriptions define the required "
+            "plan/confirmation behavior."
         ),
         stateless_http=True,
         json_response=True,
@@ -584,7 +607,7 @@ async def create_sfa_tasks(
 ) -> dict[str, Any]:
     """Prepare templates for SFA using magic-auto update-template.
 
-    DevTest credentials come from the MCP connection's HTTP Basic Auth;
+    DevTest credentials come from the MCP connection's Agent Me bearer token;
     do not ask for username/password as tool arguments on each call.
 
     Required business fields: display_name and folder_id. Natural-language
@@ -690,7 +713,7 @@ async def release_sfa_tasks(
     Also use this tool for user wording such as "auto template",
     "mark template auto", "release template auto", or "auto these templates"
     when the intended Auto SFA action is to run the release/auto flow.
-    DevTest credentials come from the MCP connection's HTTP Basic Auth;
+    DevTest credentials come from the MCP connection's Agent Me bearer token;
     do not ask for username/password as tool arguments on each call.
 
     Required business fields: display_name and url_path. If
@@ -845,7 +868,7 @@ def create_auto_sfa_mcp() -> FastMCP:
 
 def auto_sfa_mcp_asgi_app(mcp: FastMCP | None = None):
     server = mcp or AUTO_SFA_MCP
-    return DevTestBasicAuthMiddleware(server.streamable_http_app())
+    return AutoSFAMCPAuthMiddleware(server.streamable_http_app())
 
 
 async def health_response() -> Response:

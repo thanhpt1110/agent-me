@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Agent Me MCP setup{% endblock %}
+
+{% block content %}
+<section class="mx-auto max-w-4xl">
+  <header class="mb-6">
+    <div class="text-xs font-semibold uppercase tracking-wide text-accent-400">Agent Me MCP</div>
+    <h1 class="mt-2 text-2xl font-semibold text-slate-100">Connect Auto SFA tools</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Set up MCP only if you want to use Auto SFA from Cursor, Codex, or Claude Code.
+    </p>
+  </header>
+
+  {% if errors %}
+  <div class="mb-4 rounded border border-rose-800 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+    {% for error in errors %}
+    <div>{{ error }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if mcp_token %}
+  <div class="mb-4 rounded border border-emerald-700/60 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-200">
+    Token created for <span class="font-semibold">{{ created.username }}</span>.
+    This token has no expiration by default. Save it now; it is shown only on this page.
+  </div>
+
+  <div class="space-y-4">
+    <section class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+      <h2 class="text-base font-semibold text-slate-100">One-command install</h2>
+      <p class="mt-1 text-sm text-slate-400">Installs Cursor, Codex, and Claude Code config where those clients exist.</p>
+      <div class="mt-3 flex gap-2">
+        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="install-command">{{ install_command }}</code></pre>
+        <button type="button" data-copy-target="install-command"
+                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                aria-label="Copy install command" title="Copy install command">
+          <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
+    </section>
+
+    <section class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+      <h2 class="text-base font-semibold text-slate-100">Cursor config</h2>
+      <p class="mt-1 text-sm text-slate-400">Use this in <code class="font-mono">~/.cursor/mcp.json</code> if installing manually.</p>
+      <div class="mt-3 flex gap-2">
+        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="cursor-config">{{ cursor_config }}</code></pre>
+        <button type="button" data-copy-target="cursor-config"
+                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                aria-label="Copy Cursor config" title="Copy Cursor config">
+          <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </button>
+      </div>
+    </section>
+
+    <section class="grid gap-4 md:grid-cols-2">
+      <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+        <h2 class="text-base font-semibold text-slate-100">Claude Code</h2>
+        <div class="mt-3 flex gap-2">
+          <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="claude-command">{{ claude_command }}</code></pre>
+          <button type="button" data-copy-target="claude-command"
+                  class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                  aria-label="Copy Claude command" title="Copy Claude command">
+            <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+        <h2 class="text-base font-semibold text-slate-100">Codex config</h2>
+        <div class="mt-3 flex gap-2">
+          <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="codex-config">{{ codex_config }}</code></pre>
+          <button type="button" data-copy-target="codex-config"
+                  class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                  aria-label="Copy Codex config" title="Copy Codex config">
+            <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+  {% else %}
+  <form method="post" action="/mcp/setup" class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="mcp-username">DevTest username</label>
+        <input id="mcp-username" name="username" value="{{ username }}" autocomplete="username"
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               placeholder="thaphan" required />
+      </div>
+      <div>
+        <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="mcp-password">DevTest password</label>
+        <input id="mcp-password" name="password" type="password" autocomplete="current-password"
+               class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+               placeholder="********" required />
+      </div>
+    </div>
+    <div class="mt-4">
+      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="mcp-label">Token label</label>
+      <input id="mcp-label" name="label" value="{{ label }}"
+             class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
+             placeholder="Cursor on my workstation" />
+    </div>
+    <p class="mt-3 text-xs text-slate-500">
+      Agent Me verifies these credentials once, stores them encrypted, and gives your MCP clients a long-lived token.
+    </p>
+    <button type="submit"
+            class="mt-4 inline-flex items-center justify-center rounded bg-accent-500 px-4 py-2 text-sm font-semibold text-black hover:bg-accent-400">
+      Create MCP token
+    </button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function copyText(value) {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch (_) {}
+    }
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.top = "-1000px";
+    input.style.left = "-1000px";
+    document.body.appendChild(input);
+    input.focus();
+    input.select();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      document.body.removeChild(input);
+    }
+  }
+
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-target]");
+    if (!button) return;
+    const target = document.querySelector(`[data-copy-id="${button.dataset.copyTarget}"]`);
+    if (!target) return;
+    const ok = await copyText(target.textContent || "");
+    if (ok) {
+      button.classList.add("bg-accent-600/20");
+      window.setTimeout(() => button.classList.remove("bg-accent-600/20"), 900);
+    }
+  });
+</script>
+{% endblock %}

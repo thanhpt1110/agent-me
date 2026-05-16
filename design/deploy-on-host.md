@@ -386,8 +386,9 @@ the same SQLite the bridge writes, tails `bridge.log`, fans out
 on-demand brief refreshes per source, and shows three live log
 streams (watcher / Slack interactions / Claude session traces).
 It also serves the Auto SFA MCP endpoint at `/mcp/` from the same
-dashboard service; MCP has its own DevTest Basic Auth and does not use
-the dashboard bearer/cookie auth middleware.
+dashboard service. Users who want MCP visit `/mcp/setup` once to verify
+DevTest credentials and create a long-lived Agent Me bearer token. MCP
+does not use the dashboard bearer/cookie auth middleware.
 
 The default install assumes you're putting it behind a reverse proxy
 on the NVIDIA-internal network — `https://agent-me.nvidia.com`.
@@ -404,6 +405,12 @@ HTTPS, the same page shows the HTTPS MCP URL. Set
 differ from the dashboard page origin. Add matching
 `AUTO_SFA_MCP_ALLOWED_ORIGINS` only when an MCP browser client sends an
 `Origin` header that differs from the default allow-list.
+
+The setup flow stores DevTest passwords encrypted in
+`${AGENT_ME_STATE_DIR}/auto-sfa-mcp.db`. If `AUTO_SFA_MCP_CREDENTIAL_KEY`
+is not set, the dashboard creates a private Fernet key file at
+`${AGENT_ME_STATE_DIR}/auto-sfa-mcp.fernet`; back up that key with the
+state directory if MCP tokens should survive host rebuilds.
 
 ```bash
 cd ~/agent-me
@@ -431,7 +438,7 @@ curl -sSL http://127.0.0.1:8765/healthz                 # {"ok":true,...}
 curl -sI http://127.0.0.1:8765/ | grep -i x-dashboard-auth
 # Expected: x-dashboard-auth: trust-network
 curl -sI http://127.0.0.1:8765/mcp/ | head
-# Expected: reachable MCP endpoint; unauthenticated calls get a DevTest Basic Auth challenge
+# Expected: reachable MCP endpoint; unauthenticated calls get an Agent Me bearer challenge
 ```
 
 The dashboard is now reachable from any host on the NVIDIA private
@@ -484,7 +491,7 @@ uv run agent-me-brief --period day
 | Bridge restarts every 5s, env looks ok | Wrong `SLACK_APP_TOKEN` (xoxa- not xapp-) | regenerate App Token in Slack app config |
 | Watcher pulls but bridge doesn't restart | `loginctl enable-linger` not run | `sudo loginctl enable-linger $USER && systemctl --user daemon-reload` |
 | `journalctl --user` empty after logout | linger not enabled, services died | same as above |
-| MCPs go to 401 after a day | normal (tokens expire ~24h) | On the Mac: `./scripts/mac-reauth-and-sync.sh <ssh-alias>` |
+| Legacy MaaS MCPs go to 401 after a day | normal (MaaS OAuth tokens expire ~24h) | On the Mac: `./scripts/mac-reauth-and-sync.sh <ssh-alias>` |
 | `git pull` fails: "would clobber" | local change on the host (someone edited there) | `git stash` (only if intentional) or hand-resolve |
 | `git pull` fails: "diverged" | local commit on the host that isn't on origin | `git log origin/main..HEAD` to inspect; either push or reset |
 

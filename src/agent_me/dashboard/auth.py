@@ -38,7 +38,7 @@ COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60  # 30 days
 EXEMPT_PATHS: tuple[str, ...] = (
     "/healthz",
     "/mcp",
-    "/mcp/",      # prefix match; MCP has its own DevTest Basic Auth
+    "/mcp/",      # prefix match; MCP/setup use their own token/setup auth
     "/static/",   # prefix match
     "/favicon.ico",
     "/login",

@@ -20,9 +20,10 @@ tool.
   current reverse-proxy/domain setup can route it with no separate process.
 - Use the official Python MCP SDK with Streamable HTTP, stateless sessions, and
   JSON responses.
-- Authenticate MCP with HTTP Basic Auth using DevTest username/password. The
-  server reads credentials from the request context, passes them to
-  `magic-auto`, and redacts the password from all public responses.
+- Authenticate MCP with long-lived Agent Me bearer tokens created by
+  `/mcp/setup`. The setup page verifies DevTest username/password once, stores
+  the password encrypted server-side, and gives the user install snippets for
+  Cursor, Codex, and Claude Code.
 - Keep the server deterministic. Agent clients decide which tool to call; the
   MCP server maps that tool directly to existing Auto SFA functions.
 - Expose exactly two tools:
@@ -67,18 +68,19 @@ tool.
 
 ## Auth Behavior
 
-Users do not pass `username` or `password` as tool arguments. They configure
-their MCP client once with DevTest username/password. The client then sends
-Basic Auth on MCP HTTP requests, and the server uses those credentials per
+Users do not pass `username` or `password` as tool arguments. They open
+`/mcp/setup`, enter DevTest credentials once, and receive an `agm_...` bearer
+token. The client sends `Authorization: Bearer <token>` on MCP HTTP requests,
+and the server resolves that token to encrypted stored DevTest credentials per
 request.
 
-There is no server-side session expiry because the server does not store a
-session. Credentials remain usable until DevTest rejects them or the user
-changes the client configuration. The UI derives the endpoint from the current
-dashboard page origin, so an HTTP page shows an HTTP MCP URL and an HTTPS page
-shows an HTTPS MCP URL. Set `AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP
-public endpoint must differ from the page origin. Prefer HTTPS because Basic
-Auth is replayable over plain HTTP.
+Tokens do not expire by default. The operational model is regenerate/revoke
+rather than short expiry; `AUTO_SFA_MCP_TOKEN_TTL_DAYS` can enable expiry if
+needed later. The UI derives the endpoint from the current dashboard page
+origin, so an HTTP page shows an HTTP MCP URL and an HTTPS page shows an HTTPS
+MCP URL. Set `AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP public endpoint
+must differ from the page origin. Prefer HTTPS because bearer tokens are
+replayable over plain HTTP.
 
 ## UI Notes
 
@@ -86,12 +88,13 @@ The Auto SFA page now shows the MCP endpoint in the top-right dropdown aligned
 with the subtitle. Hovering over `MCP` keeps the menu open while moving to the
 copy button. The copy button uses `navigator.clipboard.writeText` on secure
 contexts and falls back to a temporary textarea plus `document.execCommand("copy")`
-for HTTP contexts.
+for HTTP contexts. The dropdown links to `/mcp/setup`; normal Auto SFA users do
+not need to visit that setup page.
 
 The note text is:
 
 ```text
-Use DevTest credentials to connect Agent Me MCP.
+Use DevTest credentials once to create an Agent Me MCP token.
 ```
 
 `Agent Me` is styled as a small NVIDIA-green badge so it remains prominent in
@@ -102,23 +105,26 @@ both light and dark themes.
 - `uv run ruff check src tests`
 - `uv run pytest -q`
 - Focused tests for:
-  - MCP Basic Auth requirement.
+  - MCP bearer-token requirement.
+  - MCP bearer token resolving to encrypted stored DevTest credentials.
+  - `/mcp/setup` rendering, DevTest verification call, and install snippets.
+  - MCP token store encryption, revoke helper, and installer script escaping.
   - MCP tool discovery.
   - `needs_input` for general release requests.
   - `needs_confirmation` for complete create/release requests.
   - Confirmation-token execution path.
   - Dashboard auth exemption for `/mcp/`.
   - Auto SFA UI endpoint/dropdown/copy markup.
-- Official MCP Python client smoke:
-  - Initialize local `/mcp/`.
-  - List tools.
-  - Call `release_sfa_tasks` preview with Basic Auth.
-- Browser verification:
-  - Open live `/auto-sfa`.
-  - Hover MCP dropdown.
-  - Force Clipboard API failure.
-  - Click copy button.
-  - Verify fallback `document.execCommand("copy")` received the rendered MCP
-    endpoint.
-  - Check `Agent Me` badge computed color/background in light and dark theme.
+- Live endpoint probes:
+  - `/mcp/setup` renders the setup form without dashboard auth.
+  - `/mcp/install` returns a valid shell installer.
+  - Running the installer in an isolated `/tmp` HOME writes Cursor and Codex
+    config.
+  - `codex mcp get agent-me --json` parses the generated Codex config with
+    persistent `http_headers`.
+  - `/mcp/` returns the bearer-token challenge when unauthenticated and lists
+    `create_sfa_tasks` / `release_sfa_tasks` through the temporary Basic Auth
+    fallback.
+  - `/auto-sfa` renders the HTTP-derived endpoint, `Setup token` link, and
+    HTTP-safe copy fallback markup.
 - Restarted `agent-me-dashboard.service`; service reported `active`.

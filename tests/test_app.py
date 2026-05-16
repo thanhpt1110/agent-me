@@ -227,7 +227,11 @@ def test_auto_sfa_page_renders(
     assert "copyEndpoint()" in r.text
     assert "navigator.clipboard.writeText(this.endpoint)" in r.text
     assert 'document.execCommand("copy")' in r.text
-    assert 'Use DevTest credentials to connect <span class="rounded bg-accent-500/15 px-1.5 py-0.5 font-bold text-accent-400 ring-1 ring-accent-500/35">Agent Me</span> MCP.' in r.text
+    assert "Use DevTest credentials once to create an" in r.text
+    assert '<span class="rounded bg-accent-500/15 px-1.5 py-0.5 font-bold text-accent-400 ring-1 ring-accent-500/35">Agent Me</span>' in r.text
+    assert "MCP token" in r.text
+    assert "Setup token" in r.text
+    assert 'href="https://agent-me.nvidia.com/mcp/setup"' in r.text
     assert "copiedMcp" in r.text
     assert "Create SFA Tasks" in r.text
     assert "Release SFA Tasks" in r.text
@@ -327,6 +331,56 @@ def test_auto_sfa_mcp_endpoint_respects_forwarded_proto(
     assert r.status_code == 200
     assert 'data-endpoint="https://agent-me.nvidia.com/mcp/"' in r.text
     assert "<code>https://agent-me.nvidia.com/mcp/</code>" in r.text
+
+
+def test_mcp_setup_page_renders_without_dashboard_auth(with_token: str) -> None:
+    from agent_me.dashboard.app import app
+
+    r = TestClient(app).get("/mcp/setup")
+
+    assert r.status_code == 200
+    assert "Connect Auto SFA tools" in r.text
+    assert "Create MCP token" in r.text
+    assert "DevTest username" in r.text
+
+
+def test_mcp_setup_creates_long_lived_token(
+    client: TestClient,
+    with_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    async def fake_resolve(*args, **kwargs):
+        return 1155188
+
+    monkeypatch.setattr(app_module, "resolve_destination_folder_id", fake_resolve)
+
+    r = client.post("/mcp/setup", data={
+        "username": "Thanh.Phan@nvidia.com",
+        "password": "devtest-password",
+        "label": "pytest token",
+    })
+
+    assert r.status_code == 200
+    assert "Token created for" in r.text
+    assert "thanh.phan" in r.text
+    assert "agm_" in r.text
+    assert "curl -fsSL https://agent-me.nvidia.com/mcp/install" in r.text
+    assert "AGENT_ME_MCP_TOKEN=" in r.text
+    assert "Bearer agm_" in r.text
+    assert "claude mcp add --transport http" in r.text
+    assert "[mcp_servers.agent-me]" in r.text
+
+
+def test_mcp_install_script_renders_for_request_origin(client: TestClient, with_token: str) -> None:
+    r = client.get("/mcp/install", headers={"Host": "agent-me.nvidia.com"})
+
+    assert r.status_code == 200
+    assert "text/x-shellscript" in r.headers.get("content-type", "")
+    assert "AGENT_ME_MCP_TOKEN is required" in r.text
+    assert "agent-me" in r.text
+    assert "endpoint=http://agent-me.nvidia.com/mcp/" in r.text
 
 
 def test_auto_sfa_history_endpoint_returns_persisted_runs(

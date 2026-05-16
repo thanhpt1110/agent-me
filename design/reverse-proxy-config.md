@@ -19,7 +19,7 @@ bridge talks to Slack via outbound Socket Mode regardless.
 | **Long read timeout** for `/api/sse/**` (≥ 1 hour) | SSE connections stay open for the duration the operator's tab is open. |
 | **Forward `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-For`** | Starlette's `request.url` reads these to construct the canonical URL (cookies need `Secure=true` to know the upstream is HTTPS). |
 | **Don't strip `Cookie` / `Set-Cookie`** | Browser-based session cookie flow. |
-| **Don't strip `Authorization`** | Dashboard API clients may use Bearer auth, and `/mcp/` uses HTTP Basic Auth with the caller's DevTest credentials. |
+| **Don't strip `Authorization`** | Dashboard API clients may use Bearer auth, and `/mcp/` uses Agent Me bearer tokens created by `/mcp/setup`. |
 | **Health-check `GET /healthz`** is unauthenticated and returns JSON | Use it for upstream liveness if your proxy supports it. |
 | **Buffer size for normal `POST /api/**`** ≥ 64 KB | Approval payloads + brief result blobs occasionally hit ~16-32 KB. |
 
@@ -49,18 +49,18 @@ bridge talks to Slack via outbound Socket Mode regardless.
 
 ## Auto SFA MCP path
 
-The dashboard service mounts Streamable HTTP MCP at `/mcp/`. Agent
-clients should add the public endpoint shown in the Auto SFA page's
-`MCP` dropdown and authenticate with DevTest username/password. The
-server does not persist those credentials; each HTTP MCP request carries
-the client's Basic Auth header, and the tools pass those credentials to
-`magic-auto` for that run.
+The dashboard service mounts Streamable HTTP MCP at `/mcp/`. Users who
+want MCP visit `/mcp/setup`, verify DevTest credentials once, and receive
+a long-lived Agent Me bearer token for Cursor/Codex/Claude. Each HTTP
+MCP request carries `Authorization: Bearer <token>`; the server resolves
+that token to encrypted server-side DevTest credentials and passes those
+credentials to `magic-auto` for that run.
 
 The UI derives the MCP endpoint from the dashboard page origin, so an
 HTTP-only public page naturally shows an HTTP MCP URL and an HTTPS page
 shows an HTTPS MCP URL. Set `AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the
 MCP public endpoint must differ from the page origin. Prefer HTTPS for
-this path because Basic Auth is replayable over plain HTTP.
+this path because bearer tokens are replayable over plain HTTP.
 
 ## nginx snippet
 

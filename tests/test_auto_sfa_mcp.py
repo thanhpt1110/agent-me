@@ -17,6 +17,14 @@ def _mcp_headers(username: str = "thaphan", password: str = "dummy-password") ->
     }
 
 
+def _bearer_headers(token: str) -> dict[str, str]:
+    return {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+
+
 def _jsonrpc(method: str, params: dict[str, Any] | None = None, request_id: int = 1) -> dict:
     return {
         "jsonrpc": "2.0",
@@ -31,11 +39,12 @@ def _call_tool(
     name: str,
     arguments: dict[str, Any],
     *,
+    headers: dict[str, str] | None = None,
     request_id: int = 1,
 ) -> dict[str, Any]:
     response = client.post(
         "/mcp/",
-        headers=_mcp_headers(),
+        headers=headers or _mcp_headers(),
         json=_jsonrpc(
             "tools/call",
             {"name": name, "arguments": arguments},
@@ -48,7 +57,7 @@ def _call_tool(
     return body["result"]["structuredContent"]
 
 
-def test_auto_sfa_mcp_requires_devtest_basic_auth(with_token: str) -> None:
+def test_auto_sfa_mcp_requires_agent_me_token(with_token: str) -> None:
     from agent_me.dashboard.app import build_app
 
     with TestClient(build_app()) as client:
@@ -59,8 +68,8 @@ def test_auto_sfa_mcp_requires_devtest_basic_auth(with_token: str) -> None:
         )
 
     assert response.status_code == 401
-    assert response.headers["WWW-Authenticate"].startswith("Basic ")
-    assert response.json()["error"] == "DevTest Basic Auth is required"
+    assert response.headers["WWW-Authenticate"].startswith("Bearer ")
+    assert response.json()["error"] == "Agent Me MCP token is required"
 
 
 def test_auto_sfa_mcp_lists_expected_tools(with_token: str) -> None:
@@ -107,6 +116,33 @@ def test_create_sfa_tasks_preview_uses_basic_auth_credentials(with_token: str) -
     assert result["summary"]["folder_id"] == 494139
     assert result["summary"]["devtest_username"] == "thaphan"
     assert "Default: Win_Linux = Linux Only." in result["confirmation_options"]
+    assert result["resolved_fields"]["auth_password_set"] is True
+    assert "auth_password" not in result["resolved_fields"]
+
+
+def test_create_sfa_tasks_preview_uses_bearer_token_credentials(
+    temp_state_dir,
+    with_token: str,
+) -> None:
+    from agent_me.auto_sfa_mcp_store import create_mcp_token
+    from agent_me.dashboard.app import build_app
+
+    created = create_mcp_token(
+        username="tnvidia",
+        password="stored-password",
+        label="pytest",
+    )
+
+    with TestClient(build_app()) as client:
+        result = _call_tool(
+            client,
+            "create_sfa_tasks",
+            {"prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"'},
+            headers=_bearer_headers(created.token),
+        )
+
+    assert result["status"] == "needs_confirmation"
+    assert result["summary"]["devtest_username"] == "tnvidia"
     assert result["resolved_fields"]["auth_password_set"] is True
     assert "auth_password" not in result["resolved_fields"]
 
