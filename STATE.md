@@ -62,7 +62,9 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   `monitor_arguments`. Agent clients should poll `get_sfa_job_status` with
   `since_line_no=next_since_line_no` until `is_terminal=true` and can also
   open `/auto-sfa?job_id=<id>` to reconnect the dashboard terminal while the
-  dashboard process is still running.
+  dashboard process is still running. `job_url` derives from the MCP request
+  origin unless `AUTO_SFA_MCP_PUBLIC_BASE_URL` or `DASHBOARD_PUBLIC_BASE_URL`
+  overrides it, so HTTP MCP clients receive HTTP dashboard links.
 - Dashboard `/auto-sfa` has two tabs: `Create SFA Tasks` and
   `Release SFA Tasks`. The header has a direct `MCP Setup` link aligned with
   the subtitle; it opens `/mcp/setup` where MCP users create or copy their

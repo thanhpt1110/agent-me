@@ -59,6 +59,10 @@ class DevTestCredentials:
 _CURRENT_DEVTEST_CREDENTIALS: contextvars.ContextVar[DevTestCredentials | None] = (
     contextvars.ContextVar("auto_sfa_mcp_devtest_credentials", default=None)
 )
+_CURRENT_PUBLIC_BASE_URL: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "auto_sfa_mcp_public_base_url",
+    default=None,
+)
 
 MCP_AUTO_SFA_RUNNER = AutoSFARunner(trigger_source="mcp")
 
@@ -81,9 +85,35 @@ def _public_base_url() -> str:
     raw = (
         os.environ.get("AUTO_SFA_MCP_PUBLIC_BASE_URL")
         or os.environ.get("DASHBOARD_PUBLIC_BASE_URL")
+        or _CURRENT_PUBLIC_BASE_URL.get()
         or f"https://{AUTO_SFA_MCP_DEFAULT_HOST}"
     )
     return raw.rstrip("/")
+
+
+def _public_base_url_from_scope(scope) -> str | None:
+    headers = {
+        key.lower(): value.decode("latin-1")
+        for key, value in (scope.get("headers") or [])
+    }
+    host = headers.get(b"host", "").strip()
+    if not host:
+        server = scope.get("server")
+        if isinstance(server, tuple) and server:
+            host = str(server[0])
+            if len(server) > 1 and server[1] not in (None, 80, 443):
+                host = f"{host}:{server[1]}"
+    if not host:
+        return None
+    proto = (
+        headers.get(b"x-forwarded-proto", "")
+        or headers.get(b"x-forwarded-protocol", "")
+        or str(scope.get("scheme") or "http")
+    )
+    proto = proto.split(",", 1)[0].strip().lower() or "http"
+    if proto not in {"http", "https"}:
+        proto = "http"
+    return f"{proto}://{host}".rstrip("/")
 
 
 def public_mcp_endpoint_url() -> str:
@@ -123,6 +153,8 @@ def _allowed_origins() -> list[str]:
     defaults = [
         f"https://{AUTO_SFA_MCP_DEFAULT_HOST}",
         f"https://{AUTO_SFA_MCP_DEFAULT_HOST}:*",
+        f"http://{AUTO_SFA_MCP_DEFAULT_HOST}",
+        f"http://{AUTO_SFA_MCP_DEFAULT_HOST}:*",
         "http://localhost",
         "http://localhost:*",
         "http://127.0.0.1",
@@ -180,6 +212,7 @@ class AutoSFAMCPAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        base_token = _CURRENT_PUBLIC_BASE_URL.set(_public_base_url_from_scope(scope))
         authorization = ""
         for key, value in scope.get("headers") or []:
             if key.lower() == b"authorization":
@@ -206,7 +239,10 @@ class AutoSFAMCPAuthMiddleware:
                     )
                 },
             )
-            await response(scope, receive, send)
+            try:
+                await response(scope, receive, send)
+            finally:
+                _CURRENT_PUBLIC_BASE_URL.reset(base_token)
             return
 
         token = _CURRENT_DEVTEST_CREDENTIALS.set(credentials)
@@ -214,6 +250,7 @@ class AutoSFAMCPAuthMiddleware:
             await self.app(scope, receive, send)
         finally:
             _CURRENT_DEVTEST_CREDENTIALS.reset(token)
+            _CURRENT_PUBLIC_BASE_URL.reset(base_token)
 
 
 def _require_credentials() -> DevTestCredentials:

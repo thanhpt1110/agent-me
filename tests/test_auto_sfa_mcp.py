@@ -238,6 +238,41 @@ def test_create_sfa_tasks_confirmed_starts_background_job(
     assert request.auth_password == "dummy-password"
 
 
+def test_auto_sfa_mcp_job_url_uses_request_origin(
+    with_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_me import auto_sfa_mcp
+    from agent_me.dashboard.app import build_app
+
+    async def fake_start(request):
+        return SimpleNamespace(
+            public_dict=lambda: {
+                "job_id": "mcp-create-1",
+                "status": "pending",
+                "line_count": 0,
+                "request": request.as_input_dict(),
+            }
+        )
+
+    monkeypatch.delenv("AUTO_SFA_MCP_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setattr(auto_sfa_mcp.MCP_AUTO_SFA_RUNNER, "start", fake_start)
+
+    with TestClient(build_app()) as client:
+        result = _call_tool(
+            client,
+            "create_sfa_tasks",
+            {
+                "prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+            },
+            headers={**_mcp_headers(), "Host": "agent-me.nvidia.com"},
+        )
+
+    assert result["dashboard_url"] == "http://agent-me.nvidia.com/auto-sfa"
+    assert result["job_url"] == "http://agent-me.nvidia.com/auto-sfa?job_id=mcp-create-1"
+
+
 def test_release_sfa_tasks_confirmed_starts_without_agent_translation(
     with_token: str,
     monkeypatch: pytest.MonkeyPatch,

@@ -116,7 +116,9 @@ to GitHub.
 The dashboard can also reopen a running MCP job with `/auto-sfa?job_id=<id>`.
 The Auto SFA SSE route falls back to the MCP runner when the job is not owned
 by the dashboard runner, so `job_url` in MCP responses can show the same live
-terminal output while the process is still alive.
+terminal output while the process is still alive. `job_url` derives from the
+MCP request origin when no public-base override is set, preserving HTTP for the
+current internal `agent-me.nvidia.com` proxy.
 
 ## Verification
 

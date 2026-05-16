@@ -64,6 +64,9 @@ Tool execution model:
   `monitor_arguments`. Agent clients should call `get_sfa_job_status` with the
   returned `job_id`, report `recent_lines`, then continue with
   `since_line_no=next_since_line_no` until `is_terminal=true`.
+- `job_url` derives from the MCP request origin when no public-base override is
+  set, so an HTTP MCP endpoint returns an HTTP dashboard URL and an HTTPS MCP
+  endpoint returns an HTTPS dashboard URL.
 - `/auto-sfa?job_id=<id>` reconnects the dashboard terminal to a running MCP
   job while the dashboard process is still alive.
 
