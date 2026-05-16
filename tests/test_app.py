@@ -21,9 +21,13 @@ from starlette.testclient import TestClient
 def client(temp_state_dir: Path, with_token: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """Reset the cached MCP probe + return a TestClient bound to the live app."""
     monkeypatch.setenv("DASHBOARD_OPERATOR_ACTION_CODE", "test-operator-code")
+    monkeypatch.setenv("AGENT_ME_RELEASE_TAG", "v9.9.9")
+    monkeypatch.setenv("AGENT_ME_RELEASE_DATE", "2099-01-02")
     from agent_me.dashboard import app as app_module
     app_module._MCP_CACHE["servers"] = []
     app_module._MCP_CACHE["checked_at"] = 0
+    app_module._RELEASE_CACHE["info"] = None
+    app_module._RELEASE_CACHE["checked_at"] = 0
     return TestClient(app_module.app)
 
 
@@ -62,6 +66,14 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "Refresh MCP auth" in body
     assert "Pending across platforms" in body
     assert "Briefs by source" not in body
+    assert "Built by Thanh Phan · thaphan@nvidia.com" in body
+    assert "NVIDIA VRDC SWQA" in body
+    assert "Last Update" in body
+    assert 'href="https://github.com/thanhpt1110/agent-me/releases/tag/v9.9.9"' in body
+    assert "v9.9.9</a>:" in body
+    assert "2099-01-02" in body
+    assert "NVIDIA Internal Automation" not in body
+    assert "Auto SFA MCP · updated" not in body
     assert "agent-me.theme.v1" in body
     assert "data-theme-toggle" in body
     assert "prefers-color-scheme: dark" in body

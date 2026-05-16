@@ -90,6 +90,9 @@ config, Claude command, and Codex config with copy buttons. After token
 creation, the browser receives a signed digest cookie; the bearer token itself
 is encrypted in the server-side token store. Reopening `/mcp/setup` from the
 same browser redisplays the token so it can be reused in another client.
+The dashboard footer identifies `NVIDIA VRDC SWQA` and computes the `Last
+Update` tag/date from the latest available git release tag, linking that tag
+to GitHub.
 
 ## Verification
 

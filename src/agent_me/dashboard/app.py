@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -120,11 +121,77 @@ OPERATOR_ACTION_CODE_HEADER = "x-agent-me-action-code"
 OPERATOR_ACTION_TOKEN_HEADER = "x-agent-me-operator-token"
 MCP_SETUP_COOKIE_NAME = "agent_me_auto_sfa_mcp_setup"
 MCP_SETUP_COOKIE_MAX_AGE_S = 10 * 365 * 24 * 60 * 60
+GITHUB_REPO_URL = os.environ.get(
+    "AGENT_ME_GITHUB_REPO_URL",
+    "https://github.com/thanhpt1110/agent-me",
+).rstrip("/")
+_RELEASE_CACHE: dict[str, Any] = {"checked_at": 0.0, "info": None}
+_RELEASE_CACHE_TTL_S = 300
 
 # Cached MCP probe — `codex mcp list` takes ~1s and we don't want
 # every page hit to trigger one.
 _MCP_CACHE: dict[str, Any] = {"servers": [], "checked_at": 0}
 _MCP_CACHE_TTL_S = 30
+
+
+def _git_output(args: list[str], *, timeout_s: float = 1.5) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO_DIR), *args],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=timeout_s,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _latest_release_tag() -> str:
+    configured = os.environ.get("AGENT_ME_RELEASE_TAG", "").strip()
+    if configured:
+        return configured
+    out = _git_output(["tag", "--list", "v[0-9]*", "--sort=-v:refname"])
+    for line in out.splitlines():
+        tag = line.strip()
+        if re.fullmatch(r"v\d+\.\d+\.\d+", tag):
+            return tag
+    return ""
+
+
+def _release_date_for_tag(tag: str) -> str:
+    configured = os.environ.get("AGENT_ME_RELEASE_DATE", "").strip()
+    if configured:
+        return configured
+    if tag:
+        date = _git_output([
+            "for-each-ref",
+            f"refs/tags/{tag}",
+            "--format=%(creatordate:short)",
+        ])
+        if date:
+            return date.splitlines()[0].strip()
+    return datetime.now(UTC).date().isoformat()
+
+
+def dashboard_release_info() -> dict[str, str]:
+    now = time.time()
+    cached = _RELEASE_CACHE.get("info")
+    if cached and now - float(_RELEASE_CACHE.get("checked_at") or 0) < _RELEASE_CACHE_TTL_S:
+        return dict(cached)
+    tag = _latest_release_tag()
+    date = _release_date_for_tag(tag)
+    info = {
+        "tag": tag or "development",
+        "date": date,
+        "url": f"{GITHUB_REPO_URL}/releases/tag/{tag}" if tag else GITHUB_REPO_URL,
+    }
+    _RELEASE_CACHE["info"] = info
+    _RELEASE_CACHE["checked_at"] = now
+    return dict(info)
 
 
 def _operator_action_code() -> str:
@@ -476,6 +543,7 @@ def _pending_groups_from_snapshots(snapshots: list[Any]) -> list[dict[str, Any]]
 
 TEMPLATES.env.filters["age"] = _ms_to_human
 TEMPLATES.env.filters["datetime_label"] = _ms_to_datetime_label
+TEMPLATES.env.globals["dashboard_release_info"] = dashboard_release_info
 
 
 # ── Routes: HTML pages ───────────────────────────────────────────────────

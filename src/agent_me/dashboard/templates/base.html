@@ -175,8 +175,14 @@
           <div>Built by Thanh Phan · thaphan@nvidia.com</div>
         </div>
         <div class="sm:text-right">
-          <div class="font-semibold text-slate-300">NVIDIA Internal Automation</div>
-          <div>Auto SFA MCP · updated 2026-05-16</div>
+          <div class="font-semibold text-slate-300">NVIDIA VRDC SWQA</div>
+          {% set release = dashboard_release_info() %}
+          <div>
+            Last Update
+            <a class="font-semibold text-slate-300 hover:text-accent-400"
+               href="{{ release.url }}">{{ release.tag }}</a>:
+            {{ release.date }}
+          </div>
         </div>
       </div>
     </footer>
