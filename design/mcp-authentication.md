@@ -60,10 +60,10 @@ Tool execution model:
   `status=needs_confirmation`, resolved fields, default/alternative options,
   and a legacy `confirmation_token` for older clients, but the token is not
   required for normal execution.
-- Started jobs return `job_id`, `job_url`, `monitor_tool`, and
-  `monitor_arguments`. Agent clients should call `get_sfa_job_status` with the
-  returned `job_id`, report `recent_lines`, then continue with
-  `since_line_no=next_since_line_no` until `is_terminal=true`.
+- Started jobs return `job_id` and `job_url`. Agent clients should show
+  `job_url` to the user for live dashboard terminal progress instead of
+  repeatedly polling MCP tools, because several clients require approval for
+  each tool call even when the tool is read-only.
 - `job_url` derives from the MCP request origin when no public-base override is
   set, so an HTTP MCP endpoint returns an HTTP dashboard URL and an HTTPS MCP
   endpoint returns an HTTPS dashboard URL.

@@ -1,6 +1,6 @@
 # agent-me — Current State
 
-_Last updated: 2026-05-16 by Codex — **Auto SFA MCP Phase 1 setup shipped** on the dashboard service: `/mcp/setup` verifies DevTest credentials once, stores the password encrypted server-side, and issues a long-lived Agent Me bearer token for Cursor/Codex/Claude MCP clients. Tokens do not expire by default; users generate a replacement token if they need to rotate client config. `/mcp/` uses official MCP Streamable HTTP with deterministic `create_sfa_tasks`, `release_sfa_tasks`, and read-only `get_sfa_job_status` tools, structured clarification/preview responses, single-call execution for complete approved tool calls, and no second agent/LLM hop inside the server. Runtime decision remains: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has Slack, dashboard, and MCP entry points over the same builders/runners. The dashboard Auto SFA header exposes a direct `MCP Setup` link to `/mcp/setup`; the setup page can redisplay the same browser's latest token through a signed digest cookie and encrypted token storage. Dashboard footer now identifies `NVIDIA VRDC SWQA` and renders the latest available git release tag/date dynamically with a GitHub tag link. Dashboard and MCP jobs run with one child process and one temp config per run, per-request DevTest credentials, SSE terminal output, cancel support, flow-separated trigger history, and browser localStorage for requested dashboard settings. MCP job responses include a dashboard `job_url` and monitor arguments so agent clients can poll live terminal lines until terminal status. The password is encrypted in the MCP token store and is not written to server config, public job history, or MCP public responses. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-16-auto-sfa-mcp.md`](discussions/2026-05-16-auto-sfa-mcp.md), [`discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md`](discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md), [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: `uv run ruff check src tests`, full `uv run pytest -q`, focused MCP/dashboard tests, live `/mcp/setup` and `/auto-sfa` probes, live `/mcp/install` isolated-HOME installer smoke, Codex parse of generated config, MCP `tools/list` live smoke, and dashboard service restart._
+_Last updated: 2026-05-16 by Codex — **Auto SFA MCP Phase 1 setup shipped** on the dashboard service: `/mcp/setup` verifies DevTest credentials once, stores the password encrypted server-side, and issues a long-lived Agent Me bearer token for Cursor/Codex/Claude MCP clients. Tokens do not expire by default; users generate a replacement token if they need to rotate client config. `/mcp/` uses official MCP Streamable HTTP with deterministic `create_sfa_tasks` and `release_sfa_tasks`, structured clarification/preview responses, single-call execution for complete approved tool calls, job-url live dashboard progress, and no second agent/LLM hop inside the server. Runtime decision remains: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has Slack, dashboard, and MCP entry points over the same builders/runners. The dashboard Auto SFA header exposes a direct `MCP Setup` link to `/mcp/setup`; the setup page can redisplay the same browser's latest token through a signed digest cookie and encrypted token storage. Dashboard footer now identifies `NVIDIA VRDC SWQA` and renders the latest available git release tag/date dynamically with a GitHub tag link. Dashboard and MCP jobs run with one child process and one temp config per run, per-request DevTest credentials, SSE terminal output, cancel support, flow-separated trigger history, and browser localStorage for requested dashboard settings. MCP job responses include a dashboard `job_url`; agent clients should show that link instead of polling MCP tools for progress because many clients prompt on every tool call. The password is encrypted in the MCP token store and is not written to server config, public job history, or MCP public responses. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-16-auto-sfa-mcp.md`](discussions/2026-05-16-auto-sfa-mcp.md), [`discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md`](discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md), [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: `uv run ruff check src tests`, full `uv run pytest -q`, focused MCP/dashboard tests, live `/mcp/setup` and `/auto-sfa` probes, live `/mcp/install` isolated-HOME installer smoke, Codex parse of generated config, MCP `tools/list` live smoke, and dashboard service restart._
 
 ## Phase
 
@@ -47,9 +47,8 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   the token to the caller's stored DevTest credentials and passes those
   credentials to `magic-auto` for that run.
 - MCP tools are deterministic and do not call Codex, Claude, or another LLM:
-  `create_sfa_tasks` maps to the create/template-prep runner,
-  `release_sfa_tasks` maps to the release/auto runner, and
-  `get_sfa_job_status` reads live status/log events for a started MCP job.
+  `create_sfa_tasks` maps to the create/template-prep runner and
+  `release_sfa_tasks` maps to the release/auto runner.
 - MCP incomplete/general calls return `status=needs_input`,
   `plan_mode_required=true`, and the missing fields, so the agent client must
   clarify before execution.
@@ -58,13 +57,13 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   preview/dry-run mode that returns `status=needs_confirmation` plus the
   resolved plan/options. The legacy `confirmation_token` remains in preview
   responses for older clients but is no longer required to execute.
-- MCP job start responses include `job_id`, `job_url`, `monitor_tool`, and
-  `monitor_arguments`. Agent clients should poll `get_sfa_job_status` with
-  `since_line_no=next_since_line_no` until `is_terminal=true` and can also
-  open `/auto-sfa?job_id=<id>` to reconnect the dashboard terminal while the
-  dashboard process is still running. `job_url` derives from the MCP request
-  origin unless `AUTO_SFA_MCP_PUBLIC_BASE_URL` or `DASHBOARD_PUBLIC_BASE_URL`
-  overrides it, so HTTP MCP clients receive HTTP dashboard links.
+- MCP job start responses include `job_id` and `job_url`. Agent clients should
+  show `job_url` for live dashboard terminal progress instead of polling MCP
+  tools, because many clients prompt on every tool call. `/auto-sfa?job_id=<id>`
+  reconnects the dashboard terminal while the dashboard process is still
+  running. `job_url` derives from the MCP request origin unless
+  `AUTO_SFA_MCP_PUBLIC_BASE_URL` or `DASHBOARD_PUBLIC_BASE_URL` overrides it,
+  so HTTP MCP clients receive HTTP dashboard links.
 - Dashboard `/auto-sfa` has two tabs: `Create SFA Tasks` and
   `Release SFA Tasks`. The header has a direct `MCP Setup` link aligned with
   the subtitle; it opens `/mcp/setup` where MCP users create or copy their
@@ -227,11 +226,11 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   localStorage for requested settings, and flow-separated trigger history
   persisted in `auto_sfa_runs.flow_type`. MCP uses official Streamable HTTP
   with long-lived Agent Me bearer tokens from `/mcp/setup`, tools
-  `create_sfa_tasks` / `release_sfa_tasks` / `get_sfa_job_status`, structured
-  `needs_input` responses for incomplete requests, preview responses when
-  `confirmed=false`, single-call execution after MCP client approval, and
-  live job polling for terminal progress. Slack instructions/buttons route
-  users to the correct create or release flow.
+  `create_sfa_tasks` / `release_sfa_tasks`, structured `needs_input`
+  responses for incomplete requests, preview responses when `confirmed=false`,
+  single-call execution after MCP client approval, and `job_url` live dashboard
+  progress. Slack instructions/buttons route users to the correct create or
+  release flow.
 - [x] **Dashboard operator action guard (2026-05-13)** — public team dashboard
   viewers can browse read surfaces, but `Refresh all` and `Refresh MCP auth`
   now open an operator-check modal and the corresponding POST endpoints require
@@ -415,18 +414,18 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   `AUTO_SFA_MCP_TOKEN_TTL_DAYS` can opt into expiry. This replaces the earlier
   per-client Basic Auth UX,
   while keeping Basic Auth as a temporary fallback during migration.
-- **2026-05-16 — Auto SFA MCP is deterministic, tool-first, and monitorable.**
+- **2026-05-16 — Auto SFA MCP is deterministic, tool-first, and job-link monitored.**
   External agents reach Auto SFA through `/mcp/` and choose explicit tools:
-  `create_sfa_tasks`, `release_sfa_tasks`, or read-only
-  `get_sfa_job_status`. The server does not ask Codex/Claude to reinterpret
-  the prompt after tool selection; it reuses the existing Auto SFA parsers,
-  request builders, destination resolver, and runner. Incomplete requests
-  return `needs_input`; complete approved tool calls execute in one request.
-  `confirmed=false` remains a preview/dry-run mode. Started jobs return a
-  monitor contract and a dashboard `job_url`. The Auto SFA UI links directly
-  to `/mcp/setup`; setup and install snippets derive the MCP URL from the
-  current dashboard origin unless `AUTO_SFA_MCP_PUBLIC_BASE_URL` is explicitly
-  set.
+  `create_sfa_tasks` or `release_sfa_tasks`. The server does not ask
+  Codex/Claude to reinterpret the prompt after tool selection; it reuses the
+  existing Auto SFA parsers, request builders, destination resolver, and
+  runner. Incomplete requests return `needs_input`; complete approved tool
+  calls execute in one request. `confirmed=false` remains a preview/dry-run
+  mode. Started jobs return a dashboard `job_url` instead of advertising an
+  MCP polling tool, avoiding repeated approval prompts in clients that ask for
+  confirmation on every tool call. The Auto SFA UI links directly to
+  `/mcp/setup`; setup and install snippets derive the MCP URL from the current
+  dashboard origin unless `AUTO_SFA_MCP_PUBLIC_BASE_URL` is explicitly set.
 - **2026-05-11 — Codex-first migration; PA/Claude hybrid retired.**
   Benchmarked current Codex connector/app tools against `pa` on this
   host. Codex successfully read Teams Graph profile/chats/messages

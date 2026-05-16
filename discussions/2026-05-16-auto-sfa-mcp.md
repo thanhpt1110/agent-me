@@ -29,7 +29,6 @@ tool.
 - Expose explicit MCP tools:
   - `create_sfa_tasks`
   - `release_sfa_tasks`
-  - `get_sfa_job_status` for read-only live progress polling.
 - Return structured `needs_input` for incomplete/general requests, with
   `plan_mode_required=true`, so the agent client must clarify before execution.
 - Execute complete requests in one tool call after the MCP client/user approves
@@ -41,9 +40,10 @@ tool.
   `needs_confirmation`, resolved fields, default/alternative options, and a
   legacy `confirmation_token`, but that token is not required for normal
   execution.
-- Started jobs return `job_id`, `job_url`, `monitor_tool`, and
-  `monitor_arguments`. Agent clients poll `get_sfa_job_status` with
-  `since_line_no=next_since_line_no` until `is_terminal=true`.
+- Started jobs return `job_id` and `job_url`. Agent clients show the
+  dashboard link for live terminal progress instead of MCP polling, because
+  many clients prompt for confirmation on every tool call even when the tool is
+  read-only.
 - Keep release defaults aligned with Slack:
   - Default `Linux Release`, source `50722`.
   - Alternative `Release`, source `47877`.
@@ -75,15 +75,6 @@ tool.
 - Agent clients should also select this tool for wording such as `auto
   template`, `mark template auto`, `release template auto`, or `auto these
   templates` when the intended action is the release/auto flow.
-
-`get_sfa_job_status`:
-
-- Required: `job_id`.
-- Optional: `since_line_no`, `tail`, `wait_seconds`.
-- Returns: current job status, redacted request details, recent terminal events,
-  `recent_lines`, `next_since_line_no`, and `is_terminal`.
-- Use `wait_seconds` in the 3-10s range for light long-polling instead of
-  rapid repeated polling.
 
 ## Auth Behavior
 
@@ -131,11 +122,11 @@ current internal `agent-me.nvidia.com` proxy.
     and install snippets.
   - MCP token/password store encryption, revoke helper, and installer script
     escaping.
-  - MCP tool discovery, including read-only `get_sfa_job_status`.
+  - MCP tool discovery with only the two write tools exposed.
   - `needs_input` for general release requests.
   - `needs_confirmation` preview mode when `confirmed=false`.
   - Single-call execution for complete create/release requests.
-  - Live job progress polling through `get_sfa_job_status`.
+  - Job start responses returning dashboard `job_url`.
   - Dashboard `/auto-sfa?job_id=<id>` fallback for running MCP jobs.
   - Dashboard auth exemption for `/mcp/`.
   - Auto SFA UI direct setup link.
@@ -147,7 +138,7 @@ current internal `agent-me.nvidia.com` proxy.
   - `codex mcp get agent-me --json` parses the generated Codex config with
     persistent `http_headers`.
   - `/mcp/` returns the bearer-token challenge when unauthenticated and lists
-    `create_sfa_tasks` / `release_sfa_tasks` / `get_sfa_job_status` through
-    the temporary Basic Auth fallback.
+    `create_sfa_tasks` / `release_sfa_tasks` through the temporary Basic Auth
+    fallback.
   - `/auto-sfa` renders the HTTP-derived `MCP Setup` link.
 - Restarted `agent-me-dashboard.service`; service reported `active`.

@@ -85,22 +85,21 @@ def test_auto_sfa_mcp_lists_expected_tools(with_token: str) -> None:
     assert response.status_code == 200
     tools = response.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
-    assert {"create_sfa_tasks", "release_sfa_tasks", "get_sfa_job_status"} <= names
+    assert {"create_sfa_tasks", "release_sfa_tasks"} <= names
+    assert "get_sfa_job_status" not in names
     create = next(tool for tool in tools if tool["name"] == "create_sfa_tasks")
     release = next(tool for tool in tools if tool["name"] == "release_sfa_tasks")
-    status = next(tool for tool in tools if tool["name"] == "get_sfa_job_status")
     assert create["annotations"]["destructiveHint"] is True
     assert release["annotations"]["destructiveHint"] is True
-    assert status["annotations"]["readOnlyHint"] is True
     assert "auto template" in release["description"].lower()
     assert "confirmed=true" in create["description"]
     assert "confirmed=true" in release["description"]
-    assert "recent_lines" in status["description"]
+    assert "job_url" in create["description"]
+    assert "job_url" in release["description"]
     assert "confirmed" in create["inputSchema"]["properties"]
     assert "confirmed" in release["inputSchema"]["properties"]
     assert "confirmation_token" in create["inputSchema"]["properties"]
     assert "confirmation_token" in release["inputSchema"]["properties"]
-    assert "job_id" in status["inputSchema"]["properties"]
 
 
 def test_create_sfa_tasks_preview_uses_basic_auth_credentials(with_token: str) -> None:
@@ -228,9 +227,10 @@ def test_create_sfa_tasks_confirmed_starts_background_job(
 
     assert result["status"] == "started"
     assert result["job_id"] == "mcp-create-1"
-    assert result["monitor_tool"] == "get_sfa_job_status"
-    assert result["monitor_arguments"]["job_id"] == "mcp-create-1"
+    assert "monitor_tool" not in result
+    assert "monitor_arguments" not in result
     assert result["job_url"].endswith("/auto-sfa?job_id=mcp-create-1")
+    assert "Open job_url" in result["message"]
     request = captured["request"]
     assert request.display_name == "Thanh Phan"
     assert request.folder_id == 494139
@@ -314,61 +314,3 @@ def test_release_sfa_tasks_confirmed_starts_without_agent_translation(
     assert request.source_folder_id == 50722
     assert request.auth_username == "thaphan"
     assert request.auth_password == "dummy-password"
-
-
-def test_get_sfa_job_status_returns_recent_progress(
-    with_token: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from agent_me import auto_sfa_mcp
-    from agent_me.dashboard.app import build_app
-
-    fake_job = SimpleNamespace(
-        status="running",
-        public_dict=lambda: {
-            "job_id": "mcp-create-1",
-            "status": "running",
-            "line_count": 2,
-            "request": {
-                "flow_type": "create",
-                "display_name": "Thanh Phan",
-                "folder_id": 494139,
-                "auth_username": "thaphan",
-                "auth_password_set": True,
-            },
-        },
-        progress_events=lambda since_line_no=0, limit=50: [
-            {
-                "event": "line",
-                "line_no": 2,
-                "stream": "stdout",
-                "line": "template update still running",
-            }
-        ],
-    )
-
-    monkeypatch.setattr(
-        auto_sfa_mcp.MCP_AUTO_SFA_RUNNER,
-        "get_job",
-        lambda job_id: fake_job if job_id == "mcp-create-1" else None,
-    )
-
-    with TestClient(build_app()) as client:
-        result = _call_tool(
-            client,
-            "get_sfa_job_status",
-            {"job_id": "mcp-create-1", "since_line_no": 0},
-        )
-
-    assert result["status"] == "job_status"
-    assert result["job_status"] == "running"
-    assert result["is_terminal"] is False
-    assert result["recent_lines"] == [
-        {
-            "line_no": 2,
-            "stream": "stdout",
-            "line": "template update still running",
-        }
-    ]
-    assert result["next_since_line_no"] == 2
-    assert result["job_url"].endswith("/auto-sfa?job_id=mcp-create-1")
