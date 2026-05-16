@@ -66,7 +66,8 @@ def test_index_renders_html(client: TestClient, with_token: str) -> None:
     assert "Refresh MCP auth" in body
     assert "Pending across platforms" in body
     assert "Briefs by source" not in body
-    assert "Built by Thanh Phan · thaphan@nvidia.com" in body
+    assert "Built by Thanh Phan" in body
+    assert 'href="mailto:thaphan@nvidia.com">thaphan@nvidia.com</a>' in body
     assert "NVIDIA VRDC SWQA" in body
     assert "Last Update" in body
     assert 'href="https://github.com/thanhpt1110/agent-me/releases/tag/v9.9.9"' in body
