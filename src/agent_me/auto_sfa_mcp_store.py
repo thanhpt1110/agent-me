@@ -404,7 +404,7 @@ PY
 
 if command -v claude >/dev/null 2>&1; then
   claude mcp remove agent-me -s user >/dev/null 2>&1 || true
-  claude mcp add --transport http --scope user --header "Authorization: $auth_header" agent-me "$endpoint"
+  claude mcp add --transport http --scope user agent-me "$endpoint" --header "Authorization: $auth_header"
   echo "Updated Claude Code user MCP config"
 else
   echo "Claude Code CLI not found; skipped Claude config"

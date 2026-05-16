@@ -708,8 +708,7 @@ def _mcp_setup_success_context(request: Request, token_record: Any, *, token_sta
         "install_command": install_command(base_url=install_base, token=token),
         "claude_command": (
             "claude mcp add --transport http --scope user "
-            f'--header "Authorization: Bearer {token}" '
-            f"agent-me {endpoint}"
+            f'agent-me {endpoint} --header "Authorization: Bearer {token}"'
         ),
         "codex_config": (
             "[mcp_servers.agent-me]\n"

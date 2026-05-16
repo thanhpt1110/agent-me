@@ -384,6 +384,8 @@ def test_mcp_setup_creates_long_lived_token(
     assert "AGENT_ME_MCP_TOKEN=" in r.text
     assert "Bearer agm_" in r.text
     assert "claude mcp add --transport http" in r.text
+    assert "agent-me https://agent-me.nvidia.com/mcp/ --header" in r.text
+    assert "--header &#34;Authorization: Bearer agm_" in r.text
     assert "[mcp_servers.agent-me]" in r.text
     assert client.cookies.get("agent_me_auto_sfa_mcp_setup")
 

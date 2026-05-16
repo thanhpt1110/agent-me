@@ -56,3 +56,7 @@ def test_mcp_install_script_escapes_codex_inline_table() -> None:
 
     assert 'endpoint=http://agent-me.nvidia.com/mcp/' in script
     assert 'f\'http_headers = {{ Authorization = "{auth_header}" }}\\n\'' in script
+    assert (
+        'claude mcp add --transport http --scope user agent-me "$endpoint" '
+        '--header "Authorization: $auth_header"'
+    ) in script
