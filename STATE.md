@@ -27,10 +27,12 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   official Python MCP SDK's Streamable HTTP transport. It is mounted by
   `src/agent_me/dashboard/app.py` under `Mount("/mcp", ...)` and is excluded
   from dashboard bearer/cookie auth because it has its own DevTest Basic Auth.
-- MCP endpoint URL shown in the UI defaults to
-  `https://agent-me.nvidia.com/mcp/`. Operators can override the displayed
-  public base with `AUTO_SFA_MCP_PUBLIC_BASE_URL`; HTTP-only deployments must
-  set that explicitly and accept the Basic Auth transport risk.
+- MCP endpoint URL shown in the UI derives from the dashboard request origin:
+  `http://agent-me.nvidia.com/auto-sfa` shows
+  `http://agent-me.nvidia.com/mcp/`, while an HTTPS page shows the HTTPS MCP
+  URL. Operators can still override the displayed public base with
+  `AUTO_SFA_MCP_PUBLIC_BASE_URL` when the MCP endpoint must differ from the
+  page origin.
 - MCP auth is HTTP Basic Auth with the caller's DevTest username/password.
   Agent clients normally store this once when the user adds the MCP server.
   The server does not persist credentials; every tool call receives them from
@@ -106,7 +108,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   Python client initialized `/mcp/`, listed `create_sfa_tasks` and
   `release_sfa_tasks`, and called `release_sfa_tasks` preview with Basic Auth;
   Playwright opened `/auto-sfa`, hovered the MCP dropdown, verified the
-  fallback copy path with endpoint `https://agent-me.nvidia.com/mcp/`, and
+  fallback copy path with the rendered MCP endpoint, and
   checked the `Agent Me` badge styling in light and dark theme.
 
 ## Decisions locked
@@ -396,8 +398,9 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   server receives them on each MCP request without persisting them. Incomplete
   requests return `needs_input`; complete requests return `needs_confirmation`
   plus a signed token before any `magic-auto` process starts. The UI exposes
-  the endpoint in an Auto SFA header dropdown, and operators can override the
-  displayed public base URL with `AUTO_SFA_MCP_PUBLIC_BASE_URL`.
+  the endpoint in an Auto SFA header dropdown. The dropdown derives the URL
+  from the current dashboard origin unless `AUTO_SFA_MCP_PUBLIC_BASE_URL` is
+  explicitly set.
 - **2026-05-11 — Codex-first migration; PA/Claude hybrid retired.**
   Benchmarked current Codex connector/app tools against `pa` on this
   host. Codex successfully read Teams Graph profile/chats/messages

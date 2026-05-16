@@ -396,13 +396,14 @@ Setup for the proxy host itself lives in
 if the operator only wants the Slack interface; everything above is
 sufficient for that.
 
-If the public agent-me URL is not the default HTTPS origin, set
-`AUTO_SFA_MCP_PUBLIC_BASE_URL` in `configs/.env` before restarting the
-dashboard. For example, an intentionally HTTP-only internal proxy can
-set `AUTO_SFA_MCP_PUBLIC_BASE_URL=http://agent-me.nvidia.com`; because
-MCP uses DevTest Basic Auth, prefer HTTPS whenever the proxy supports
-it. Add matching `AUTO_SFA_MCP_ALLOWED_ORIGINS` only when an MCP
-browser client sends an `Origin` header that differs from the default.
+The Auto SFA page derives the MCP endpoint from the request origin by
+default. If users open `http://agent-me.nvidia.com/auto-sfa`, the code
+block shows `http://agent-me.nvidia.com/mcp/`; if the proxy later serves
+HTTPS, the same page shows the HTTPS MCP URL. Set
+`AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP public endpoint must
+differ from the dashboard page origin. Add matching
+`AUTO_SFA_MCP_ALLOWED_ORIGINS` only when an MCP browser client sends an
+`Origin` header that differs from the default allow-list.
 
 ```bash
 cd ~/agent-me

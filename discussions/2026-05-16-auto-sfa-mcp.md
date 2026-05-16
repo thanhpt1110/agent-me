@@ -74,10 +74,11 @@ request.
 
 There is no server-side session expiry because the server does not store a
 session. Credentials remain usable until DevTest rejects them or the user
-changes the client configuration. If the public proxy is HTTP-only, set
-`AUTO_SFA_MCP_PUBLIC_BASE_URL=http://agent-me.nvidia.com` so the UI shows the
-real endpoint, but prefer HTTPS because Basic Auth is replayable over plain
-HTTP.
+changes the client configuration. The UI derives the endpoint from the current
+dashboard page origin, so an HTTP page shows an HTTP MCP URL and an HTTPS page
+shows an HTTPS MCP URL. Set `AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP
+public endpoint must differ from the page origin. Prefer HTTPS because Basic
+Auth is replayable over plain HTTP.
 
 ## UI Notes
 
@@ -117,7 +118,7 @@ both light and dark themes.
   - Hover MCP dropdown.
   - Force Clipboard API failure.
   - Click copy button.
-  - Verify fallback `document.execCommand("copy")` received
-    `https://agent-me.nvidia.com/mcp/`.
+  - Verify fallback `document.execCommand("copy")` received the rendered MCP
+    endpoint.
   - Check `Agent Me` badge computed color/background in light and dark theme.
 - Restarted `agent-me-dashboard.service`; service reported `active`.

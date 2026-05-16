@@ -25,9 +25,11 @@
 ## Auto SFA MCP auth
 
 External agent clients connect to the Auto SFA MCP endpoint shown in the
-dashboard Auto SFA page's `MCP` dropdown, currently
-`https://agent-me.nvidia.com/mcp/` unless
-`AUTO_SFA_MCP_PUBLIC_BASE_URL` overrides the public base URL.
+dashboard Auto SFA page's `MCP` dropdown. The dropdown derives the endpoint
+from the page origin by default: an HTTP dashboard page shows an HTTP MCP URL,
+and an HTTPS dashboard page shows an HTTPS MCP URL. Set
+`AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP public endpoint must differ
+from the dashboard page origin.
 
 Credential model:
 
@@ -40,10 +42,11 @@ Credential model:
 - Credentials do not expire inside agent-me; they stop working when DevTest
   rejects them or the client changes/removes them.
 
-Because this is Basic Auth, prefer HTTPS. For an intentionally HTTP-only
-internal proxy, set `AUTO_SFA_MCP_PUBLIC_BASE_URL=http://agent-me.nvidia.com`
-and add a matching `AUTO_SFA_MCP_ALLOWED_ORIGINS` value only if a browser MCP
-client sends an `Origin` header.
+Because this is Basic Auth, prefer HTTPS when the proxy supports it. For an
+intentionally HTTP-only internal proxy, no UI override is needed as long as the
+user opens the dashboard through the same HTTP origin. Add a matching
+`AUTO_SFA_MCP_ALLOWED_ORIGINS` value only if a browser MCP client sends an
+`Origin` header.
 
 ## Command cheat sheet
 

@@ -533,13 +533,31 @@ def _auto_sfa_credentials_from_payload(
     return auth_username, auth_password, errors
 
 
+def _mcp_endpoint_url_for_request(request: Request) -> str:
+    configured_base = (
+        os.environ.get("AUTO_SFA_MCP_PUBLIC_BASE_URL")
+        or os.environ.get("DASHBOARD_PUBLIC_BASE_URL")
+    )
+    if configured_base:
+        return f"{configured_base.rstrip('/')}/mcp/"
+
+    forwarded_host = request.headers.get("x-forwarded-host")
+    host = (forwarded_host or request.headers.get("host") or "").split(",", 1)[0].strip()
+    if host and not host.startswith("testserver"):
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        scheme = (forwarded_proto or request.url.scheme or "https").split(",", 1)[0].strip()
+        return f"{scheme}://{host}/mcp/"
+
+    return public_mcp_endpoint_url()
+
+
 async def page_auto_sfa(request: Request):
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
         "sources": SOURCES,
         "active_job": None,
         "default_source_folder_id": _auto_sfa_default_source_folder_id(),
         "run_history": AUTO_SFA_RUNNER.recent_history(limit=100),
-        "mcp_endpoint_url": public_mcp_endpoint_url(),
+        "mcp_endpoint_url": _mcp_endpoint_url_for_request(request),
     })
 
 

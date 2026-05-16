@@ -56,10 +56,11 @@ server does not persist those credentials; each HTTP MCP request carries
 the client's Basic Auth header, and the tools pass those credentials to
 `magic-auto` for that run.
 
-When the public URL is intentionally HTTP-only, set
-`AUTO_SFA_MCP_PUBLIC_BASE_URL=http://agent-me.nvidia.com` on the
-dashboard host so the UI code block matches the real endpoint. Prefer
-HTTPS for this path because Basic Auth is replayable over plain HTTP.
+The UI derives the MCP endpoint from the dashboard page origin, so an
+HTTP-only public page naturally shows an HTTP MCP URL and an HTTPS page
+shows an HTTPS MCP URL. Set `AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the
+MCP public endpoint must differ from the page origin. Prefer HTTPS for
+this path because Basic Auth is replayable over plain HTTP.
 
 ## nginx snippet
 

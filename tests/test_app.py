@@ -293,6 +293,42 @@ def test_auto_sfa_page_renders(
     assert "/api/auto-sfa/history" in r.text
 
 
+def test_auto_sfa_mcp_endpoint_uses_request_origin(
+    client: TestClient, with_token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    monkeypatch.delenv("AUTO_SFA_MCP_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setattr(app_module, "_auto_sfa_default_source_folder_id", lambda: "50722")
+
+    r = client.get("/auto-sfa", headers={**_auth(with_token), "Host": "agent-me.nvidia.com"})
+
+    assert r.status_code == 200
+    assert 'data-endpoint="http://agent-me.nvidia.com/mcp/"' in r.text
+    assert "<code>http://agent-me.nvidia.com/mcp/</code>" in r.text
+
+
+def test_auto_sfa_mcp_endpoint_respects_forwarded_proto(
+    client: TestClient, with_token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    monkeypatch.delenv("AUTO_SFA_MCP_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setattr(app_module, "_auto_sfa_default_source_folder_id", lambda: "50722")
+
+    r = client.get("/auto-sfa", headers={
+        **_auth(with_token),
+        "Host": "agent-me.nvidia.com",
+        "X-Forwarded-Proto": "https",
+    })
+
+    assert r.status_code == 200
+    assert 'data-endpoint="https://agent-me.nvidia.com/mcp/"' in r.text
+    assert "<code>https://agent-me.nvidia.com/mcp/</code>" in r.text
+
+
 def test_auto_sfa_history_endpoint_returns_persisted_runs(
     client: TestClient, temp_state_dir: Path, with_token: str
 ) -> None:
