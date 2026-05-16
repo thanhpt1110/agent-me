@@ -4,6 +4,15 @@
 {% block content %}
 <section class="mx-auto max-w-4xl">
   <header class="mb-6">
+    <a href="{{ auto_sfa_url }}"
+       class="mb-4 inline-flex items-center gap-2 rounded border border-ink-700 px-3 py-2 text-sm font-semibold text-slate-300 hover:border-accent-500/60 hover:text-accent-400">
+      <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 19-7-7 7-7"></path>
+        <path d="M19 12H5"></path>
+      </svg>
+      <span>Back to Auto SFA</span>
+    </a>
     <div class="text-xs font-semibold uppercase tracking-wide text-accent-400">Agent Me MCP</div>
     <h1 class="mt-2 text-2xl font-semibold text-slate-100">Connect Auto SFA tools</h1>
     <p class="mt-1 text-sm text-slate-400">
@@ -20,13 +29,10 @@
   {% endif %}
 
   {% if mcp_token %}
-  <div class="mb-4 rounded border border-emerald-700/60 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-200">
+  <div class="mcp-token-banner mb-4 rounded border border-emerald-700/60 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-200">
     {% if token_state == "remembered" %}Token ready for{% else %}Token created for{% endif %}
-    <span class="font-semibold">{{ created.username }}</span>.
-    {% if created.label %}<span class="ml-1 text-emerald-100">Label: {{ created.label }}</span>{% endif %}
+    <span class="mcp-token-banner-strong font-semibold">{{ created.username }}</span>.
     This token has no expiration by default and can be reused in another MCP client.
-    <a class="ml-2 font-semibold text-emerald-100 underline decoration-emerald-500/60 underline-offset-2 hover:text-white"
-       href="/mcp/setup?new=1">Create another token</a>
   </div>
 
   <div class="space-y-4">
@@ -36,11 +42,15 @@
       <div class="mt-3 flex gap-2">
         <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="mcp-token">{{ mcp_token }}</code></pre>
         <button type="button" data-copy-target="mcp-token"
-                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                 aria-label="Copy bearer token" title="Copy bearer token">
-          <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="mcp-copy-icon h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg class="mcp-copy-check hidden h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6 9 17l-5-5"></path>
           </svg>
         </button>
       </div>
@@ -52,11 +62,15 @@
       <div class="mt-3 flex gap-2">
         <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="install-command">{{ install_command }}</code></pre>
         <button type="button" data-copy-target="install-command"
-                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                 aria-label="Copy install command" title="Copy install command">
-          <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="mcp-copy-icon h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg class="mcp-copy-check hidden h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6 9 17l-5-5"></path>
           </svg>
         </button>
       </div>
@@ -68,11 +82,15 @@
       <div class="mt-3 flex gap-2">
         <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="cursor-config">{{ cursor_config }}</code></pre>
         <button type="button" data-copy-target="cursor-config"
-                class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                 aria-label="Copy Cursor config" title="Copy Cursor config">
-          <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="mcp-copy-icon h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg class="mcp-copy-check hidden h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6 9 17l-5-5"></path>
           </svg>
         </button>
       </div>
@@ -84,11 +102,15 @@
         <div class="mt-3 flex gap-2">
           <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="claude-command">{{ claude_command }}</code></pre>
           <button type="button" data-copy-target="claude-command"
-                  class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                  class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                   aria-label="Copy Claude command" title="Copy Claude command">
-            <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg class="mcp-copy-icon h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <svg class="mcp-copy-check hidden h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"></path>
             </svg>
           </button>
         </div>
@@ -98,11 +120,15 @@
         <div class="mt-3 flex gap-2">
           <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="codex-config">{{ codex_config }}</code></pre>
           <button type="button" data-copy-target="codex-config"
-                  class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                  class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                   aria-label="Copy Codex config" title="Copy Codex config">
-            <svg class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg class="mcp-copy-icon h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <svg class="mcp-copy-check hidden h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"></path>
             </svg>
           </button>
         </div>
@@ -110,7 +136,7 @@
     </section>
   </div>
   {% else %}
-  <form method="post" action="/mcp/setup" class="rounded-lg border border-ink-700 bg-ink-900 p-4">
+  <form method="post" action="/mcp/setup" class="rounded-lg border border-ink-700 bg-ink-900 p-4" data-mcp-setup-form>
     <div class="grid gap-4 md:grid-cols-2">
       <div>
         <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="mcp-username">DevTest username</label>
@@ -125,19 +151,18 @@
                placeholder="********" required />
       </div>
     </div>
-    <div class="mt-4">
-      <label class="block text-xs uppercase tracking-wide text-slate-500 mb-1" for="mcp-label">Token label</label>
-      <input id="mcp-label" name="label" value="{{ label }}"
-             class="w-full rounded border border-ink-700 bg-ink-950 px-3 py-2 text-sm text-slate-100"
-             placeholder="Cursor on my workstation" />
-    </div>
     <p class="mt-3 text-xs text-slate-500">
       Agent Me verifies these credentials once, stores them encrypted, and gives your MCP clients a long-lived token.
-      Token labels are only display names for your own reference; duplicate labels across users do not affect authentication.
     </p>
     <button type="submit"
-            class="mt-4 inline-flex items-center justify-center rounded bg-accent-500 px-4 py-2 text-sm font-semibold text-black hover:bg-accent-400">
-      Create MCP token
+            class="mt-4 inline-flex min-h-10 min-w-40 items-center justify-center gap-2 rounded bg-accent-500 px-4 py-2 text-sm font-semibold text-black hover:bg-accent-400 disabled:cursor-wait disabled:opacity-75"
+            data-generate-button>
+      <svg class="hidden h-4 w-4 animate-spin" data-generate-spinner aria-hidden="true" viewBox="0 0 24 24" fill="none">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"></path>
+      </svg>
+      <span data-generate-idle>Generate MCP Token</span>
+      <span class="hidden" data-generate-loading>Generating...</span>
     </button>
   </form>
   {% endif %}
@@ -176,9 +201,30 @@
     if (!target) return;
     const ok = await copyText(target.textContent || "");
     if (ok) {
-      button.classList.add("bg-accent-600/20");
-      window.setTimeout(() => button.classList.remove("bg-accent-600/20"), 900);
+      const originalLabel = button.getAttribute("aria-label") || "Copy";
+      button.classList.add("copied");
+      button.setAttribute("aria-label", "Copied");
+      button.setAttribute("title", "Copied");
+      button.dataset.copyState = "Copied";
+      window.setTimeout(() => {
+        button.classList.remove("copied");
+        button.setAttribute("aria-label", originalLabel);
+        button.setAttribute("title", originalLabel);
+        delete button.dataset.copyState;
+      }, 1200);
     }
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-mcp-setup-form]");
+    if (!form) return;
+    const button = form.querySelector("[data-generate-button]");
+    if (!button) return;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    form.querySelector("[data-generate-idle]")?.classList.add("hidden");
+    form.querySelector("[data-generate-loading]")?.classList.remove("hidden");
+    form.querySelector("[data-generate-spinner]")?.classList.remove("hidden");
   });
 </script>
 {% endblock %}

@@ -90,8 +90,6 @@ config, Claude command, and Codex config with copy buttons. After token
 creation, the browser receives a signed digest cookie; the bearer token itself
 is encrypted in the server-side token store. Reopening `/mcp/setup` from the
 same browser redisplays the token so it can be reused in another client.
-Token labels are display-only and duplicate labels across users do not affect
-authentication.
 
 ## Verification
 

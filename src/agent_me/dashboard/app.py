@@ -620,6 +620,7 @@ def _mcp_setup_base_context(request: Request) -> dict[str, Any]:
         "mcp_endpoint_url": endpoint,
         "setup_url": f"{public_base.rstrip('/')}/mcp/setup",
         "install_url": f"{public_base.rstrip('/')}/mcp/install",
+        "auto_sfa_url": f"{public_base.rstrip('/')}/auto-sfa",
     }
 
 
@@ -648,7 +649,6 @@ def _mcp_setup_success_context(request: Request, token_record: Any, *, token_sta
             f'http_headers = {{ Authorization = "Bearer {token}" }}\n'
         ),
         "username": str(token_record.username),
-        "label": str(token_record.label or ""),
     }
 
 
@@ -675,14 +675,12 @@ async def page_auto_sfa(request: Request):
 
 
 async def page_mcp_setup(request: Request):
-    if request.query_params.get("new") not in {"1", "true", "yes"}:
-        remembered = _remembered_mcp_token_context(request)
-        if remembered is not None:
-            return TEMPLATES.TemplateResponse(request, "mcp_setup.html", remembered)
+    remembered = _remembered_mcp_token_context(request)
+    if remembered is not None:
+        return TEMPLATES.TemplateResponse(request, "mcp_setup.html", remembered)
     return TEMPLATES.TemplateResponse(request, "mcp_setup.html", {
         **_mcp_setup_base_context(request),
         "username": "",
-        "label": "",
     })
 
 
@@ -690,11 +688,9 @@ async def api_mcp_setup(request: Request):
     form = await request.form()
     username = normalize_devtest_username(str(form.get("username") or ""))
     password = str(form.get("password") or "")
-    label = str(form.get("label") or "").strip()
     context = {
         **_mcp_setup_base_context(request),
         "username": username,
-        "label": label,
     }
     errors: list[str] = []
     if not username:
@@ -732,7 +728,7 @@ async def api_mcp_setup(request: Request):
             status_code=400,
         )
 
-    created = create_mcp_token(username=username, password=password, label=label)
+    created = create_mcp_token(username=username, password=password)
     response = TEMPLATES.TemplateResponse(
         request,
         "mcp_setup.html",

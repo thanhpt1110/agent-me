@@ -81,6 +81,37 @@ html.theme-light .theme-toggle:hover {
   color: #3f8500;
 }
 
+.mcp-copy-button.copied {
+  background-color: rgba(118, 185, 0, 0.22);
+  border-color: #76b900;
+  color: #d9f99d;
+}
+
+.mcp-copy-button.copied .mcp-copy-icon {
+  display: none;
+}
+
+.mcp-copy-button.copied .mcp-copy-check {
+  display: block;
+}
+
+.mcp-copy-button.copied::after {
+  background: #0a0a0a;
+  border: 1px solid #3f8500;
+  border-radius: 0.375rem;
+  color: #d9f99d;
+  content: attr(data-copy-state);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.25rem 0.375rem;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.25rem);
+  white-space: nowrap;
+  z-index: 40;
+}
+
 /* Light theme overrides for the existing dark-first Tailwind utilities. */
 html.theme-light body,
 html.theme-light .bg-ink-950 {
@@ -204,6 +235,28 @@ html.theme-light .text-rose-300 {
 
 html.theme-light .text-emerald-300 {
   color: #047857;
+}
+
+html.theme-light .mcp-token-banner {
+  background-color: #ecfdf5;
+  border-color: #059669;
+  color: #064e3b;
+}
+
+html.theme-light .mcp-token-banner .mcp-token-banner-strong {
+  color: #022c22;
+}
+
+html.theme-light .mcp-copy-button.copied {
+  background-color: #dcfce7;
+  border-color: #059669;
+  color: #047857;
+}
+
+html.theme-light .mcp-copy-button.copied::after {
+  background: #ffffff;
+  border-color: #059669;
+  color: #065f46;
 }
 
 html.theme-light .text-accent-300 {

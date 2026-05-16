@@ -332,9 +332,12 @@ def test_mcp_setup_page_renders_without_dashboard_auth(with_token: str) -> None:
 
     assert r.status_code == 200
     assert "Connect Auto SFA tools" in r.text
-    assert "Create MCP token" in r.text
+    assert "Back to Auto SFA" in r.text
+    assert "Generate MCP Token" in r.text
+    assert "Generating..." in r.text
     assert "DevTest username" in r.text
-    assert "Token labels are only display names" in r.text
+    assert "Token label" not in r.text
+    assert "Token labels are only display names" not in r.text
 
 
 def test_mcp_setup_creates_long_lived_token(
@@ -352,16 +355,18 @@ def test_mcp_setup_creates_long_lived_token(
     r = client.post("/mcp/setup", data={
         "username": "Thanh.Phan@nvidia.com",
         "password": "devtest-password",
-        "label": "pytest token",
     })
 
     assert r.status_code == 200
     assert "Token created for" in r.text
-    assert "Label: pytest token" in r.text
     assert "thanh.phan" in r.text
     assert "agm_" in r.text
     assert "Bearer token" in r.text
     assert "Copy bearer token" in r.text
+    assert "mcp-copy-check hidden" in r.text
+    assert 'button.dataset.copyState = "Copied"' in r.text
+    assert "Create another token" not in r.text
+    assert "Token label" not in r.text
     assert "curl -fsSL https://agent-me.nvidia.com/mcp/install" in r.text
     assert "AGENT_ME_MCP_TOKEN=" in r.text
     assert "Bearer agm_" in r.text
@@ -385,7 +390,6 @@ def test_mcp_setup_remembers_token_in_same_browser(
     created = client.post("/mcp/setup", data={
         "username": "thaphan",
         "password": "devtest-password",
-        "label": "Cursor workstation",
     })
     match = re.search(r"agm_[A-Za-z0-9_-]+", created.text)
     assert match is not None
@@ -395,8 +399,9 @@ def test_mcp_setup_remembers_token_in_same_browser(
 
     assert remembered.status_code == 200
     assert "Token ready for" in remembered.text
-    assert "Label: Cursor workstation" in remembered.text
     assert token in remembered.text
+    assert "Generate MCP Token" not in remembered.text
+    assert "Create another token" not in remembered.text
 
 
 def test_mcp_install_script_renders_for_request_origin(client: TestClient, with_token: str) -> None:

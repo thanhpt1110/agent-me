@@ -40,7 +40,6 @@ Credential model:
   then returns an `agm_...` bearer token.
 - The setup page stores only a signed token digest in a long-lived browser
   cookie, so the same browser can reopen `/mcp/setup` and copy the token again.
-- Token labels are display-only and do not need to be unique across users.
 - Cursor, Codex, and Claude Code send `Authorization: Bearer <token>` to
   `/mcp/`.
 - Tool calls resolve the token to stored DevTest credentials and pass those

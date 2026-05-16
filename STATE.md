@@ -401,9 +401,9 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   long-lived `agm_...` bearer token with one-command setup for Cursor, Codex,
   and Claude Code. New tokens store the bearer token encrypted as well as the
   password; the setup page remembers only a signed digest cookie so the same
-  browser can display/copy the token later. Labels are display-only and are
-  not unique. Tokens do not expire by default; `AUTO_SFA_MCP_TOKEN_TTL_DAYS`
-  can opt into expiry. This replaces the earlier per-client Basic Auth UX,
+  browser can display/copy the token later. Tokens do not expire by default;
+  `AUTO_SFA_MCP_TOKEN_TTL_DAYS` can opt into expiry. This replaces the earlier
+  per-client Basic Auth UX,
   while keeping Basic Auth as a temporary fallback during migration.
 - **2026-05-16 — Auto SFA MCP is deterministic, tool-first, and confirmation-gated.**
   External agents now reach Auto SFA through `/mcp/` and choose one of two
