@@ -64,7 +64,7 @@ Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Py
    - **Briefs by source**: 7 source cards, click-through to drill in or trigger a single-source brief refresh; SSE-streamed progress badges; "Refresh all" fan-out. The dashboard `Refresh all` and `Refresh MCP auth` actions require the operator passcode before the backend accepts the request.
    - **Ops**: bridge stats, MCP health probe (`codex mcp list` parsed), recent brief runs, recent Slack threads, live `bridge.log` + `brief.log` tail.
    - **Logs**: 3-tab live SSE viewer — watcher journal / filtered Slack-interaction events / per-session Codex trace.
-   - **Auto SFA**: form-based runner for the same `magic-auto` flow, with live SSE terminal output. The Auto SFA header includes an `MCP` dropdown that shows the endpoint and links to `/mcp/setup` for one-time token setup.
+   - **Auto SFA**: form-based runner for the same `magic-auto` flow, with live SSE terminal output. The Auto SFA header includes an `MCP Setup` link to `/mcp/setup` for one-time token setup and same-browser token reuse.
    - **Two-host setup**:
      - **Backend** runs alongside the bridge on the same host as step 7 — `./scripts/install-dashboard.sh` from the repo root. See `design/deploy-on-host.md` § Step 9.
      - **Reverse proxy** (`https://agent-me.nvidia.com`, NVIDIA-VPN-gated) — handed to whoever operates the proxy server. Self-contained playbook in `design/deploy-proxy-on-host.md`; nginx/caddy/traefik snippets in `design/reverse-proxy-config.md`.

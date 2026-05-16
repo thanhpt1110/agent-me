@@ -5,6 +5,7 @@ def test_mcp_token_store_round_trips_encrypted_credentials(temp_state_dir) -> No
     from agent_me.auto_sfa_mcp_store import (
         create_mcp_token,
         credentials_for_bearer_token,
+        mcp_token_for_digest,
         token_db_path,
     )
 
@@ -18,19 +19,25 @@ def test_mcp_token_store_round_trips_encrypted_credentials(temp_state_dir) -> No
     assert token_db_path().parent == temp_state_dir
 
     stored = credentials_for_bearer_token(created.token)
+    remembered = mcp_token_for_digest(created.token_digest)
 
     assert stored is not None
     assert stored.username == "thanh.phan"
     assert stored.password == "devtest-secret"
+    assert remembered is not None
+    assert remembered.token == created.token
+    assert remembered.label == "pytest"
 
     raw_db = token_db_path().read_bytes()
     assert b"devtest-secret" not in raw_db
+    assert created.token.encode() not in raw_db
 
 
 def test_mcp_token_store_can_revoke_token(temp_state_dir) -> None:
     from agent_me.auto_sfa_mcp_store import (
         create_mcp_token,
         credentials_for_bearer_token,
+        mcp_token_for_digest,
         revoke_mcp_token,
     )
 
@@ -39,6 +46,7 @@ def test_mcp_token_store_can_revoke_token(temp_state_dir) -> None:
     assert credentials_for_bearer_token(created.token) is not None
     assert revoke_mcp_token(created.token) is True
     assert credentials_for_bearer_token(created.token) is None
+    assert mcp_token_for_digest(created.token_digest) is None
 
 
 def test_mcp_install_script_escapes_codex_inline_table() -> None:

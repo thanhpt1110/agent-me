@@ -1,9 +1,9 @@
 """Long-lived Auto SFA MCP token store.
 
 The setup page verifies a user's DevTest credentials once, stores the
-password encrypted on the server, and returns an Agent Me bearer token.
-MCP clients then authenticate with that bearer token instead of keeping
-DevTest passwords in local client config.
+password and bearer token encrypted on the server, and returns an Agent Me
+bearer token. MCP clients then authenticate with that bearer token instead of
+keeping DevTest passwords in local client config.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shlex
 import sqlite3
@@ -33,6 +34,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS auto_sfa_mcp_tokens (
     token_digest       TEXT PRIMARY KEY,
     username           TEXT NOT NULL,
+    encrypted_token    TEXT,
     encrypted_password TEXT NOT NULL,
     label              TEXT NOT NULL DEFAULT '',
     created_at         INTEGER NOT NULL,
@@ -61,6 +63,17 @@ class CreatedMcpToken:
     label: str
     created_at: int
     expires_at: int | None
+    token_digest: str = ""
+
+
+@dataclass(frozen=True)
+class RememberedMcpToken:
+    token: str
+    username: str
+    label: str
+    created_at: int
+    expires_at: int | None
+    token_digest: str
 
 
 def _now_ms() -> int:
@@ -127,6 +140,12 @@ def _connect() -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout = 1500")
         conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(auto_sfa_mcp_tokens)").fetchall()
+    }
+    if "encrypted_token" not in columns:
+        conn.execute("ALTER TABLE auto_sfa_mcp_tokens ADD COLUMN encrypted_token TEXT")
     _file_mode_private(db_path)
     return conn
 
@@ -172,6 +191,7 @@ def create_mcp_token(
     now = _now_ms()
     ttl = token_ttl_ms()
     expires_at = now + ttl if ttl else None
+    encrypted_token = _fernet().encrypt(token.encode()).decode()
     encrypted_password = _fernet().encrypt(password.encode()).decode()
 
     conn = _connect()
@@ -179,13 +199,14 @@ def create_mcp_token(
         conn.execute(
             """
             INSERT INTO auto_sfa_mcp_tokens
-                (token_digest, username, encrypted_password, label,
+                (token_digest, username, encrypted_token, encrypted_password, label,
                  created_at, updated_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 digest,
                 normalized_username,
+                encrypted_token,
                 encrypted_password,
                 label.strip()[:120],
                 now,
@@ -202,7 +223,48 @@ def create_mcp_token(
         label=label.strip()[:120],
         created_at=now,
         expires_at=expires_at,
+        token_digest=digest,
     )
+
+
+def mcp_token_for_digest(token_digest: str) -> RememberedMcpToken | None:
+    digest = token_digest.strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    now = _now_ms()
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT token_digest, username, encrypted_token, label,
+                   created_at, expires_at, revoked_at
+            FROM auto_sfa_mcp_tokens
+            WHERE token_digest = ?
+            """,
+            (digest,),
+        ).fetchone()
+        if row is None or row["revoked_at"] is not None:
+            return None
+        expires_at = row["expires_at"]
+        if expires_at is not None and int(expires_at) <= now:
+            return None
+        encrypted_token = row["encrypted_token"]
+        if not encrypted_token:
+            return None
+        try:
+            token = _fernet().decrypt(str(encrypted_token).encode()).decode()
+        except (InvalidToken, UnicodeDecodeError):
+            return None
+        return RememberedMcpToken(
+            token=token,
+            username=str(row["username"]),
+            label=str(row["label"] or ""),
+            created_at=int(row["created_at"]),
+            expires_at=int(expires_at) if expires_at is not None else None,
+            token_digest=digest,
+        )
+    finally:
+        conn.close()
 
 
 def credentials_for_bearer_token(token: str) -> StoredMcpCredentials | None:

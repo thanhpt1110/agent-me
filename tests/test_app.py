@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
@@ -219,20 +220,11 @@ def test_auto_sfa_page_renders(
     assert r.status_code == 200
     assert "Auto SFA" in r.text
     assert "Prepare templates, release SFA tasks, and stream terminal output here." in r.text
-    assert "<span>MCP</span>" in r.text
-    assert "https://agent-me.nvidia.com/mcp/" in r.text
-    assert "Copy MCP endpoint" in r.text
-    assert 'data-endpoint="https://agent-me.nvidia.com/mcp/"' in r.text
-    assert 'x-data="mcpEndpointMenu($el.dataset.endpoint)"' in r.text
-    assert "copyEndpoint()" in r.text
-    assert "navigator.clipboard.writeText(this.endpoint)" in r.text
-    assert 'document.execCommand("copy")' in r.text
-    assert "Use DevTest credentials once to create an" in r.text
-    assert '<span class="rounded bg-accent-500/15 px-1.5 py-0.5 font-bold text-accent-400 ring-1 ring-accent-500/35">Agent Me</span>' in r.text
-    assert "MCP token" in r.text
-    assert "Setup token" in r.text
+    assert "<span>MCP Setup</span>" in r.text
     assert 'href="https://agent-me.nvidia.com/mcp/setup"' in r.text
-    assert "copiedMcp" in r.text
+    assert "Copy MCP endpoint" not in r.text
+    assert "mcpEndpointMenu" not in r.text
+    assert "copiedMcp" not in r.text
     assert "Create SFA Tasks" in r.text
     assert "Release SFA Tasks" in r.text
     assert "display_name" in r.text
@@ -309,8 +301,8 @@ def test_auto_sfa_mcp_endpoint_uses_request_origin(
     r = client.get("/auto-sfa", headers={**_auth(with_token), "Host": "agent-me.nvidia.com"})
 
     assert r.status_code == 200
-    assert 'data-endpoint="http://agent-me.nvidia.com/mcp/"' in r.text
-    assert "<code>http://agent-me.nvidia.com/mcp/</code>" in r.text
+    assert 'href="http://agent-me.nvidia.com/mcp/setup"' in r.text
+    assert "Copy MCP endpoint" not in r.text
 
 
 def test_auto_sfa_mcp_endpoint_respects_forwarded_proto(
@@ -329,8 +321,8 @@ def test_auto_sfa_mcp_endpoint_respects_forwarded_proto(
     })
 
     assert r.status_code == 200
-    assert 'data-endpoint="https://agent-me.nvidia.com/mcp/"' in r.text
-    assert "<code>https://agent-me.nvidia.com/mcp/</code>" in r.text
+    assert 'href="https://agent-me.nvidia.com/mcp/setup"' in r.text
+    assert "Copy MCP endpoint" not in r.text
 
 
 def test_mcp_setup_page_renders_without_dashboard_auth(with_token: str) -> None:
@@ -342,6 +334,7 @@ def test_mcp_setup_page_renders_without_dashboard_auth(with_token: str) -> None:
     assert "Connect Auto SFA tools" in r.text
     assert "Create MCP token" in r.text
     assert "DevTest username" in r.text
+    assert "Token labels are only display names" in r.text
 
 
 def test_mcp_setup_creates_long_lived_token(
@@ -364,13 +357,46 @@ def test_mcp_setup_creates_long_lived_token(
 
     assert r.status_code == 200
     assert "Token created for" in r.text
+    assert "Label: pytest token" in r.text
     assert "thanh.phan" in r.text
     assert "agm_" in r.text
+    assert "Bearer token" in r.text
+    assert "Copy bearer token" in r.text
     assert "curl -fsSL https://agent-me.nvidia.com/mcp/install" in r.text
     assert "AGENT_ME_MCP_TOKEN=" in r.text
     assert "Bearer agm_" in r.text
     assert "claude mcp add --transport http" in r.text
     assert "[mcp_servers.agent-me]" in r.text
+    assert client.cookies.get("agent_me_auto_sfa_mcp_setup")
+
+
+def test_mcp_setup_remembers_token_in_same_browser(
+    client: TestClient,
+    with_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    async def fake_resolve(*args, **kwargs):
+        return 1155188
+
+    monkeypatch.setattr(app_module, "resolve_destination_folder_id", fake_resolve)
+
+    created = client.post("/mcp/setup", data={
+        "username": "thaphan",
+        "password": "devtest-password",
+        "label": "Cursor workstation",
+    })
+    match = re.search(r"agm_[A-Za-z0-9_-]+", created.text)
+    assert match is not None
+    token = match.group(0)
+
+    remembered = client.get("/mcp/setup")
+
+    assert remembered.status_code == 200
+    assert "Token ready for" in remembered.text
+    assert "Label: Cursor workstation" in remembered.text
+    assert token in remembered.text
 
 
 def test_mcp_install_script_renders_for_request_origin(client: TestClient, with_token: str) -> None:

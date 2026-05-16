@@ -406,11 +406,13 @@ differ from the dashboard page origin. Add matching
 `AUTO_SFA_MCP_ALLOWED_ORIGINS` only when an MCP browser client sends an
 `Origin` header that differs from the default allow-list.
 
-The setup flow stores DevTest passwords encrypted in
-`${AGENT_ME_STATE_DIR}/auto-sfa-mcp.db`. If `AUTO_SFA_MCP_CREDENTIAL_KEY`
-is not set, the dashboard creates a private Fernet key file at
-`${AGENT_ME_STATE_DIR}/auto-sfa-mcp.fernet`; back up that key with the
-state directory if MCP tokens should survive host rebuilds.
+The setup flow stores DevTest passwords and bearer tokens encrypted in
+`${AGENT_ME_STATE_DIR}/auto-sfa-mcp.db`. The setup page remembers only a
+signed token digest cookie so the same browser can reopen `/mcp/setup` and
+copy the token again. If `AUTO_SFA_MCP_CREDENTIAL_KEY` is not set, the
+dashboard creates a private Fernet key file at
+`${AGENT_ME_STATE_DIR}/auto-sfa-mcp.fernet`; back up that key with the state
+directory if MCP tokens should survive host rebuilds.
 
 ```bash
 cd ~/agent-me

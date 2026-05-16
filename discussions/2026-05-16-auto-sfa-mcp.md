@@ -42,8 +42,8 @@ tool.
   - Default complexity is `L2`.
   - Destination folder is auto-resolved unless the caller supplies
     `devtest_folder_id`.
-- Surface the endpoint in the Auto SFA UI, not only in docs. The header has an
-  `MCP` hover dropdown with a code block and icon-only copy button.
+- Surface setup in the Auto SFA UI, not only in docs. The header has a direct
+  `MCP Setup` link to `/mcp/setup`.
 
 ## Tool Contracts
 
@@ -84,21 +84,14 @@ replayable over plain HTTP.
 
 ## UI Notes
 
-The Auto SFA page now shows the MCP endpoint in the top-right dropdown aligned
-with the subtitle. Hovering over `MCP` keeps the menu open while moving to the
-copy button. The copy button uses `navigator.clipboard.writeText` on secure
-contexts and falls back to a temporary textarea plus `document.execCommand("copy")`
-for HTTP contexts. The dropdown links to `/mcp/setup`; normal Auto SFA users do
-not need to visit that setup page.
-
-The note text is:
-
-```text
-Use DevTest credentials once to create an Agent Me MCP token.
-```
-
-`Agent Me` is styled as a small NVIDIA-green badge so it remains prominent in
-both light and dark themes.
+The Auto SFA page now shows a top-right `MCP Setup` link aligned with the
+subtitle. `/mcp/setup` shows the bearer token, one-command install, Cursor
+config, Claude command, and Codex config with copy buttons. After token
+creation, the browser receives a signed digest cookie; the bearer token itself
+is encrypted in the server-side token store. Reopening `/mcp/setup` from the
+same browser redisplays the token so it can be reused in another client.
+Token labels are display-only and duplicate labels across users do not affect
+authentication.
 
 ## Verification
 
@@ -107,14 +100,16 @@ both light and dark themes.
 - Focused tests for:
   - MCP bearer-token requirement.
   - MCP bearer token resolving to encrypted stored DevTest credentials.
-  - `/mcp/setup` rendering, DevTest verification call, and install snippets.
-  - MCP token store encryption, revoke helper, and installer script escaping.
+  - `/mcp/setup` rendering, DevTest verification call, remembered token page,
+    and install snippets.
+  - MCP token/password store encryption, revoke helper, and installer script
+    escaping.
   - MCP tool discovery.
   - `needs_input` for general release requests.
   - `needs_confirmation` for complete create/release requests.
   - Confirmation-token execution path.
   - Dashboard auth exemption for `/mcp/`.
-  - Auto SFA UI endpoint/dropdown/copy markup.
+  - Auto SFA UI direct setup link.
 - Live endpoint probes:
   - `/mcp/setup` renders the setup form without dashboard auth.
   - `/mcp/install` returns a valid shell installer.
@@ -125,6 +120,5 @@ both light and dark themes.
   - `/mcp/` returns the bearer-token challenge when unauthenticated and lists
     `create_sfa_tasks` / `release_sfa_tasks` through the temporary Basic Auth
     fallback.
-  - `/auto-sfa` renders the HTTP-derived endpoint, `Setup token` link, and
-    HTTP-safe copy fallback markup.
+  - `/auto-sfa` renders the HTTP-derived `MCP Setup` link.
 - Restarted `agent-me-dashboard.service`; service reported `active`.

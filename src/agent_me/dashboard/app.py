@@ -52,6 +52,7 @@ from agent_me.auto_sfa_mcp_store import (
     cursor_config_json,
     install_command,
     install_script,
+    mcp_token_for_digest,
     normalize_devtest_username,
 )
 from agent_me.dashboard.auth import (
@@ -117,6 +118,8 @@ RUNNER = BriefRunner()
 AUTO_SFA_RUNNER = AutoSFARunner()
 OPERATOR_ACTION_CODE_HEADER = "x-agent-me-action-code"
 OPERATOR_ACTION_TOKEN_HEADER = "x-agent-me-operator-token"
+MCP_SETUP_COOKIE_NAME = "agent_me_auto_sfa_mcp_setup"
+MCP_SETUP_COOKIE_MAX_AGE_S = 10 * 365 * 24 * 60 * 60
 
 # Cached MCP probe — `codex mcp list` takes ~1s and we don't want
 # every page hit to trigger one.
@@ -158,6 +161,48 @@ def _operator_token_valid(token: str | None) -> bool:
         and data.get("scope") == "operator-action"
         and data.get("version") == 1
     )
+
+
+def _mcp_setup_cookie_serializer() -> URLSafeSerializer:
+    secret = (
+        os.environ.get("AUTO_SFA_MCP_SETUP_COOKIE_SECRET")
+        or os.environ.get("AUTO_SFA_MCP_CREDENTIAL_KEY")
+        or os.environ.get("DASHBOARD_TOKEN")
+        or "agent-me-mcp-setup-dev"
+    )
+    return URLSafeSerializer(secret, salt="agent-me-auto-sfa-mcp-setup")
+
+
+def _issue_mcp_setup_cookie(token_digest: str) -> str:
+    return _mcp_setup_cookie_serializer().dumps({
+        "scope": "auto-sfa-mcp-setup",
+        "digest": token_digest,
+        "version": 1,
+    })
+
+
+def _mcp_setup_cookie_digest(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        data = _mcp_setup_cookie_serializer().loads(value)
+    except BadSignature:
+        return None
+    if not (
+        isinstance(data, dict)
+        and data.get("scope") == "auto-sfa-mcp-setup"
+        and data.get("version") == 1
+    ):
+        return None
+    digest = str(data.get("digest") or "").strip()
+    return digest if re.fullmatch(r"[0-9a-f]{64}", digest) else None
+
+
+def _request_is_secure(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if forwarded_proto.split(",", 1)[0].strip().lower() == "https":
+        return True
+    return request.url.scheme == "https"
 
 
 def _operator_action_headers_or_denied(request: Request) -> dict[str, str] | JSONResponse:
@@ -578,6 +623,45 @@ def _mcp_setup_base_context(request: Request) -> dict[str, Any]:
     }
 
 
+def _mcp_setup_success_context(request: Request, token_record: Any, *, token_state: str) -> dict[str, Any]:
+    endpoint = _mcp_setup_base_context(request)["mcp_endpoint_url"]
+    install_base = (_public_base_url_for_request(request) or "").rstrip("/")
+    if not install_base:
+        install_base = _mcp_setup_base_context(request)["setup_url"].removesuffix("/mcp/setup")
+    token = str(token_record.token)
+    return {
+        **_mcp_setup_base_context(request),
+        "created": token_record,
+        "token_state": token_state,
+        "mcp_token": token,
+        "authorization_header": f"Bearer {token}",
+        "cursor_config": cursor_config_json(endpoint=endpoint, token=token),
+        "install_command": install_command(base_url=install_base, token=token),
+        "claude_command": (
+            "claude mcp add --transport http --scope user "
+            f'--header "Authorization: Bearer {token}" '
+            f"agent-me {endpoint}"
+        ),
+        "codex_config": (
+            "[mcp_servers.agent-me]\n"
+            f'url = "{endpoint}"\n'
+            f'http_headers = {{ Authorization = "Bearer {token}" }}\n'
+        ),
+        "username": str(token_record.username),
+        "label": str(token_record.label or ""),
+    }
+
+
+def _remembered_mcp_token_context(request: Request) -> dict[str, Any] | None:
+    digest = _mcp_setup_cookie_digest(request.cookies.get(MCP_SETUP_COOKIE_NAME))
+    if not digest:
+        return None
+    token_record = mcp_token_for_digest(digest)
+    if token_record is None:
+        return None
+    return _mcp_setup_success_context(request, token_record, token_state="remembered")
+
+
 async def page_auto_sfa(request: Request):
     mcp_context = _mcp_setup_base_context(request)
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
@@ -591,6 +675,10 @@ async def page_auto_sfa(request: Request):
 
 
 async def page_mcp_setup(request: Request):
+    if request.query_params.get("new") not in {"1", "true", "yes"}:
+        remembered = _remembered_mcp_token_context(request)
+        if remembered is not None:
+            return TEMPLATES.TemplateResponse(request, "mcp_setup.html", remembered)
     return TEMPLATES.TemplateResponse(request, "mcp_setup.html", {
         **_mcp_setup_base_context(request),
         "username": "",
@@ -645,28 +733,21 @@ async def api_mcp_setup(request: Request):
         )
 
     created = create_mcp_token(username=username, password=password, label=label)
-    install_base = (_public_base_url_for_request(request) or "").rstrip("/")
-    if not install_base:
-        install_base = _mcp_setup_base_context(request)["setup_url"].removesuffix("/mcp/setup")
-    endpoint = context["mcp_endpoint_url"]
-    return TEMPLATES.TemplateResponse(request, "mcp_setup.html", {
-        **context,
-        "created": created,
-        "mcp_token": created.token,
-        "authorization_header": f"Bearer {created.token}",
-        "cursor_config": cursor_config_json(endpoint=endpoint, token=created.token),
-        "install_command": install_command(base_url=install_base, token=created.token),
-        "claude_command": (
-            "claude mcp add --transport http --scope user "
-            f'--header "Authorization: Bearer {created.token}" '
-            f"agent-me {endpoint}"
-        ),
-        "codex_config": (
-            "[mcp_servers.agent-me]\n"
-            f'url = "{endpoint}"\n'
-            f'http_headers = {{ Authorization = "Bearer {created.token}" }}\n'
-        ),
-    })
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "mcp_setup.html",
+        _mcp_setup_success_context(request, created, token_state="created"),
+    )
+    response.set_cookie(
+        MCP_SETUP_COOKIE_NAME,
+        _issue_mcp_setup_cookie(created.token_digest),
+        max_age=MCP_SETUP_COOKIE_MAX_AGE_S,
+        httponly=True,
+        samesite="lax",
+        secure=_request_is_secure(request),
+        path="/mcp/setup",
+    )
+    return response
 
 
 async def mcp_install(request: Request):

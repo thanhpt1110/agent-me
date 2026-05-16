@@ -25,19 +25,22 @@
 
 ## Auto SFA MCP auth
 
-External agent clients connect to the Auto SFA MCP endpoint shown in the
-dashboard Auto SFA page's `MCP` dropdown. The dropdown derives the endpoint
-from the page origin by default: an HTTP dashboard page shows an HTTP MCP URL,
-and an HTTPS dashboard page shows an HTTPS MCP URL. Set
-`AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP public endpoint must differ
-from the dashboard page origin.
+External agent clients connect through the Auto SFA setup flow. The dashboard
+Auto SFA page has a direct `MCP Setup` link to `/mcp/setup`; setup/install
+snippets derive the endpoint from the page origin by default. An HTTP setup
+page produces an HTTP MCP URL, and an HTTPS setup page produces an HTTPS MCP
+URL. Set `AUTO_SFA_MCP_PUBLIC_BASE_URL` only when the MCP public endpoint must
+differ from the dashboard page origin.
 
 Credential model:
 
 - User enters DevTest username/password once on `/mcp/setup`.
 - Agent-me verifies the credentials with `magic-auto resolve-destination-folder`.
-- Agent-me stores the DevTest password encrypted server-side and returns an
-  `agm_...` bearer token.
+- Agent-me stores the DevTest password and bearer token encrypted server-side,
+  then returns an `agm_...` bearer token.
+- The setup page stores only a signed token digest in a long-lived browser
+  cookie, so the same browser can reopen `/mcp/setup` and copy the token again.
+- Token labels are display-only and do not need to be unique across users.
 - Cursor, Codex, and Claude Code send `Authorization: Bearer <token>` to
   `/mcp/`.
 - Tool calls resolve the token to stored DevTest credentials and pass those
