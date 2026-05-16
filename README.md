@@ -14,111 +14,326 @@
 
 > _myself, but in agent mode._
 
-Personal AI OS — a public-shareable framework for a 24/7 always-on autonomous agent that handles your daily/weekly workload. Fork it, set your own configs, deploy your own `agent-me`. **Built at [NVIDIA](https://www.nvidia.com)** by [@thanhpt1110](https://github.com/thanhpt1110); first operator runs on the NVIDIA Colossus internal network.
+`agent-me` is a 24/7 personal-agent runtime for Slack, a web dashboard, daily
+engineering briefs, and Auto SFA automation. It keeps conversation state in
+SQLite, runs Codex with the right MCP environment, gates side effects through
+human approval when needed, and exposes Auto SFA as a native MCP endpoint for
+other agent clients.
 
-## Quickstart for forkers
+Built at NVIDIA by [thaphan@nvidia.com](mailto:thaphan@nvidia.com).
 
-Prerequisites: `codex` CLI, [uv](https://docs.astral.sh/uv/), `gh` CLI, `jq`, Python 3.12+, Node (for the Playwright MCP).
+## What Runs Today
 
-1. **Use this template** on GitHub → create your own copy.
-2. **Clone & bootstrap**:
-   ```bash
-   git clone git@github.com:<you>/agent-me.git
-   cd agent-me
-   ./scripts/bootstrap.sh
-   ```
-   Runs `uv sync`, prepares `configs/.env`, and registers all 17 MaaS MCP servers with Codex idempotently (Jira, GitLab, Confluence, NVBugs, Slack, Outlook, GDrive, OneDrive, SharePoint, Glean, Jama, IPPSEC, MySQL, Nsight-CUDA, NVKS-Prometheus, PagerDuty, Playwright). See `design/setup-on-fresh-host.md` for the long version (incl. cloud-host specifics).
-3. **Three interactive steps** the bootstrap script reminds you to do (browser required):
-   - `codex login` — one-time per machine.
-   - `uv run agent-me-codex-reauth` — refreshes the MaaS OAuth token store used by Codex bearer-token MCPs and opens/prints NVIDIA-SSO URLs where needed.
-   - If the bridge runs on Colossus but your browser is on a Mac, run this on the Mac instead: `./scripts/mac-reauth-and-sync.sh <ssh-host>`. It opens all auth tabs locally, syncs refreshed credentials back to the host, and prepares Codex MCP token env vars for future host sessions.
-   - Fill `configs/.env` with Slack tokens (template = `configs/.env.example`). Slack app walkthrough: `design/slack-app-setup.md`.
-   - Daily host auth shortcuts from the Mac:
-     ```bash
-     # Reauth on the Mac, then push credentials and Codex env exports to this host.
-     ./scripts/mac-reauth-and-sync.sh 1xA100-40
+- **Slack bridge** - Slack Socket Mode app with thread memory, slash/plain-text
+  commands, approval buttons, daily brief triggers, and Auto SFA shortcuts.
+- **Codex orchestration** - General Slack requests run through the Codex CLI
+  (`codex exec --json`) with persisted context, MCP credentials, summaries, and
+  permissioned write handling.
+- **Daily briefs** - Jira, GitHub, GitLab, Slack, Teams, Outlook, Calendar,
+  NVBugs, and MaaS signals are normalized into Slack threads and dashboard
+  cache files.
+- **Dashboard** - Starlette web UI for source health, brief output, logs,
+  operator actions, Auto SFA history, and MCP setup.
+- **Auto SFA UI** - Guided create/release workflows stream terminal output,
+  support cancellation, and persist run history.
+- **Auto SFA MCP** - Streamable HTTP MCP endpoint exposing `create_sfa_tasks`
+  and `release_sfa_tasks` to Cursor, Codex, Claude, and other MCP clients.
+- **MCP credential helpers** - Claude/Codex MCP OAuth refresh utilities export
+  short-lived environment files before Codex runs.
+- **Parallel queue** - File-backed queue for coordinating helper-agent work
+  while retaining source-thread metadata.
 
-     # Copy current Mac Keychain credentials to this host only.
-     ./scripts/sync-mcp-creds-to-host.sh 1xA100-40
+## Architecture
 
-     # Reauth only on the current machine; no host sync.
-     uv run agent-me-codex-reauth
-     ```
-     New shell-launched Codex sessions on the host inherit the refreshed MCP env automatically. The running Slack bridge can force-refresh host-side MaaS OAuth tokens and reload the env without restart: type `mcp refresh` or `/mcp refresh` in Slack. Run the Mac sync only when that command reports a rejected refresh token or a tool still returns 401.
-4. **Verify**:
-   ```bash
-   codex mcp list                             # all 17 MaaS MCPs should be registered
-   uv run agent-me-brief --period day --dry-run
-   ```
-5. **Run the bridge**:
-   ```bash
-   uv run agent-me-bridge
-   ```
-   From Slack, DM the bot or use `/help`, `/mcp`, `/reauth`, `/version`, `/whoami`, `/brief`, or the **Auto SFA** help button.
-   Briefs invoked from a thread post each platform as a separate message in that thread and mirror a concise digest to `thaphan@nvidia.com` through the Codex Slack connector, not the personal-workspace bot token. Reads use `codex exec`; permissioned connector/MCP writes use Codex app-server auto-review.
-   Auto SFA exposes two write workflows from Slack, the dashboard, and the native MCP endpoint mounted at `/mcp/`. `Create SFA Tasks` prepares templates with `magic-auto update-template` from `display_name` + `folder_id`, defaults `Win_Linux` to `Linux Only`, and supports `Windows Only` / `Both` overrides. `Release SFA Tasks` runs the existing `magic-auto sfa` release path from `display_name` + `url_path`, defaults to `Linux Release` source `50722`, end date = today in Vietnam, start date = seven days earlier, complexity `L2`, and auto-resolves the destination folder; `Release` type switches to source `47877`. The dashboard asks for per-run DevTest `USERNAME`/`PASSWORD`; MCP users visit `/mcp/setup` once, verify DevTest credentials, and receive a long-lived Agent Me bearer token plus Cursor/Codex/Claude install snippets. MCP tools never call another agent or LLM; they return `needs_input` for incomplete requests, execute complete approved tool calls in one request, support `confirmed=false` as preview/dry-run mode, and return `job_url` for live dashboard terminal progress instead of MCP polling. Passwords are encrypted server-side for MCP token use and are not written to server config, job history, or public MCP responses. Dashboard, Slack, and MCP triggers are recorded in `auto_sfa_runs` for the dashboard's scrollable trigger history.
-6. **(Optional) Native slash commands**: register `/mcp`, `/reauth`, `/version`, `/whoami`, `/help`, `/brief`, `/model-free-draft` in the Slack app config — see `design/slack-app-setup.md` §12b. Without this, prefix the command with `@agent-me ` (the bridge intercepts text-form slashes too).
-7. **(Optional) Deploy on a 24/7 host**: `design/deploy-on-host.md` is the end-to-end playbook (Colossus / any internal-NVIDIA systemd Linux box). Auto-deploys on every git push (60s polling watcher → systemctl restart bridge + dashboard).
-8. **(Optional) Web dashboard at [`https://agent-me.nvidia.com`](https://agent-me.nvidia.com)**: Phase 4 dashboard, **NVIDIA-themed (black + `#76b900` brand green)**, reads bridge state, surfaces pending tasks across 9 platform groups, runs on-demand brief refreshes, and streams live logs.
-   - **Overview**: stats row (Threads 24h · Codex sessions · Pending approvals · **Pending across all platforms**), then an expandable card per platform group (Jira / GitLab / Confluence / NVBugs / Slack / Outlook / Outlook Calendar / GitHub + Slack threads + Codex sessions). Each card shows pending count, expand to see deep-linked subtasks with priority / due / age. Pending items are **mock data** today (clearly labelled "mock — Phase 5 real data"); design at `design/dashboard-pending-panel.md`.
-   - **Briefs by source**: 7 source cards, click-through to drill in or trigger a single-source brief refresh; SSE-streamed progress badges; "Refresh all" fan-out. The dashboard `Refresh all` and `Refresh MCP auth` actions require the operator passcode before the backend accepts the request.
-   - **Ops**: bridge stats, MCP health probe (`codex mcp list` parsed), recent brief runs, recent Slack threads, live `bridge.log` + `brief.log` tail.
-   - **Logs**: 3-tab live SSE viewer — watcher journal / filtered Slack-interaction events / per-session Codex trace.
-   - **Auto SFA**: form-based runner for the same `magic-auto` flow, with live SSE terminal output. The Auto SFA header includes an `MCP Setup` link to `/mcp/setup` for one-time token setup and same-browser token reuse.
-   - **Footer**: identifies `Agent Me`, builder contact `Thanh Phan <thaphan@nvidia.com>`, `NVIDIA VRDC SWQA`, and the latest GitHub release tag link/date.
-   - **Two-host setup**:
-     - **Backend** runs alongside the bridge on the same host as step 7 — `./scripts/install-dashboard.sh` from the repo root. See `design/deploy-on-host.md` § Step 9.
-     - **Reverse proxy** (`https://agent-me.nvidia.com`, NVIDIA-VPN-gated) — handed to whoever operates the proxy server. Self-contained playbook in `design/deploy-proxy-on-host.md`; nginx/caddy/traefik snippets in `design/reverse-proxy-config.md`.
+```mermaid
+flowchart TB
+    Slack[Slack DM, mention, slash command] --> Bridge[Slack bridge]
+    Bridge --> State[(state.db)]
+    Bridge --> Codex[Codex CLI]
+    Bridge --> Approval[Slack approvals]
+    Codex --> AppServer[Codex app-server bridge]
+    Codex --> ExternalMCP[Configured MCP servers]
 
-## Architecture overview
+    Browser[Browser] --> Dashboard[Starlette dashboard]
+    Dashboard --> State
+    Dashboard --> Cache[(dashboard-cache)]
+    Dashboard --> Logs[service logs]
+    Dashboard --> AutoRunner[Auto SFA runner]
 
-```
-┌───────────────────────────────────────────────────────────┐
-│  Interface Layer (how user chats or issues remote commands)│
-│  - Slack/Teams bot? Telegram? Email? Web UI? CLI SSH?     │
-└───────────────────────────────┬───────────────────────────┘
-                                │
-┌───────────────────────────────▼───────────────────────────┐
-│  Orchestrator (Codex)                                     │
-│  - Reads/chat → headless `codex exec --json`              │
-│  - Connector/MCP writes → app-server auto-review          │
-│  - Route request → correct sub-agent                      │
-│  - Schedule daily/weekly cron jobs                        │
-│  - Memory & state (file-based, sync GitHub)               │
-└──┬──────────┬──────────┬──────────┬──────────┬────────────┘
-   │          │          │          │          │
-┌──▼──┐    ┌──▼──┐    ┌──▼──┐    ┌──▼──┐    ┌──▼──┐
-│Work │    │Know-│    │Code │    │Ops  │    │Life │
-│Jira │    │ledge│    │Git- │    │Cloud host │    │Cal  │
-│Bugs │    │Glean│    │Lab  │    │mon  │    │Mail │
-└─────┘    └─────┘    └─────┘    └─────┘    └─────┘
+    MCPClient[Cursor, Codex, Claude, other agents] --> AutoMCP[Auto SFA MCP /mcp/]
+    AutoMCP --> TokenStore[(encrypted MCP token store)]
+    AutoMCP --> AutoRunner
+    AutoRunner --> MagicAuto[magic-auto dtoperator]
+    AutoRunner --> History[(Auto SFA history)]
 
-┌───────────────────────────────────────────────────────────┐
-│  Persistence: GitHub repo (private)                       │
-│  - /configs, /skills, /prompts, /agents, /briefs (output) │
-│  - Pull on startup, push on change                        │
-└───────────────────────────────────────────────────────────┘
+    Brief[Daily brief runner] --> Cache
+    Brief --> Slack
+    Brief --> ExternalMCP
 
-┌───────────────────────────────────────────────────────────┐
-│  Runtime host (24/7):                                     │
-│  Option A — user's existing online server (SSH access)    │
-│  Option B — cloud host instance (GPU not needed, CPU OK)  │
-│  Option C — launchd local Mac (offline when machine is off)│
-└───────────────────────────────────────────────────────────┘
+    Systemd[systemd user services] --> Bridge
+    Systemd --> Dashboard
 ```
 
-## Layout
+The runtime is split into four layers:
 
-- `discussions/` — chat logs & decision records (one per session, dated)
-- `design/` — architecture docs, diagrams, ADRs
-- `configs/` — runtime configs (synced to GitHub)
-- `skills/` — custom skills the agent can invoke
-- `scripts/` — bootstrap, deploy, sync scripts
-- `assets/` — project avatar/logo SVG and PNG workspace icons
+- **Interfaces** - Slack, dashboard pages/APIs/SSE streams, and the `/mcp/`
+  Streamable HTTP MCP endpoint.
+- **Orchestration** - Codex subprocess runs, Codex app-server writes, daily
+  brief fan-out, Auto SFA job execution, and the optional parallel queue.
+- **State** - `state.db` for Slack threads, messages, approvals, and Auto SFA
+  history; `dashboard-cache` for brief output; encrypted Auto SFA MCP token
+  storage for reusable DevTest-backed MCP access.
+- **Ops** - systemd user units, bootstrap/deploy scripts, auth refresh scripts,
+  log watchers, health probes, and docs under `design/` and `discussions/`.
 
-## Status
+## Key Workflows
 
-This framework is under active development. See [STATE.md](STATE.md) for the current development phase, what's in flight, and what's next.
+### Slack Chat
+
+The Slack bridge in `src/agent_me/slack_bridge/app.py` receives DMs, app
+mentions, and slash commands. It stores thread/message context in `state.db`,
+builds a Codex prompt with the relevant conversation history, refreshes MCP
+credentials, and launches `codex exec --json`. The final response is written
+back to the Slack thread.
+
+Supported Slack shortcuts include:
+
+| Command | Behavior |
+| --- | --- |
+| `brief`, `brief week`, `brief month` | Run a daily, weekly, or monthly brief |
+| `mcp`, `mcp refresh`, `reauth` | Show or refresh MCP auth state |
+| `whoami` | Show the configured Slack identity |
+| `auto sfa`, `create sfa tasks` | Start guided Auto SFA flows |
+| `model-free-draft` | Draft without launching a model |
+| anything else | Send the request to Codex with thread context |
+
+### Permissioned Writes
+
+When Codex needs to call connector/app-server write tools, the bridge uses
+`src/agent_me/codex_app_server.py` and the Slack approval plumbing in
+`src/agent_me/slack_bridge/approvals.py`. Pending requests are persisted, Slack
+buttons collect the approval decision, and Codex receives the result through the
+approval hook.
+
+### Daily Briefs
+
+`src/agent_me/scripts/daily_brief.py` gathers work signals from the configured
+sources, normalizes them into brief items, posts Slack summary threads, and
+writes dashboard cache files. Direct MaaS JSON-RPC calls are used where useful;
+Slack, Teams, Outlook, Calendar, Jira, GitHub, GitLab, and NVBugs use the
+available connector or CLI paths.
+
+### Dashboard
+
+`src/agent_me/dashboard/app.py` serves the web UI and APIs. It reads `state.db`
+and `dashboard-cache` through `state_reader.py`, streams logs and Auto SFA job
+events over SSE, exposes health and MCP-auth actions, and mounts the Auto SFA
+MCP app at `/mcp/`.
+
+Important pages:
+
+| Path | Purpose |
+| --- | --- |
+| `/` | Brief dashboard and source cards |
+| `/ops` | Operations, logs, and health checks |
+| `/auto-sfa` | Auto SFA UI, terminal stream, and history |
+| `/mcp/setup` | Generate/reuse an Agent Me MCP token and client configs |
+| `/healthz` | Health probe |
+
+### Auto SFA
+
+Auto SFA logic is centralized in `src/agent_me/auto_sfa.py`. It parses keyed or
+natural-language requests, validates required fields, writes temporary
+`magic-auto` config files with per-run DevTest credentials, redacts sensitive
+values in displayed commands, and runs `dtoperator.py` through `uv`.
+
+Two flows are supported:
+
+| Flow | Backend action | Main inputs |
+| --- | --- | --- |
+| Create SFA tasks | `dtoperator.py update-template` | display name, folder ID, Win/Linux option |
+| Release SFA tasks | `dtoperator.py sfa` | template IDs, source type, date window, finish date, complexity, optional destination folder |
+
+The dashboard runner in `src/agent_me/dashboard/auto_sfa_runner.py` manages
+in-memory jobs, cancellation, live terminal streaming, and persisted history.
+
+### Auto SFA MCP
+
+`src/agent_me/auto_sfa_mcp.py` exposes Auto SFA as a Streamable HTTP MCP server:
+
+```text
+http://agent-me.nvidia.com/mcp/
+```
+
+The public tools are:
+
+| Tool | Purpose |
+| --- | --- |
+| `create_sfa_tasks` | Create Auto SFA template tasks for a display name and folder ID |
+| `release_sfa_tasks` | Release or auto templates using Linux Release or Release defaults |
+
+Complete tool calls start jobs immediately and return `job_id`, `job_url`, and
+the Auto SFA dashboard URL. Incomplete calls return structured `needs_input`
+responses so the MCP client can ask for missing fields before execution. The MCP
+server does not call another LLM to interpret requests; the client chooses the
+tool and sends structured arguments.
+
+Authentication uses bearer tokens generated on `/mcp/setup`. Tokens are stored
+server-side as encrypted records in `src/agent_me/auto_sfa_mcp_store.py`; the
+browser cookie only stores a signed token digest. Tokens do not expire by
+default unless `AUTO_SFA_MCP_TOKEN_TTL_DAYS` is configured.
+
+### Auth And State
+
+- `src/agent_me/mcp_tokens.py` reads Claude MCP OAuth credentials, refreshes
+  MaaS tokens, exports `AGENT_ME_MCP_TOKEN_*` environment variables, and writes
+  `~/.config/agent-me/codex-mcp-env.sh` for Codex subprocesses.
+- `agent-me-reauth` and `agent-me-codex-reauth` refresh Claude and Codex MCP
+  credential paths.
+- `state.db` stores Slack thread metadata, message history, pending approvals,
+  Auto SFA flow state, and Auto SFA run history.
+- `auto-sfa-mcp.db` and `auto-sfa-mcp.fernet` store reusable MCP tokens and
+  encrypted DevTest credentials.
+
+## Quickstart
+
+Prerequisites:
+
+- Linux host with Python 3.12+
+- `uv`
+- Slack app credentials
+- Codex CLI
+- Claude/Codex MCP auth configured for the internal MCP servers
+- Access to `magic-auto` for Auto SFA workflows
+
+Install:
+
+```bash
+git clone git@github.com:thanhpt1110/agent-me.git
+cd agent-me
+uv sync --dev
+cp configs/.env.example configs/.env
+```
+
+Fill `configs/.env` with your Slack, Codex, dashboard, state, and MCP paths. At
+minimum:
+
+```dotenv
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_SIGNING_SECRET=...
+SLACK_DEFAULT_CHANNEL_ID=C...
+SLACK_DEFAULT_USER_ID=U...
+CODEX_HOME=/localhome/<user>/.codex
+AGENT_ME_STATE_DIR=/localhome/<user>/.local/share/agent-me
+AGENT_ME_APPROVALS_PATH=/localhome/<user>/.local/share/agent-me/approvals.jsonl
+AGENT_ME_BRIEF_CHANNEL_ID=C...
+```
+
+Authenticate MCP providers and verify the install:
+
+```bash
+uv run agent-me-reauth
+uv run agent-me-codex-reauth
+uv run pytest
+```
+
+Run locally:
+
+```bash
+uv run agent-me-bridge
+uv run agent-me-dashboard --host 127.0.0.1 --port 8778
+```
+
+## Deploy
+
+Deployment helpers live in `scripts/` and systemd user units live in `deploy/`.
+The current internal deployment is served through `agent-me.nvidia.com`.
+
+```bash
+./scripts/bootstrap.sh
+./scripts/install-systemd.sh
+./scripts/install-dashboard.sh
+systemctl --user status agent-me-bridge.service
+systemctl --user status agent-me-dashboard.service
+```
+
+Core user services:
+
+| Unit | Purpose |
+| --- | --- |
+| `agent-me-bridge.service` | Slack/Codex bridge |
+| `agent-me-dashboard.service` | Starlette dashboard and MCP endpoint |
+| `agent-me-watch.service` | Git polling deploy watcher |
+| `agent-me-funnel.service` | Optional Tailscale Funnel process |
+
+See [`design/deploy-on-host.md`](design/deploy-on-host.md),
+[`design/deploy-proxy-on-host.md`](design/deploy-proxy-on-host.md), and
+[`STATE.md`](STATE.md) for current operations notes.
+
+## Source Map
+
+| Path | Responsibility |
+| --- | --- |
+| `src/agent_me/slack_bridge/app.py` | Slack Socket Mode bridge, commands, Codex runs, Auto SFA Slack flows |
+| `src/agent_me/slack_bridge/approvals.py` | Slack approval lifecycle for permissioned tool calls |
+| `src/agent_me/codex_app_server.py` | Codex app-server helper for connector writes |
+| `src/agent_me/mcp_tokens.py` | MCP OAuth/token refresh and Codex env export |
+| `src/agent_me/scripts/daily_brief.py` | Multi-source brief fan-out, Slack posting, dashboard cache writer |
+| `src/agent_me/dashboard/app.py` | Starlette routes, APIs, SSE, login, MCP setup, Auto SFA pages |
+| `src/agent_me/dashboard/state_reader.py` | Read-only dashboard state, cache, logs, and MCP status |
+| `src/agent_me/dashboard/brief_runner.py` | On-demand dashboard brief refresh jobs |
+| `src/agent_me/dashboard/auto_sfa_runner.py` | Auto SFA job lifecycle, SSE events, cancellation, persisted history |
+| `src/agent_me/auto_sfa.py` | Shared Auto SFA parsing, validation, config generation, command execution |
+| `src/agent_me/auto_sfa_mcp.py` | Streamable HTTP MCP server for Auto SFA tools |
+| `src/agent_me/auto_sfa_mcp_store.py` | Encrypted MCP token and DevTest credential store |
+| `src/agent_me/auto_sfa_history.py` | Persisted Auto SFA run history |
+| `src/agent_me/parallel_queue.py` | File-backed helper-agent queue |
+| `configs/` | Example environment and runtime configuration |
+| `deploy/` | systemd user units |
+| `design/` | Architecture, deployment, and planning docs |
+| `discussions/` | Dated decisions and implementation notes |
+| `scripts/` | Bootstrap, deploy, auth, sync, and log helpers |
+| `tests/` | Unit and integration tests |
+
+## Command Reference
+
+Project scripts from `pyproject.toml`:
+
+| Command | Purpose |
+| --- | --- |
+| `uv run agent-me-bridge` | Run the Slack bridge |
+| `uv run agent-me-dashboard` | Run the dashboard and MCP endpoint |
+| `uv run agent-me-brief` | Run the daily brief job |
+| `uv run agent-me-reauth` | Refresh Claude MCP credentials |
+| `uv run agent-me-codex-reauth` | Refresh Codex MCP credentials |
+| `uv run agent-me-parallel-queue` | Run queue helper commands |
+
+Useful diagnostics:
+
+```bash
+systemctl --user status agent-me-bridge.service
+systemctl --user status agent-me-dashboard.service
+journalctl --user -u agent-me-dashboard.service -f
+./scripts/tail-log.sh
+```
+
+## Testing
+
+```bash
+uv run ruff check .
+uv run pytest
+uv run pyright
+```
+
+For README-only changes, `git diff --check` is usually enough to catch
+formatting and whitespace issues before committing.
+
+## Project Status
+
+The canonical state tracker is [`STATE.md`](STATE.md). It records shipped
+milestones, current service status, and pending follow-ups. Detailed decisions
+and discussion history are kept under [`discussions/`](discussions/).
 
 ## License
 
