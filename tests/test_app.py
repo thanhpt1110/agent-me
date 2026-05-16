@@ -218,6 +218,17 @@ def test_auto_sfa_page_renders(
     r = client.get("/auto-sfa", headers=_auth(with_token))
     assert r.status_code == 200
     assert "Auto SFA" in r.text
+    assert "Prepare templates, release SFA tasks, and stream terminal output here." in r.text
+    assert "<span>MCP</span>" in r.text
+    assert "https://agent-me.nvidia.com/mcp/" in r.text
+    assert "Copy MCP endpoint" in r.text
+    assert 'data-endpoint="https://agent-me.nvidia.com/mcp/"' in r.text
+    assert 'x-data="mcpEndpointMenu($el.dataset.endpoint)"' in r.text
+    assert "copyEndpoint()" in r.text
+    assert "navigator.clipboard.writeText(this.endpoint)" in r.text
+    assert 'document.execCommand("copy")' in r.text
+    assert 'Use DevTest credentials to connect <span class="rounded bg-accent-500/15 px-1.5 py-0.5 font-bold text-accent-400 ring-1 ring-accent-500/35">Agent Me</span> MCP.' in r.text
+    assert "copiedMcp" in r.text
     assert "Create SFA Tasks" in r.text
     assert "Release SFA Tasks" in r.text
     assert "display_name" in r.text

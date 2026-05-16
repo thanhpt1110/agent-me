@@ -11,6 +11,39 @@
       Prepare templates, release SFA tasks, and stream terminal output here.
     </p>
   </div>
+  <div class="relative group" data-endpoint="{{ mcp_endpoint_url }}" x-data="mcpEndpointMenu($el.dataset.endpoint)">
+    <button type="button"
+            class="inline-flex items-center gap-2 rounded border border-accent-600/50 bg-accent-600/10 px-3 py-2 text-sm font-semibold text-accent-400 hover:bg-accent-600/20 focus:outline-none focus:ring-2 focus:ring-accent-500/60"
+            aria-haspopup="true">
+      <span>MCP</span>
+      <svg class="h-4 w-4 text-accent-400" aria-hidden="true" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clip-rule="evenodd" />
+      </svg>
+    </button>
+    <div class="absolute right-0 top-full z-30 hidden w-[min(92vw,30rem)] pt-2 group-hover:block group-focus-within:block">
+      <div class="rounded-lg border border-ink-700 bg-ink-900 p-3 shadow-2xl">
+        <div class="flex items-stretch gap-2">
+          <pre class="min-w-0 flex-1 select-all overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code>{{ mcp_endpoint_url }}</code></pre>
+          <button type="button"
+                  @click="copyEndpoint()"
+                  class="inline-flex w-10 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
+                  aria-label="Copy MCP endpoint"
+                  title="Copy MCP endpoint">
+            <svg x-show="!copiedMcp" class="h-4 w-4" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <svg x-show="copiedMcp" x-cloak class="h-4 w-4 text-emerald-300" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 6 9 17l-5-5"></path>
+            </svg>
+          </button>
+        </div>
+        <p class="mt-2 text-xs text-slate-400">
+          Use DevTest credentials to connect <span class="rounded bg-accent-500/15 px-1.5 py-0.5 font-bold text-accent-400 ring-1 ring-accent-500/35">Agent Me</span> MCP.
+        </p>
+      </div>
+    </div>
+  </div>
 </section>
 
 <section class="mb-4 rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
@@ -393,6 +426,48 @@
 
 {% block scripts %}
 <script>
+  function mcpEndpointMenu(endpoint) {
+    return {
+      endpoint,
+      copiedMcp: false,
+
+      async copyEndpoint() {
+        let copied = false;
+        if (window.isSecureContext && navigator.clipboard?.writeText) {
+          try {
+            await navigator.clipboard.writeText(this.endpoint);
+            copied = true;
+          } catch (_) {
+            copied = false;
+          }
+        }
+
+        if (!copied) {
+          const input = document.createElement("textarea");
+          input.value = this.endpoint;
+          input.setAttribute("readonly", "");
+          input.style.position = "fixed";
+          input.style.top = "-1000px";
+          input.style.left = "-1000px";
+          document.body.appendChild(input);
+          input.focus();
+          input.select();
+          try {
+            copied = document.execCommand("copy");
+          } finally {
+            document.body.removeChild(input);
+          }
+        }
+
+        if (!copied) return;
+        this.copiedMcp = true;
+        window.setTimeout(() => {
+          this.copiedMcp = false;
+        }, 1200);
+      },
+    };
+  }
+
   function autoSfaPage(activeJob, initialHistory) {
     const releaseTypeOptions = [
       { value: "linux_release", label: "Linux Release", source: "50722" },
