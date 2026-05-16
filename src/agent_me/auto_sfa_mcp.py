@@ -9,6 +9,7 @@ agent/LLM is invoked inside this module.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import contextvars
@@ -46,6 +47,7 @@ AUTO_SFA_MCP_RELEASE_TYPE_SOURCES = {
     "Linux Release": 50722,
     "Release": 47877,
 }
+AUTO_SFA_TERMINAL_STATUSES = {"done", "error", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,14 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
 def _public_base_url() -> str:
     raw = (
         os.environ.get("AUTO_SFA_MCP_PUBLIC_BASE_URL")
@@ -82,6 +92,12 @@ def public_mcp_endpoint_url() -> str:
 
 def auto_sfa_dashboard_url() -> str:
     return f"{_public_base_url()}/auto-sfa"
+
+
+def auto_sfa_job_url(job_id: str | None) -> str:
+    if not job_id:
+        return auto_sfa_dashboard_url()
+    return f"{auto_sfa_dashboard_url()}?job_id={job_id}"
 
 
 def _allowed_hosts() -> list[str]:
@@ -219,16 +235,113 @@ def _with_credentials(values: dict[str, Any]) -> dict[str, Any]:
 
 def _job_response(job) -> dict[str, Any]:
     public = job.public_dict()
+    job_id = public.get("job_id")
     return {
         "status": "started",
         "job": public,
-        "job_id": public.get("job_id"),
+        "job_id": job_id,
         "dashboard_url": auto_sfa_dashboard_url(),
+        "job_url": auto_sfa_job_url(job_id),
+        "monitor_tool": "get_sfa_job_status",
+        "monitor_arguments": {
+            "job_id": job_id,
+            "since_line_no": 0,
+            "tail": 50,
+            "wait_seconds": 5,
+        },
         "message": (
-            "Auto SFA job accepted. Open the dashboard Auto SFA tab to watch "
-            "terminal output and history."
+            "Auto SFA job accepted. Poll get_sfa_job_status with this job_id "
+            "to report live terminal progress, or open job_url to watch the "
+            "same job in the Auto SFA dashboard."
         ),
     }
+
+
+def _job_status_response(
+    job,
+    *,
+    since_line_no: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    public = job.public_dict()
+    events = job.progress_events(since_line_no=max(0, since_line_no), limit=limit)
+    recent_lines = [
+        {
+            "line_no": event.get("line_no"),
+            "stream": event.get("stream") or "stdout",
+            "line": event.get("line") or "",
+        }
+        for event in events
+        if event.get("event") == "line"
+    ]
+    last_line_no = max(
+        [
+            max(0, since_line_no),
+            _bounded_int(public.get("line_count"), default=0, minimum=0, maximum=1_000_000),
+        ]
+        + [
+            _bounded_int(line.get("line_no"), default=0, minimum=0, maximum=1_000_000)
+            for line in recent_lines
+        ]
+    )
+    job_id = public.get("job_id")
+    status = str(public.get("status") or "unknown")
+    return {
+        "status": "job_status",
+        "job_status": status,
+        "is_terminal": status in AUTO_SFA_TERMINAL_STATUSES,
+        "job": public,
+        "job_id": job_id,
+        "dashboard_url": auto_sfa_dashboard_url(),
+        "job_url": auto_sfa_job_url(job_id),
+        "recent_events": events,
+        "recent_lines": recent_lines,
+        "next_since_line_no": last_line_no,
+        "message": (
+            "Report recent_lines to the user. Continue polling this tool with "
+            "since_line_no=next_since_line_no until is_terminal is true."
+        ),
+    }
+
+
+async def _wait_for_job_progress(
+    job,
+    *,
+    since_line_no: int,
+    wait_seconds: float,
+) -> None:
+    try:
+        wait_seconds = float(wait_seconds or 0)
+    except (TypeError, ValueError):
+        wait_seconds = 0.0
+    wait_seconds = max(0.0, min(wait_seconds, 30.0))
+    if wait_seconds <= 0 or job.status in AUTO_SFA_TERMINAL_STATUSES:
+        return
+    if job.progress_events(since_line_no=since_line_no, limit=1):
+        return
+
+    q = job.subscribe()
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    try:
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=remaining)
+            except TimeoutError:
+                return
+            if event.get("event") in AUTO_SFA_TERMINAL_STATUSES:
+                return
+            if event.get("event") == "line":
+                try:
+                    line_no = int(event.get("line_no") or 0)
+                except (TypeError, ValueError):
+                    line_no = 0
+                if line_no > since_line_no:
+                    return
+    finally:
+        job.unsubscribe(q)
 
 
 def _needs_input_response(
@@ -245,7 +358,7 @@ def _needs_input_response(
         "resolved_fields": _safe_values(values),
         "message": (
             "Do not execute yet. Ask the user for the missing fields, then call "
-            "this tool again only after the user confirms the complete plan."
+            "this tool again after the user approves the complete plan."
         ),
     }
 
@@ -269,10 +382,9 @@ def _needs_confirmation_response(
             summary=summary,
         ),
         "message": (
-            "All required fields are present. Confirm this plan with the user. "
-            "Do not rely on automatic client auto-review alone for this side effect. "
-            "After explicit user confirmation for this run, call the same tool with "
-            "confirmed=true and the returned confirmation_token."
+            "Preview only because confirmed=false. If the user approves this "
+            "plan, call the same tool with confirmed=true. The confirmation_token "
+            "is kept for older clients and is no longer required for execution."
         ),
     }
     if confirmation_options:
@@ -557,9 +669,16 @@ async def _resolve_release_destination(values: dict[str, Any]) -> dict[str, Any]
 TOOL_USAGE_RULES = (
     "Use this tool only when the user has given a concrete Auto SFA request. "
     "If the user asks generally or omits required fields, enter the agent client's "
-    "plan/clarification mode and collect confirmation before calling with confirmed=true. "
+    "plan/clarification mode and collect the missing fields before calling. "
+    "For complete requests, the MCP client's tool approval is the confirmation; "
+    "call once with confirmed=true or omit confirmed because it defaults to true. "
+    "Include default choices explicitly in tool arguments when possible so the "
+    "approval UI shows what will run. "
+    "Use confirmed=false only for a preview/dry-run. After a job starts, poll "
+    "get_sfa_job_status with the returned job_id until is_terminal=true. "
     "This server executes deterministic Auto SFA functions directly and never calls another agent."
 )
+
 
 def _new_fastmcp() -> FastMCP:
     return FastMCP(
@@ -567,8 +686,9 @@ def _new_fastmcp() -> FastMCP:
         instructions=(
             "Expose Auto SFA as deterministic tools for external agents. "
             "Authenticate every MCP request with an Agent Me bearer token from "
-            "/mcp/setup. The tool descriptions define the required "
-            "plan/confirmation behavior."
+            "/mcp/setup. Complete tool calls execute after MCP client approval; "
+            "incomplete calls return structured clarification responses. Poll "
+            "get_sfa_job_status for live progress."
         ),
         stateless_http=True,
         json_response=True,
@@ -602,7 +722,7 @@ async def create_sfa_tasks(
     template_ids: str | None = None,
     template_ids_enabled: bool = False,
     win_linux: str = "Linux Only",
-    confirmed: bool = False,
+    confirmed: bool = True,
     confirmation_token: str | None = None,
 ) -> dict[str, Any]:
     """Prepare templates for SFA using magic-auto update-template.
@@ -615,9 +735,12 @@ async def create_sfa_tasks(
     `Create SFA Tasks for "Thanh Phan" in folder "494139"`.
 
     Agent-client rule: if the user's request is general or incomplete,
-    use plan/clarification mode and do not call with confirmed=true. When
-    the fields are complete, show the plan and ask the user to confirm;
-    only then call again with confirmed=true.
+    use plan/clarification mode and do not call until required fields are
+    known. When fields are complete, rely on the MCP client's approval UI and
+    call this tool once with confirmed=true, or omit confirmed because true is
+    the default. Set confirmed=false only when the client explicitly wants a
+    preview/dry-run. After start, poll get_sfa_job_status with the returned
+    job_id to show live progress and final status.
     """
 
     values = _create_values_from_args(
@@ -657,23 +780,6 @@ async def create_sfa_tasks(
                 "Alternative: Win_Linux = Both.",
             ],
         )
-    if not _valid_confirmation_token(
-        flow_type="create",
-        values=values,
-        summary=summary,
-        token=confirmation_token,
-    ):
-        return _needs_confirmation_response(
-            flow_type="create",
-            values=values,
-            summary=summary,
-            confirmation_options=[
-                "Missing or stale confirmation_token. Show this plan to the user again before executing.",
-                "Default: Win_Linux = Linux Only.",
-                "Alternative: Win_Linux = Windows Only.",
-                "Alternative: Win_Linux = Both.",
-            ],
-        )
 
     job = await MCP_AUTO_SFA_RUNNER.start(request)
     return _job_response(job)
@@ -705,7 +811,7 @@ async def release_sfa_tasks(
     complexity_level: str = "L2",
     log_file_provider: str = "Manual",
     auto_resolve_destination: bool = True,
-    confirmed: bool = False,
+    confirmed: bool = True,
     confirmation_token: str | None = None,
 ) -> dict[str, Any]:
     """Release existing SFA tasks using magic-auto sfa.
@@ -722,9 +828,16 @@ async def release_sfa_tasks(
     source_folder_id using the caller's DevTest credentials.
 
     Agent-client rule: if the user's request is general or incomplete,
-    use plan/clarification mode and do not call with confirmed=true. When
-    release_type is not specified, present the default Linux Release choice
-    and the Release alternative before executing.
+    use plan/clarification mode and do not call until required fields are
+    known. When release_type is not specified, the default is Linux Release;
+    include `release_type="Linux Release"` in the tool arguments when possible
+    so the MCP approval UI shows the default. Use `release_type="Release"` only
+    when the user asks for the Release flow. For a complete request, rely on
+    the MCP client's approval UI and call this tool once with confirmed=true,
+    or omit confirmed because true is the default. Set confirmed=false only
+    when the client explicitly wants a preview/dry-run. After start, poll
+    get_sfa_job_status with the returned job_id to show live progress and final
+    status.
     """
 
     values = _release_values_from_args(
@@ -774,36 +887,6 @@ async def release_sfa_tasks(
                 "Manual override: provide devtest_folder_id to skip destination auto-resolve.",
             ],
         )
-    preview = _safe_values(_with_credentials(values))
-    summary = {
-        "action": "sfa",
-        "display_name": values.get("display_name"),
-        "task_ids": values.get("task_ids"),
-        "release_type": values.get("release_type"),
-        "release_type_explicit": release_type_was_explicit,
-        "source_folder_id": values.get("source_folder_id"),
-        "devtest_folder_id": values.get("devtest_folder_id") or "auto-resolve on execution",
-        "date_range": f"{values.get('start_date')} -> {values.get('finish_date')}",
-        "url_path": values.get("url_path"),
-        "devtest_username": preview.get("auth_username"),
-    }
-    if not _valid_confirmation_token(
-        flow_type="release",
-        values=preview,
-        summary=summary,
-        token=confirmation_token,
-    ):
-        return _needs_confirmation_response(
-            flow_type="release",
-            values=preview,
-            summary=summary,
-            confirmation_options=[
-                "Missing or stale confirmation_token. Show this plan to the user again before executing.",
-                "Default if the user did not specify type: Linux Release, source_folder_id 50722.",
-                "Alternative: Release, source_folder_id 47877. Call again with release_type='Release' or source_folder_id=47877.",
-                "Manual override: provide devtest_folder_id to skip destination auto-resolve.",
-            ],
-        )
 
     try:
         if not _truthy(auto_resolve_destination) and not str(
@@ -835,6 +918,70 @@ async def release_sfa_tasks(
     return _job_response(job)
 
 
+@AUTO_SFA_MCP.tool(
+    name="get_sfa_job_status",
+    title="Get SFA Job Status",
+    annotations=ToolAnnotations(
+        title="Get SFA Job Status",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    structured_output=True,
+)
+async def get_sfa_job_status(
+    job_id: str,
+    since_line_no: int = 0,
+    tail: int = 50,
+    wait_seconds: float = 0,
+) -> dict[str, Any]:
+    """Read live status and terminal progress for an Auto SFA MCP job.
+
+    Call this after create_sfa_tasks or release_sfa_tasks returns `started`.
+    Report `recent_lines` to the user, then call again with
+    `since_line_no=next_since_line_no` until `is_terminal` is true.
+
+    `wait_seconds` enables light long-polling: use 3-10 seconds to wait for
+    the next line instead of repeatedly polling a quiet job. The server caps
+    each wait to 30 seconds.
+    """
+
+    normalized_job_id = str(job_id or "").strip()
+    if not normalized_job_id:
+        return {
+            "status": "invalid_input",
+            "plan_mode_required": True,
+            "errors": ["job_id is required"],
+            "message": "Call create_sfa_tasks or release_sfa_tasks first, then pass the returned job_id.",
+        }
+
+    job = MCP_AUTO_SFA_RUNNER.get_job(normalized_job_id)
+    if job is None:
+        return {
+            "status": "not_found",
+            "job_id": normalized_job_id,
+            "is_terminal": True,
+            "message": (
+                "Unknown job_id. Jobs are held in the running dashboard process; "
+                "if the service restarted, open the Auto SFA dashboard history "
+                "for the persisted final status."
+            ),
+            "dashboard_url": auto_sfa_dashboard_url(),
+        }
+
+    await _wait_for_job_progress(
+        job,
+        since_line_no=_bounded_int(since_line_no, default=0, minimum=0, maximum=1_000_000),
+        wait_seconds=wait_seconds,
+    )
+    return _job_status_response(
+        job,
+        since_line_no=_bounded_int(since_line_no, default=0, minimum=0, maximum=1_000_000),
+        limit=_bounded_int(tail, default=50, minimum=1, maximum=200),
+    )
+
+
 def create_auto_sfa_mcp() -> FastMCP:
     mcp = _new_fastmcp()
     mcp.add_tool(
@@ -863,6 +1010,19 @@ def create_auto_sfa_mcp() -> FastMCP:
         ),
         structured_output=True,
     )
+    mcp.add_tool(
+        get_sfa_job_status,
+        name="get_sfa_job_status",
+        title="Get SFA Job Status",
+        annotations=ToolAnnotations(
+            title="Get SFA Job Status",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
     return mcp
 
 
@@ -876,5 +1036,5 @@ async def health_response() -> Response:
         "ok": True,
         "name": "agent-me Auto SFA MCP",
         "endpoint": public_mcp_endpoint_url(),
-        "tools": ["create_sfa_tasks", "release_sfa_tasks"],
+        "tools": ["create_sfa_tasks", "release_sfa_tasks", "get_sfa_job_status"],
     })

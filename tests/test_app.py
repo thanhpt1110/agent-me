@@ -302,6 +302,38 @@ def test_auto_sfa_page_renders(
     assert "/api/auto-sfa/history" in r.text
 
 
+def test_auto_sfa_page_can_resume_mcp_job(
+    client: TestClient, with_token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_me.dashboard import app as app_module
+
+    class Job:
+        def public_dict(self):
+            return {
+                "job_id": "mcp-create-1",
+                "status": "running",
+                "line_count": 2,
+                "request": {
+                    "flow_type": "create",
+                    "display_name": "Thanh Phan",
+                    "folder_id": 494139,
+                },
+            }
+
+    monkeypatch.setattr(app_module.AUTO_SFA_RUNNER, "get_job", lambda job_id: None)
+    monkeypatch.setattr(
+        app_module.MCP_AUTO_SFA_RUNNER,
+        "get_job",
+        lambda job_id: Job() if job_id == "mcp-create-1" else None,
+    )
+
+    r = client.get("/auto-sfa?job_id=mcp-create-1", headers=_auth(with_token))
+
+    assert r.status_code == 200
+    assert '"job_id": "mcp-create-1"' in r.text
+    assert '"display_name": "Thanh Phan"' in r.text
+
+
 def test_auto_sfa_mcp_endpoint_uses_request_origin(
     client: TestClient, with_token: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

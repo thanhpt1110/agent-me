@@ -44,6 +44,7 @@ from agent_me.auto_sfa import (
     resolve_destination_folder_id,
 )
 from agent_me.auto_sfa_mcp import (
+    MCP_AUTO_SFA_RUNNER,
     auto_sfa_mcp_asgi_app,
     create_auto_sfa_mcp,
     public_mcp_endpoint_url,
@@ -731,9 +732,13 @@ def _remembered_mcp_token_context(request: Request) -> dict[str, Any] | None:
 
 async def page_auto_sfa(request: Request):
     mcp_context = _mcp_setup_base_context(request)
+    active_job = None
+    job_id = request.query_params.get("job_id", "").strip()
+    if job_id:
+        active_job = AUTO_SFA_RUNNER.get_job(job_id) or MCP_AUTO_SFA_RUNNER.get_job(job_id)
     return TEMPLATES.TemplateResponse(request, "auto_sfa.html", {
         "sources": SOURCES,
-        "active_job": None,
+        "active_job": active_job.public_dict() if active_job else None,
         "default_source_folder_id": _auto_sfa_default_source_folder_id(),
         "run_history": AUTO_SFA_RUNNER.recent_history(limit=100),
         "mcp_endpoint_url": mcp_context["mcp_endpoint_url"],
@@ -1112,6 +1117,8 @@ async def api_auto_sfa_cancel(request: Request):
     job_id = request.path_params["job_id"]
     job = await AUTO_SFA_RUNNER.cancel(job_id)
     if job is None:
+        job = await MCP_AUTO_SFA_RUNNER.cancel(job_id)
+    if job is None:
         return JSONResponse({"error": "unknown job_id"}, status_code=404)
     return JSONResponse(job.public_dict(), status_code=202)
 
@@ -1173,7 +1180,10 @@ async def sse_auto_sfa(request: Request):
     job_id = request.path_params["job_id"]
 
     async def stream():
-        async for evt in AUTO_SFA_RUNNER.subscribe_events(job_id):
+        runner = AUTO_SFA_RUNNER
+        if AUTO_SFA_RUNNER.get_job(job_id) is None and MCP_AUTO_SFA_RUNNER.get_job(job_id):
+            runner = MCP_AUTO_SFA_RUNNER
+        async for evt in runner.subscribe_events(job_id):
             yield {"event": evt.get("event", "message"),
                    "data": json.dumps(evt, ensure_ascii=False, default=str)}
     return EventSourceResponse(stream())

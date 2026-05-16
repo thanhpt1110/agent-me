@@ -36,8 +36,12 @@ class AutoSFAJob:
     finished_at: int | None = None
     _task: asyncio.Task[None] | None = field(default=None, repr=False)
     _subscribers: list[asyncio.Queue[dict[str, Any]]] = field(default_factory=list)
+    _events: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     def emit(self, event: dict[str, Any]) -> None:
+        self._events.append(dict(event))
+        if len(self._events) > 300:
+            del self._events[: len(self._events) - 300]
         for q in self._subscribers:
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(event)
@@ -46,6 +50,10 @@ class AutoSFAJob:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
         self._subscribers.append(q)
         return q
+
+    def unsubscribe(self, q: asyncio.Queue[dict[str, Any]]) -> None:
+        with contextlib.suppress(ValueError):
+            self._subscribers.remove(q)
 
     def public_dict(self) -> dict[str, Any]:
         request = self.request.as_input_dict()
@@ -59,6 +67,21 @@ class AutoSFAJob:
             "error": self.error,
             "request": request,
         }
+
+    def progress_events(self, *, since_line_no: int = 0, limit: int = 50) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for event in self._events:
+            if event.get("event") == "line":
+                try:
+                    line_no = int(event.get("line_no") or 0)
+                except (TypeError, ValueError):
+                    line_no = 0
+                if line_no <= since_line_no:
+                    continue
+            elif since_line_no > 0 and event.get("event") not in {"done", "error", "cancelled"}:
+                continue
+            events.append(dict(event))
+        return events[-max(1, min(limit, 200)):]
 
 
 class AutoSFARunner:
@@ -104,6 +127,7 @@ class AutoSFARunner:
                 self._jobs.pop(old_id, None)
 
         await asyncio.to_thread(self._record_history, job)
+        job.emit({"event": "accepted", **job.public_dict()})
         task = asyncio.create_task(self._run(job))
         job._task = task
         self._tasks.add(task)
@@ -220,3 +244,5 @@ class AutoSFARunner:
                 "event": "timeout",
                 "note": "no Auto SFA progress events in 120s; job may still be running",
             }
+        finally:
+            job.unsubscribe(q)

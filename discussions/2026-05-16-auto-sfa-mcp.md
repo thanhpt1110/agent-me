@@ -26,14 +26,24 @@ tool.
   Cursor, Codex, and Claude Code.
 - Keep the server deterministic. Agent clients decide which tool to call; the
   MCP server maps that tool directly to existing Auto SFA functions.
-- Expose exactly two tools:
+- Expose explicit MCP tools:
   - `create_sfa_tasks`
   - `release_sfa_tasks`
+  - `get_sfa_job_status` for read-only live progress polling.
 - Return structured `needs_input` for incomplete/general requests, with
   `plan_mode_required=true`, so the agent client must clarify before execution.
-- Return structured `needs_confirmation` for complete requests before side
-  effects. The response includes a signed `confirmation_token`; execution
-  requires `confirmed=true` and the same token.
+- Execute complete requests in one tool call after the MCP client/user approves
+  the tool invocation. `confirmed` defaults to `true`.
+- Tell agent clients to include default choices explicitly in tool arguments
+  when possible, especially `release_type="Linux Release"` when the user did
+  not ask for `Release`, so the MCP approval UI shows the exact run plan.
+- Keep `confirmed=false` as preview/dry-run mode. It returns structured
+  `needs_confirmation`, resolved fields, default/alternative options, and a
+  legacy `confirmation_token`, but that token is not required for normal
+  execution.
+- Started jobs return `job_id`, `job_url`, `monitor_tool`, and
+  `monitor_arguments`. Agent clients poll `get_sfa_job_status` with
+  `since_line_no=next_since_line_no` until `is_terminal=true`.
 - Keep release defaults aligned with Slack:
   - Default `Linux Release`, source `50722`.
   - Alternative `Release`, source `47877`.
@@ -66,6 +76,15 @@ tool.
   template`, `mark template auto`, `release template auto`, or `auto these
   templates` when the intended action is the release/auto flow.
 
+`get_sfa_job_status`:
+
+- Required: `job_id`.
+- Optional: `since_line_no`, `tail`, `wait_seconds`.
+- Returns: current job status, redacted request details, recent terminal events,
+  `recent_lines`, `next_since_line_no`, and `is_terminal`.
+- Use `wait_seconds` in the 3-10s range for light long-polling instead of
+  rapid repeated polling.
+
 ## Auth Behavior
 
 Users do not pass `username` or `password` as tool arguments. They open
@@ -94,6 +113,11 @@ The dashboard footer identifies `NVIDIA VRDC SWQA` and computes the `Last
 Update` tag/date from the latest available git release tag, linking that tag
 to GitHub.
 
+The dashboard can also reopen a running MCP job with `/auto-sfa?job_id=<id>`.
+The Auto SFA SSE route falls back to the MCP runner when the job is not owned
+by the dashboard runner, so `job_url` in MCP responses can show the same live
+terminal output while the process is still alive.
+
 ## Verification
 
 - `uv run ruff check src tests`
@@ -105,10 +129,12 @@ to GitHub.
     and install snippets.
   - MCP token/password store encryption, revoke helper, and installer script
     escaping.
-  - MCP tool discovery.
+  - MCP tool discovery, including read-only `get_sfa_job_status`.
   - `needs_input` for general release requests.
-  - `needs_confirmation` for complete create/release requests.
-  - Confirmation-token execution path.
+  - `needs_confirmation` preview mode when `confirmed=false`.
+  - Single-call execution for complete create/release requests.
+  - Live job progress polling through `get_sfa_job_status`.
+  - Dashboard `/auto-sfa?job_id=<id>` fallback for running MCP jobs.
   - Dashboard auth exemption for `/mcp/`.
   - Auto SFA UI direct setup link.
 - Live endpoint probes:
@@ -119,7 +145,7 @@ to GitHub.
   - `codex mcp get agent-me --json` parses the generated Codex config with
     persistent `http_headers`.
   - `/mcp/` returns the bearer-token challenge when unauthenticated and lists
-    `create_sfa_tasks` / `release_sfa_tasks` through the temporary Basic Auth
-    fallback.
+    `create_sfa_tasks` / `release_sfa_tasks` / `get_sfa_job_status` through
+    the temporary Basic Auth fallback.
   - `/auto-sfa` renders the HTTP-derived `MCP Setup` link.
 - Restarted `agent-me-dashboard.service`; service reported `active`.

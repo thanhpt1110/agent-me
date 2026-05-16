@@ -47,6 +47,26 @@ Credential model:
 - Tokens do not expire by default. Set `AUTO_SFA_MCP_TOKEN_TTL_DAYS` only if
   automatic expiry is desired.
 
+Tool execution model:
+
+- Complete `create_sfa_tasks` and `release_sfa_tasks` calls execute in one
+  request after the MCP client/user approves the tool call. The `confirmed`
+  argument defaults to `true`.
+- Agent clients should include default choices explicitly in tool arguments
+  when possible, especially `release_type="Linux Release"` for release calls
+  where the user did not ask for `Release`, so the approval UI shows exactly
+  what will run.
+- `confirmed=false` is a preview/dry-run mode. It returns
+  `status=needs_confirmation`, resolved fields, default/alternative options,
+  and a legacy `confirmation_token` for older clients, but the token is not
+  required for normal execution.
+- Started jobs return `job_id`, `job_url`, `monitor_tool`, and
+  `monitor_arguments`. Agent clients should call `get_sfa_job_status` with the
+  returned `job_id`, report `recent_lines`, then continue with
+  `since_line_no=next_since_line_no` until `is_terminal=true`.
+- `/auto-sfa?job_id=<id>` reconnects the dashboard terminal to a running MCP
+  job while the dashboard process is still alive.
+
 Because this is a bearer-token flow, prefer HTTPS when the proxy supports it.
 For an intentionally HTTP-only internal proxy, no UI override is needed as long
 as the user opens the dashboard through the same HTTP origin. Add a matching
