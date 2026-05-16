@@ -106,6 +106,9 @@ def test_is_exempt_matches_static_prefix() -> None:
     from agent_me.dashboard.auth import is_exempt
 
     assert is_exempt("/healthz") is True
+    assert is_exempt("/mcp") is True
+    assert is_exempt("/mcp/") is True
+    assert is_exempt("/mcp/anything") is True
     assert is_exempt("/static/app.css") is True
     assert is_exempt("/static/sub/x.js") is True
     assert is_exempt("/api/state") is False

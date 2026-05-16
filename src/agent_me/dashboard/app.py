@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -40,6 +41,11 @@ from agent_me.auto_sfa import (
     build_auto_sfa_request,
     build_update_template_request,
     resolve_destination_folder_id,
+)
+from agent_me.auto_sfa_mcp import (
+    auto_sfa_mcp_asgi_app,
+    create_auto_sfa_mcp,
+    public_mcp_endpoint_url,
 )
 from agent_me.dashboard.auth import (
     COOKIE_MAX_AGE_S,
@@ -533,6 +539,7 @@ async def page_auto_sfa(request: Request):
         "active_job": None,
         "default_source_folder_id": _auto_sfa_default_source_folder_id(),
         "run_history": AUTO_SFA_RUNNER.recent_history(limit=100),
+        "mcp_endpoint_url": public_mcp_endpoint_url(),
     })
 
 
@@ -931,6 +938,13 @@ async def api_login(request: Request):
 # ── App factory ─────────────────────────────────────────────────────────
 
 def build_app() -> Starlette:
+    auto_sfa_mcp = create_auto_sfa_mcp()
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette):
+        async with auto_sfa_mcp.session_manager.run():
+            yield
+
     routes = [
         Route("/", page_index, name="index"),
         Route("/source/{source_id}", page_source, name="source"),
@@ -965,12 +979,14 @@ def build_app() -> Starlette:
         Route("/api/sse/refresh/{job_id}", sse_refresh, name="sse_refresh"),
         Route("/api/sse/auto-sfa/{job_id}", sse_auto_sfa, name="sse_auto_sfa"),
         Route("/healthz", healthz, name="healthz"),
+        Mount("/mcp", app=auto_sfa_mcp_asgi_app(auto_sfa_mcp), name="auto_sfa_mcp"),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),
     ]
     app = Starlette(
         debug=False,
         routes=routes,
         middleware=[Middleware(AuthMiddleware)],
+        lifespan=lifespan,
     )
     return app
 

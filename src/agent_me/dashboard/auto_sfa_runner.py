@@ -62,10 +62,11 @@ class AutoSFAJob:
 
 
 class AutoSFARunner:
-    def __init__(self) -> None:
+    def __init__(self, *, trigger_source: str = "dashboard") -> None:
         self._jobs: dict[str, AutoSFAJob] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._history_cap = 50
+        self._trigger_source = trigger_source
 
     def active_job(self) -> AutoSFAJob | None:
         return None
@@ -137,7 +138,7 @@ class AutoSFARunner:
             display_name=job.request.display_name,
             status=job.status,
             flow_type=job.request.flow_type,
-            trigger_source="dashboard",
+            trigger_source=self._trigger_source,
             updated_at_ms=job.finished_at or int(time.time() * 1000),
         )
 
