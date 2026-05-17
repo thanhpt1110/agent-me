@@ -39,24 +39,9 @@ Co-author: OpenAI Codex
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    Slack[Slack] --> Bridge[Slack bridge]
-    Bridge --> State[(state.db)]
-    Bridge --> Codex[Codex CLI]
-    Codex --> MCP[Configured MCP servers]
-
-    Browser[Browser] --> Dashboard[Dashboard]
-    Dashboard --> State
-    Dashboard --> AutoRunner[Auto SFA runner]
-
-    AgentClient[Cursor, Claude, Codex] --> AutoMCP[Auto SFA MCP /mcp/]
-    AutoMCP --> AutoRunner
-    AutoRunner --> MagicAuto[magic-auto dtoperator]
-
-    Brief[Daily brief runner] --> Cache
-    Dashboard --> Cache[(dashboard-cache)]
-```
+<p align="center">
+  <img alt="Agent Me architecture diagram for Slack, dashboard, and MCP flows" src="artifacts/agent-flow-architecture.png" width="940" />
+</p>
 
 Interfaces live in Slack, the dashboard, and `/mcp/`; state lives in SQLite,
 dashboard cache files, and the encrypted MCP token store.
@@ -93,6 +78,19 @@ dashboard cache files, and the encrypted MCP token store.
 | Auto SFA UI | Creates SFA tasks and releases templates through `magic-auto`, using per-run DevTest credentials and live SSE terminal output. |
 | Auto SFA MCP | `http://agent-me.nvidia.com/mcp/` exposes `create_sfa_tasks` and `release_sfa_tasks`. Users set up once at `/mcp/setup`, then connect agent clients with a bearer token. |
 | MCP auth refresh | Refresh scripts keep Claude/Codex MCP credentials usable for Codex subprocesses and bridge operations. |
+
+<details>
+<summary>Auto SFA workflow and feature architecture</summary>
+
+<p align="center">
+  <img alt="QA to automated SFA workflow" src="artifacts/qa-auto-workflow.png" width="940" />
+</p>
+
+<p align="center">
+  <img alt="Auto SFA feature architecture" src="artifacts/auto-sfa-architecture.png" width="940" />
+</p>
+
+</details>
 
 ## Quickstart
 
@@ -150,6 +148,7 @@ See [`design/deploy-on-host.md`](design/deploy-on-host.md),
 
 ```text
 src/agent_me/    Python package for Slack, dashboard, MCP, briefs, Auto SFA
+artifacts/       Visual README diagrams and workflow images
 configs/         Runtime configuration templates
 deploy/          systemd user service files
 design/          Architecture and deployment notes

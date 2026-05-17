@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse, Response
 
 from agent_me.auto_sfa import (
     AutoSFAValidationError,
+    auto_sfa_destination_folder_mentioned,
     build_auto_sfa_request,
     build_update_template_request,
     missing_update_template_fields,
@@ -549,12 +550,17 @@ def _release_values_from_args(
         values.get("release_type") or AUTO_SFA_MCP_DEFAULT_RELEASE_TYPE
     )
     values["release_type"] = normalized_release_type
+    destination_folder_explicit = (
+        devtest_folder_id not in (None, "")
+        or auto_sfa_destination_folder_mentioned(prompt)
+    )
     if (
         (_release_type_mentioned(prompt) or release_type)
         and not (_source_folder_mentioned(prompt) or source_folder_id not in (None, ""))
     ):
         values["source_folder_id"] = str(_release_source_for_type(normalized_release_type))
-        values.pop("devtest_folder_id", None)
+        if not destination_folder_explicit:
+            values.pop("devtest_folder_id", None)
     else:
         values.setdefault("source_folder_id", str(_release_source_for_type(normalized_release_type)))
     values.setdefault("start_date", start.isoformat())

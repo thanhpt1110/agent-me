@@ -314,3 +314,91 @@ def test_release_sfa_tasks_confirmed_starts_without_agent_translation(
     assert request.source_folder_id == 50722
     assert request.auth_username == "thaphan"
     assert request.auth_password == "dummy-password"
+
+
+def test_release_sfa_tasks_release_type_keeps_explicit_destination(
+    with_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_me import auto_sfa_mcp
+    from agent_me.dashboard.app import build_app
+
+    captured: dict[str, Any] = {}
+
+    async def fake_start(request):
+        captured["request"] = request
+        return SimpleNamespace(
+            public_dict=lambda: {
+                "job_id": "mcp-release-2",
+                "status": "pending",
+                "line_count": 0,
+                "request": request.as_input_dict(),
+            }
+        )
+
+    async def fail_resolve(*args, **kwargs):
+        raise AssertionError("explicit devtest_folder_id must skip destination resolve")
+
+    monkeypatch.setattr(auto_sfa_mcp.MCP_AUTO_SFA_RUNNER, "start", fake_start)
+    monkeypatch.setattr(auto_sfa_mcp, "resolve_destination_folder_id", fail_resolve)
+
+    with TestClient(build_app()) as client:
+        result = _call_tool(
+            client,
+            "release_sfa_tasks",
+            {
+                "display_name": "Thanh Phan",
+                "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+                "release_type": "Linux Release",
+                "devtest_folder_id": "1155188",
+            },
+        )
+
+    assert result["status"] == "started"
+    request = captured["request"]
+    assert request.source_folder_id == 50722
+    assert request.devtest_folder_id == 1155188
+
+
+def test_release_sfa_tasks_prompt_destination_skips_auto_resolve(
+    with_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_me import auto_sfa_mcp
+    from agent_me.dashboard.app import build_app
+
+    captured: dict[str, Any] = {}
+
+    async def fake_start(request):
+        captured["request"] = request
+        return SimpleNamespace(
+            public_dict=lambda: {
+                "job_id": "mcp-release-3",
+                "status": "pending",
+                "line_count": 0,
+                "request": request.as_input_dict(),
+            }
+        )
+
+    async def fail_resolve(*args, **kwargs):
+        raise AssertionError("prompt folderID must skip destination resolve")
+
+    monkeypatch.setattr(auto_sfa_mcp.MCP_AUTO_SFA_RUNNER, "start", fake_start)
+    monkeypatch.setattr(auto_sfa_mcp, "resolve_destination_folder_id", fail_resolve)
+
+    with TestClient(build_app()) as client:
+        result = _call_tool(
+            client,
+            "release_sfa_tasks",
+            {
+                "prompt": 'Mark auto template cho "Thanh Phan" with this url '
+                "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123 "
+                "to folderID 1155188",
+                "release_type": "Linux Release",
+            },
+        )
+
+    assert result["status"] == "started"
+    request = captured["request"]
+    assert request.source_folder_id == 50722
+    assert request.devtest_folder_id == 1155188

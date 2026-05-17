@@ -55,6 +55,7 @@ from agent_me.auto_sfa import (
     AutoSFARequest,
     AutoSFAValidationError,
     TemplateSFARequest,
+    auto_sfa_destination_folder_mentioned,
     build_auto_sfa_request,
     build_update_template_request,
     missing_update_template_fields,
@@ -1638,6 +1639,7 @@ def _apply_slack_release_defaults(
     today: date | None = None,
     release_type_explicit: bool = False,
     source_folder_explicit: bool = False,
+    destination_folder_explicit: bool = False,
 ) -> dict[str, Any]:
     normalized = dict(values)
     end_date = today or _slack_auto_sfa_today()
@@ -1648,7 +1650,8 @@ def _apply_slack_release_defaults(
     normalized["release_type"] = release_type
     if release_type_explicit and not source_folder_explicit:
         normalized["source_folder_id"] = str(_slack_release_source_for_type(release_type))
-        normalized.pop("devtest_folder_id", None)
+        if not destination_folder_explicit:
+            normalized.pop("devtest_folder_id", None)
     else:
         normalized.setdefault("source_folder_id", str(_slack_release_source_for_type(release_type)))
     normalized.setdefault("start_date", start_date.isoformat())
@@ -1966,6 +1969,7 @@ async def handle_auto_sfa_flow_message(
             values,
             release_type_explicit=_slack_release_type_mentioned(cleaned),
             source_folder_explicit=_slack_source_folder_mentioned(cleaned),
+            destination_folder_explicit=auto_sfa_destination_folder_mentioned(cleaned),
         )
         missing = _missing_slack_release_fields(values)
     if missing:

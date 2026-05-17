@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import fcntl
 import json
@@ -106,6 +107,7 @@ KEY_VALUE_RE = re.compile(r"^\s*(?:[-*]\s*)?([A-Za-z0-9_\- ]+)\s*[:=]\s*(.*?)\s*
 BOT_PREFIX_RE = re.compile(r"^\s*(?:<@[A-Z0-9]+>|@agent-me)\s*", re.IGNORECASE)
 SLACK_LINK_RE = re.compile(r"^<(?P<url>https?://[^>|]+)(?:\|[^>]+)?>$")
 URL_IN_TEXT_RE = re.compile(r"<(?P<slack>https?://[^>|]+)(?:\|[^>]+)?>|(?P<plain>https?://[^\s<>)]+)")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 NATURAL_QUOTE_CHARS = "\"'`\u201c\u201d\u2018\u2019"
 NATURAL_QUOTE_RE_CLASS = re.escape(NATURAL_QUOTE_CHARS)
 INLINE_KEY_RE = re.compile(
@@ -621,6 +623,33 @@ def _extract_first_url(body: str) -> tuple[str | None, int | None]:
     return _clean_auto_sfa_value("url_path", url), match.start()
 
 
+def _extract_natural_destination_folder_id(body: str) -> str | None:
+    patterns = (
+        r"(?is)\b(?:devtest|destination|dest|release)\s*[-_ ]?folder(?:[-_ ]?id)?\b"
+        r"\s*(?:[:=]|\bis\b|\bla\b|\blà\b|\bto\b)?\s*"
+        rf"[{NATURAL_QUOTE_RE_CLASS}]?(?P<folder>\d+)[{NATURAL_QUOTE_RE_CLASS}]?",
+        r"(?is)\b(?:to|into|den|đến|toi|tới|vao|vào)\s+"
+        r"(?:folder\s*id|folderid|folder(?:\s*id)?|thu\s*muc|thư\s*mục)\b"
+        r"\s*(?:[:=]|\bis\b|\bla\b|\blà\b)?\s*"
+        rf"[{NATURAL_QUOTE_RE_CLASS}]?(?P<folder>\d+)[{NATURAL_QUOTE_RE_CLASS}]?",
+        r"(?is)\bfolder\s*id\b\s*(?:[:=]|\bis\b|\bla\b|\blà\b)?\s*"
+        rf"[{NATURAL_QUOTE_RE_CLASS}]?(?P<folder>\d+)[{NATURAL_QUOTE_RE_CLASS}]?",
+        r"(?is)\bfolderid\b\s*(?:[:=]|\bis\b|\bla\b|\blà\b)?\s*"
+        rf"[{NATURAL_QUOTE_RE_CLASS}]?(?P<folder>\d+)[{NATURAL_QUOTE_RE_CLASS}]?",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, body):
+            prefix = body[max(0, match.start() - 24):match.start()]
+            if re.search(r"(?is)\b(?:source|from|pool)\s*$", prefix):
+                continue
+            return match.group("folder")
+    return None
+
+
+def auto_sfa_destination_folder_mentioned(text: str | None) -> bool:
+    return _extract_natural_destination_folder_id(_clean_auto_sfa_body(text)) is not None
+
+
 def _parse_natural_update_template_fields(body: str) -> dict[str, str]:
     natural: dict[str, str] = {}
     if win_linux := _extract_natural_win_linux(body):
@@ -662,6 +691,8 @@ def _parse_natural_auto_sfa_fields(body: str) -> dict[str, str]:
     natural: dict[str, str] = {}
     if release_type := _extract_natural_release_type(body):
         natural["release_type"] = release_type
+    if destination_folder_id := _extract_natural_destination_folder_id(body):
+        natural["devtest_folder_id"] = destination_folder_id
 
     url, url_start = _extract_first_url(body)
     if not url or url_start is None:
@@ -670,7 +701,7 @@ def _parse_natural_auto_sfa_fields(body: str) -> dict[str, str]:
     prefix = body[:url_start].strip()
     prefix = re.sub(
         r"(?is)\s*(?:\bwith\b|\bvoi\b|\bvới\b)\s*"
-        r"(?:\burl(?:[_\s-]*path)?\b|\blink\b)?\s*$",
+        r"(?:\bthis\b\s*)?(?:\burl(?:[_\s-]*path)?\b|\blink\b)?\s*$",
         "",
         prefix,
     ).strip()
@@ -1246,6 +1277,7 @@ def _auto_sfa_config_summary(
         "devtest_project_id": request.devtest_project_id,
         "source_folder_id": data.get("source_folder_id"),
         "devtest_folder_id": request.devtest_folder_id,
+        "pool_owner_login": data.get("pool_owner_login") or "Admin",
         "log_file_provider": request.log_file_provider,
         "log_file_base_url": request.log_file_base_url,
         "planned_dev_start_date": request.planned_dev_start_date,
@@ -1384,6 +1416,102 @@ async def _emit(progress_cb: ProgressCallback | None, event: dict[str, Any]) -> 
     await progress_cb(event)
 
 
+async def _emit_output_line(
+    progress_cb: ProgressCallback | None,
+    *,
+    line_no: int,
+    line: str,
+    flow_type: str | None = None,
+) -> None:
+    event: dict[str, Any] = {
+        "event": "line",
+        "line_no": line_no,
+        "line": line,
+    }
+    if flow_type:
+        event["flow_type"] = flow_type
+    await _emit(progress_cb, event)
+
+
+def _clean_process_output_line(line: str) -> str:
+    cleaned = ANSI_ESCAPE_RE.sub("", line)
+    cleaned = cleaned.replace("\x1b(B", "")
+    cleaned = cleaned.replace("\b", "")
+    return cleaned.rstrip()
+
+
+async def _drain_process_output(
+    proc: asyncio.subprocess.Process,
+    *,
+    progress_cb: ProgressCallback | None,
+    line_no: int = 0,
+    flow_type: str | None = None,
+    heartbeat_label: str | None = None,
+) -> int:
+    assert proc.stdout is not None
+    started = time.monotonic()
+    last_output = started
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    buffer = ""
+    heartbeat_s = float(os.environ.get("AUTO_SFA_PROGRESS_HEARTBEAT_S", "30"))
+
+    async def emit_line(raw_line: str) -> None:
+        nonlocal line_no, last_output
+        cleaned = _clean_process_output_line(raw_line)
+        if not cleaned:
+            return
+        line_no += 1
+        last_output = time.monotonic()
+        await _emit_output_line(
+            progress_cb,
+            line_no=line_no,
+            line=cleaned,
+            flow_type=flow_type,
+        )
+
+    async def heartbeat() -> None:
+        if heartbeat_s <= 0 or not heartbeat_label:
+            return
+        while True:
+            await asyncio.sleep(heartbeat_s)
+            if proc.returncode is not None:
+                return
+            now = time.monotonic()
+            idle = int(now - last_output)
+            if idle < heartbeat_s:
+                continue
+            elapsed = int(now - started)
+            await emit_line(
+                "[agent-me] Still running after "
+                f"{elapsed}s; waiting for magic-auto output. {heartbeat_label}"
+            )
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        if hasattr(proc.stdout, "read"):
+            while True:
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+                buffer += decoder.decode(chunk).replace("\r", "\n")
+                while "\n" in buffer:
+                    raw_line, buffer = buffer.split("\n", 1)
+                    await emit_line(raw_line)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                buffer += tail.replace("\r", "\n")
+            for raw_line in buffer.splitlines():
+                await emit_line(raw_line)
+        else:
+            async for raw in proc.stdout:
+                await emit_line(raw.decode(errors="replace").rstrip("\n"))
+        return line_no
+    finally:
+        heartbeat_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
+
+
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is not None:
         return
@@ -1491,6 +1619,21 @@ async def run_auto_sfa(
         },
     )
 
+    line_no = 0
+    if not request.task_ids:
+        pool_owner = summary.get("pool_owner_login") or "Admin"
+        search_parts = [
+            "[agent-me] Display-name mode: magic-auto will scan tasks under "
+            f"Task Owner pool {pool_owner!r}, then filter Automation Dev Linux = "
+            f"{request.display_name!r}.",
+            "[agent-me] Destination folder is "
+            f"{request.devtest_folder_id}; source folder is "
+            f"{request.source_folder_id if request.source_folder_id is not None else 'disabled'}.",
+        ]
+        for line in search_parts:
+            line_no += 1
+            await _emit_output_line(progress_cb, line_no=line_no, line=line)
+
     env = _magic_auto_subprocess_env()
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -1504,29 +1647,30 @@ async def run_auto_sfa(
 
     try:
         started = time.monotonic()
-        line_no = 0
-
-        async def drain_stdout() -> None:
-            nonlocal line_no
-            assert proc.stdout is not None
-            async for raw in proc.stdout:
-                line_no += 1
-                await _emit(
-                    progress_cb,
-                    {
-                        "event": "line",
-                        "line_no": line_no,
-                        "line": raw.decode(errors="replace").rstrip("\n"),
-                    },
-                )
+        heartbeat_label = (
+            "Display-name release mode may be fetching all task IDs/details "
+            "under Task Owner pool 'Admin' before it can print matched counts."
+            if not request.task_ids
+            else None
+        )
 
         try:
             if timeout and timeout > 0:
                 async with asyncio.timeout(timeout):
-                    await drain_stdout()
+                    line_no = await _drain_process_output(
+                        proc,
+                        progress_cb=progress_cb,
+                        line_no=line_no,
+                        heartbeat_label=heartbeat_label,
+                    )
                     return_code = await proc.wait()
             else:
-                await drain_stdout()
+                line_no = await _drain_process_output(
+                    proc,
+                    progress_cb=progress_cb,
+                    line_no=line_no,
+                    heartbeat_label=heartbeat_label,
+                )
                 return_code = await proc.wait()
         except TimeoutError:
             proc.kill()
@@ -1622,32 +1766,27 @@ async def run_update_template(
         limit=16 * 1024 * 1024,
     )
 
-    started = time.monotonic()
     line_no = 0
-
-    async def drain_stdout() -> None:
-        nonlocal line_no
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line_no += 1
-            await _emit(
-                progress_cb,
-                {
-                    "event": "line",
-                    "flow_type": request.flow_type,
-                    "line_no": line_no,
-                    "line": raw.decode(errors="replace").rstrip("\n"),
-                },
-            )
+    started = time.monotonic()
 
     try:
         try:
             if timeout and timeout > 0:
                 async with asyncio.timeout(timeout):
-                    await drain_stdout()
+                    line_no = await _drain_process_output(
+                        proc,
+                        progress_cb=progress_cb,
+                        line_no=line_no,
+                        flow_type=request.flow_type,
+                    )
                     return_code = await proc.wait()
             else:
-                await drain_stdout()
+                line_no = await _drain_process_output(
+                    proc,
+                    progress_cb=progress_cb,
+                    line_no=line_no,
+                    flow_type=request.flow_type,
+                )
                 return_code = await proc.wait()
         except TimeoutError:
             proc.kill()

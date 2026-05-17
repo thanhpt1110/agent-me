@@ -376,7 +376,7 @@ def test_mcp_setup_page_renders_without_dashboard_auth(with_token: str) -> None:
     r = TestClient(app).get("/mcp/setup")
 
     assert r.status_code == 200
-    assert "Connect Auto SFA tools" in r.text
+    assert "Connect Auto SFA Tools" in r.text
     assert "Back to Auto SFA" in r.text
     assert "Generate MCP Token" in r.text
     assert "Generating..." in r.text

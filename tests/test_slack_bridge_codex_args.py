@@ -394,6 +394,43 @@ def test_auto_sfa_slack_release_type_override(monkeypatch, tmp_path) -> None:
     assert resolved["devtest_folder_id"] == 891171
 
 
+def test_auto_sfa_slack_release_type_keeps_explicit_destination(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENT_ME_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-secret")
+
+    app = importlib.import_module("agent_me.slack_bridge.app")
+    values = app._apply_slack_release_defaults(
+        {
+            "display_name": "Thanh Phan",
+            "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
+            "release_type": "Release",
+            "devtest_folder_id": "1155188",
+        },
+        today=date(2026, 5, 14),
+        release_type_explicit=True,
+        destination_folder_explicit=True,
+    )
+
+    async def fail_resolve_destination_folder_id(source_folder_id: int, **kwargs) -> int:
+        raise AssertionError("explicit devtest_folder_id must skip destination resolve")
+
+    monkeypatch.setattr(
+        app,
+        "resolve_destination_folder_id",
+        fail_resolve_destination_folder_id,
+    )
+
+    import asyncio
+
+    resolved = asyncio.run(app._resolve_slack_release_destination(values))
+
+    assert values["release_type"] == "Release"
+    assert values["source_folder_id"] == "47877"
+    assert resolved["devtest_folder_id"] == "1155188"
+
+
 def test_auto_sfa_slack_help_text_is_english_and_mentions_overrides(
     monkeypatch,
     tmp_path,

@@ -344,6 +344,18 @@ def test_auto_sfa_parse_natural_release_prompt(
         assert values["release_type"] == expected_release_type
 
 
+def test_auto_sfa_parse_natural_release_destination_folder() -> None:
+    values = parse_auto_sfa_message(
+        'Mark auto template cho "Thanh Phan" with this url '
+        "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123 "
+        "to folderID 1155188"
+    )
+
+    assert values["display_name"] == "Thanh Phan"
+    assert values["url_path"] == "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123"
+    assert values["devtest_folder_id"] == "1155188"
+
+
 def test_auto_sfa_parse_ordered_compact_message() -> None:
     values = parse_auto_sfa_message(
         "\n".join(
@@ -688,6 +700,95 @@ async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_argv(
     base_config = json.loads((repo / "configs.json").read_text())
     assert base_config["devtest_folder_id"] == 1155188
     assert base_config["source_folder_id"] == 50722
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_run_emits_display_name_search_progress(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
+    request = build_auto_sfa_request(_full_values(task_ids=""))
+    events: list[dict] = []
+
+    class FakeStdout:
+        async def read(self, n=-1):
+            return b""
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = None
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    async def progress_cb(event):
+        events.append(event)
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    await run_auto_sfa(request, repo_dir=repo, uv_bin="/usr/bin/uv", progress_cb=progress_cb)
+
+    lines = [event["line"] for event in events if event.get("event") == "line"]
+    assert any("Task Owner pool 'Admin'" in line for line in lines)
+    assert any("Destination folder is 1138081" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_auto_sfa_run_streams_carriage_return_progress(
+    tmp_path, monkeypatch
+) -> None:
+    repo = tmp_path / "magic-auto"
+    repo.mkdir()
+    (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
+    request = build_auto_sfa_request(_full_values(task_ids="824423"))
+    events: list[dict] = []
+
+    class FakeStdout:
+        def __init__(self):
+            self._chunks = [
+                b"Fetching details for 40 tasks 1/4 batches\r",
+                b"Fetching details for 40 tasks 2/4 batches\r",
+                b"Tasks returned: 40\n",
+                b"",
+            ]
+
+        async def read(self, n=-1):
+            return self._chunks.pop(0)
+
+    class FakeProcess:
+        stdout = FakeStdout()
+        returncode = None
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProcess()
+
+    async def progress_cb(event):
+        events.append(event)
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    await run_auto_sfa(request, repo_dir=repo, uv_bin="/usr/bin/uv", progress_cb=progress_cb)
+
+    lines = [event["line"] for event in events if event.get("event") == "line"]
+    assert "Fetching details for 40 tasks 1/4 batches" in lines
+    assert "Fetching details for 40 tasks 2/4 batches" in lines
+    assert "Tasks returned: 40" in lines
 
 
 @pytest.mark.asyncio
