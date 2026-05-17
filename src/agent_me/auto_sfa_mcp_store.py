@@ -26,7 +26,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from agent_me.dashboard import state_reader
 
-TOKEN_PREFIX = "agm_"
+TOKEN_PREFIX = "agme-"
 KEY_FILENAME = "auto-sfa-mcp.fernet"
 DB_FILENAME = "auto-sfa-mcp.db"
 
@@ -255,6 +255,8 @@ def mcp_token_for_digest(token_digest: str) -> RememberedMcpToken | None:
             token = _fernet().decrypt(str(encrypted_token).encode()).decode()
         except (InvalidToken, UnicodeDecodeError):
             return None
+        if not token.startswith(TOKEN_PREFIX):
+            return None
         return RememberedMcpToken(
             token=token,
             username=str(row["username"]),
@@ -309,6 +311,17 @@ def credentials_for_bearer_token(token: str) -> StoredMcpCredentials | None:
         conn.close()
 
 
+def mask_mcp_token(token: str) -> str:
+    token = token.strip()
+    if not token:
+        return ""
+    prefix = TOKEN_PREFIX if token.startswith(TOKEN_PREFIX) else ""
+    body = token[len(prefix):] if prefix else token
+    if len(body) <= 10:
+        return f"{prefix}{'*' * len(body)}"
+    return f"{prefix}{body[:6]}{'*' * (len(body) - 10)}{body[-4:]}"
+
+
 def revoke_mcp_token(token: str) -> bool:
     digest = _token_digest(token.strip())
     now = _now_ms()
@@ -323,6 +336,18 @@ def revoke_mcp_token(token: str) -> bool:
             (now, now, digest),
         )
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def purge_mcp_tokens() -> int:
+    conn = _connect()
+    try:
+        cur = conn.execute("DELETE FROM auto_sfa_mcp_tokens")
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("VACUUM")
+        return cur.rowcount
     finally:
         conn.close()
 

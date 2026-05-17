@@ -54,6 +54,7 @@ from agent_me.auto_sfa_mcp_store import (
     cursor_config_json,
     install_command,
     install_script,
+    mask_mcp_token,
     mcp_token_for_digest,
     normalize_devtest_username,
 )
@@ -699,23 +700,38 @@ def _mcp_setup_success_context(request: Request, token_record: Any, *, token_sta
     if not install_base:
         install_base = _mcp_setup_base_context(request)["setup_url"].removesuffix("/mcp/setup")
     token = str(token_record.token)
+    token_display = mask_mcp_token(token)
+    cursor_config = cursor_config_json(endpoint=endpoint, token=token)
+    install_cmd = install_command(base_url=install_base, token=token)
+    claude_command = (
+        "claude mcp add --transport http --scope user "
+        f'agent-me {endpoint} --header "Authorization: Bearer {token}"'
+    )
+    codex_config = (
+        "[mcp_servers.agent-me]\n"
+        f'url = "{endpoint}"\n'
+        f'http_headers = {{ Authorization = "Bearer {token}" }}\n'
+    )
+
+    def mask_display(value: str) -> str:
+        return value.replace(token, token_display)
+
     return {
         **_mcp_setup_base_context(request),
         "created": token_record,
         "token_state": token_state,
         "mcp_token": token,
+        "mcp_token_display": token_display,
         "authorization_header": f"Bearer {token}",
-        "cursor_config": cursor_config_json(endpoint=endpoint, token=token),
-        "install_command": install_command(base_url=install_base, token=token),
-        "claude_command": (
-            "claude mcp add --transport http --scope user "
-            f'agent-me {endpoint} --header "Authorization: Bearer {token}"'
-        ),
-        "codex_config": (
-            "[mcp_servers.agent-me]\n"
-            f'url = "{endpoint}"\n'
-            f'http_headers = {{ Authorization = "Bearer {token}" }}\n'
-        ),
+        "authorization_header_display": f"Bearer {token_display}",
+        "cursor_config": cursor_config,
+        "cursor_config_display": mask_display(cursor_config),
+        "install_command": install_cmd,
+        "install_command_display": mask_display(install_cmd),
+        "claude_command": claude_command,
+        "claude_command_display": mask_display(claude_command),
+        "codex_config": codex_config,
+        "codex_config_display": mask_display(codex_config),
         "username": str(token_record.username),
     }
 

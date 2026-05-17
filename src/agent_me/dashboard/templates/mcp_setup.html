@@ -39,7 +39,7 @@
       <h2 class="text-base font-semibold text-slate-100">Bearer token</h2>
       <p class="mt-1 text-sm text-slate-400">Use this token when a client asks for a bearer token manually.</p>
       <div class="mt-3 flex gap-2">
-        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="mcp-token">{{ mcp_token }}</code></pre>
+        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="mcp-token" data-copy-value="{{ mcp_token }}">{{ mcp_token_display }}</code></pre>
         <button type="button" data-copy-target="mcp-token"
                 class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                 aria-label="Copy bearer token" title="Copy bearer token">
@@ -59,7 +59,7 @@
       <h2 class="text-base font-semibold text-slate-100">One-command install</h2>
       <p class="mt-1 text-sm text-slate-400">Installs Cursor, Codex, and Claude Code config where those clients exist.</p>
       <div class="mt-3 flex gap-2">
-        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="install-command">{{ install_command }}</code></pre>
+        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="install-command" data-copy-value="{{ install_command }}">{{ install_command_display }}</code></pre>
         <button type="button" data-copy-target="install-command"
                 class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                 aria-label="Copy install command" title="Copy install command">
@@ -79,7 +79,7 @@
       <h2 class="text-base font-semibold text-slate-100">Cursor</h2>
       <p class="mt-1 text-sm text-slate-400">Use this in <code class="font-mono">~/.cursor/mcp.json</code> if installing manually.</p>
       <div class="mt-3 flex gap-2">
-        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="cursor-config">{{ cursor_config }}</code></pre>
+        <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="cursor-config" data-copy-value="{{ cursor_config }}">{{ cursor_config_display }}</code></pre>
         <button type="button" data-copy-target="cursor-config"
                 class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                 aria-label="Copy Cursor config" title="Copy Cursor config">
@@ -99,7 +99,7 @@
       <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
         <h2 class="text-base font-semibold text-slate-100">Codex</h2>
         <div class="mt-3 flex gap-2">
-          <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="codex-config">{{ codex_config }}</code></pre>
+          <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="codex-config" data-copy-value="{{ codex_config }}">{{ codex_config_display }}</code></pre>
           <button type="button" data-copy-target="codex-config"
                   class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                   aria-label="Copy Codex config" title="Copy Codex config">
@@ -117,7 +117,7 @@
       <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
         <h2 class="text-base font-semibold text-slate-100">Claude Code</h2>
         <div class="mt-3 flex gap-2">
-          <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="claude-command">{{ claude_command }}</code></pre>
+          <pre class="min-w-0 flex-1 overflow-x-auto rounded border border-ink-700 bg-ink-950 px-3 py-2 font-mono text-xs text-slate-100"><code data-copy-id="claude-command" data-copy-value="{{ claude_command }}">{{ claude_command_display }}</code></pre>
           <button type="button" data-copy-target="claude-command"
                   class="mcp-copy-button relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-accent-500/60 text-accent-400 hover:bg-accent-600/20"
                   aria-label="Copy Claude command" title="Copy Claude command">
@@ -198,7 +198,7 @@
     if (!button) return;
     const target = document.querySelector(`[data-copy-id="${button.dataset.copyTarget}"]`);
     if (!target) return;
-    const ok = await copyText(target.textContent || "");
+    const ok = await copyText(target.getAttribute("data-copy-value") || target.textContent || "");
     if (ok) {
       const originalLabel = button.getAttribute("aria-label") || "Copy";
       button.classList.add("copied");

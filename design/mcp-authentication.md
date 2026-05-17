@@ -37,7 +37,8 @@ Credential model:
 - User enters DevTest username/password once on `/mcp/setup`.
 - Agent-me verifies the credentials with `magic-auto resolve-destination-folder`.
 - Agent-me stores the DevTest password and bearer token encrypted server-side,
-  then returns an `agm_...` bearer token.
+  then returns an `agme-...` bearer token. Setup pages mask token displays but
+  copy buttons still copy the full token/config value.
 - The setup page stores only a signed token digest in a long-lived browser
   cookie, so the same browser can reopen `/mcp/setup` and copy the token again.
 - Cursor, Codex, and Claude Code send `Authorization: Bearer <token>` to

@@ -405,20 +405,29 @@ def test_mcp_setup_creates_long_lived_token(
     assert r.status_code == 200
     assert "Token created for" in r.text
     assert "thanh.phan" in r.text
-    assert "agm_" in r.text
+    assert "agme-" in r.text
+    assert "agm_" not in r.text
     assert "Bearer token" in r.text
     assert "Copy bearer token" in r.text
     assert "mcp-copy-check hidden" in r.text
     assert 'button.dataset.copyState = "Copied"' in r.text
+    assert 'target.getAttribute("data-copy-value")' in r.text
     assert "Create another token" not in r.text
     assert "Token label" not in r.text
     assert "curl -fsSL https://agent-me.nvidia.com/mcp/install" in r.text
     assert "AGENT_ME_MCP_TOKEN=" in r.text
-    assert "Bearer agm_" in r.text
+    assert "Bearer agme-" in r.text
     assert "claude mcp add --transport http" in r.text
     assert "agent-me https://agent-me.nvidia.com/mcp/ --header" in r.text
-    assert "--header &#34;Authorization: Bearer agm_" in r.text
+    assert "--header &#34;Authorization: Bearer agme-" in r.text
     assert "[mcp_servers.agent-me]" in r.text
+    token_match = re.search(
+        r'data-copy-id="mcp-token" data-copy-value="(?P<token>agme-[A-Za-z0-9_-]+)">'
+        r"(?P<display>agme-[^<]*\*+[^<]*)</code>",
+        r.text,
+    )
+    assert token_match is not None
+    assert token_match.group("display") != token_match.group("token")
     assert client.cookies.get("agent_me_auto_sfa_mcp_setup")
 
 
@@ -438,9 +447,9 @@ def test_mcp_setup_remembers_token_in_same_browser(
         "username": "thaphan",
         "password": "devtest-password",
     })
-    match = re.search(r"agm_[A-Za-z0-9_-]+", created.text)
+    match = re.search(r'data-copy-id="mcp-token" data-copy-value="(agme-[A-Za-z0-9_-]+)"', created.text)
     assert match is not None
-    token = match.group(0)
+    token = match.group(1)
 
     remembered = client.get("/mcp/setup")
 

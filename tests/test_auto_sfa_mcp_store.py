@@ -5,6 +5,7 @@ def test_mcp_token_store_round_trips_encrypted_credentials(temp_state_dir) -> No
     from agent_me.auto_sfa_mcp_store import (
         create_mcp_token,
         credentials_for_bearer_token,
+        mask_mcp_token,
         mcp_token_for_digest,
         token_db_path,
     )
@@ -14,7 +15,7 @@ def test_mcp_token_store_round_trips_encrypted_credentials(temp_state_dir) -> No
         password="devtest-secret",
         label="pytest",
     )
-    assert created.token.startswith("agm_")
+    assert created.token.startswith("agme-")
     assert created.expires_at is None
     assert token_db_path().parent == temp_state_dir
 
@@ -31,6 +32,12 @@ def test_mcp_token_store_round_trips_encrypted_credentials(temp_state_dir) -> No
     raw_db = token_db_path().read_bytes()
     assert b"devtest-secret" not in raw_db
     assert created.token.encode() not in raw_db
+
+    masked = mask_mcp_token(created.token)
+    assert masked.startswith("agme-")
+    assert "*" in masked
+    assert masked != created.token
+    assert masked.endswith(created.token[-4:])
 
 
 def test_mcp_token_store_can_revoke_token(temp_state_dir) -> None:

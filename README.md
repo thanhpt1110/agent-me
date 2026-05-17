@@ -76,7 +76,7 @@ dashboard cache files, and the encrypted MCP token store.
 | Daily brief | `brief`, `brief week`, and `brief month` collect work signals and post summaries to Slack and the dashboard cache. |
 | Dashboard | `/` shows brief/source status, `/ops` shows service health/logs, `/auto-sfa` runs Auto SFA jobs, and `/mcp/setup` creates reusable MCP tokens. |
 | Auto SFA UI | Creates SFA tasks and releases templates through `magic-auto`, using per-run DevTest credentials and live SSE terminal output. |
-| Auto SFA MCP | `http://agent-me.nvidia.com/mcp/` exposes `create_sfa_tasks` and `release_sfa_tasks`. Users set up once at `/mcp/setup`, then connect agent clients with a bearer token. |
+| Auto SFA MCP | `http://agent-me.nvidia.com/mcp/` exposes `create_sfa_tasks` and `release_sfa_tasks`. Users set up once at `/mcp/setup`, then connect clients with a masked `agme-...` bearer token. |
 | MCP auth refresh | Refresh scripts keep Claude/Codex MCP credentials usable for Codex subprocesses and bridge operations. |
 
 <p align="center">
