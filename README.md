@@ -79,12 +79,12 @@ dashboard cache files, and the encrypted MCP token store.
 | Auto SFA MCP | `http://agent-me.nvidia.com/mcp/` exposes `create_sfa_tasks` and `release_sfa_tasks`. Users set up once at `/mcp/setup`, then connect agent clients with a bearer token. |
 | MCP auth refresh | Refresh scripts keep Claude/Codex MCP credentials usable for Codex subprocesses and bridge operations. |
 
-<details>
-<summary>Auto SFA workflow and feature architecture</summary>
-
 <p align="center">
   <img alt="QA to automated SFA workflow" src="artifacts/qa-auto-workflow.png" width="940" />
 </p>
+
+<details>
+<summary>Auto SFA feature architecture</summary>
 
 <p align="center">
   <img alt="Auto SFA feature architecture" src="artifacts/auto-sfa-architecture.png" width="940" />
