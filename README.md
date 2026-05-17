@@ -20,11 +20,6 @@ SQLite, runs Codex with the right MCP environment, gates side effects through
 human approval when needed, and exposes Auto SFA as a native MCP endpoint for
 other agent clients.
 
-Built for NVIDIA VRDC SWQA.
-
-Author: [Thanh Phan](mailto:thaphan@nvidia.com)
-Co-author: OpenAI Codex
-
 ## What It Does
 
 - Slack bot for chat, commands, approvals, MCP auth checks, and daily briefs.
