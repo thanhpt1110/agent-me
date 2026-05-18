@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # EndBug/label-sync v2.3.3 (latest as of resolution; `v2` tag-ref
       # also points here). Pin to commit SHA per OpenSSF guidance for
