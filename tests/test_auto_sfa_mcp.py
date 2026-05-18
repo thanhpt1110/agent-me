@@ -57,6 +57,27 @@ def _call_tool(
     return body["result"]["structuredContent"]
 
 
+def _call_tool_body(
+    client: TestClient,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+    request_id: int = 1,
+) -> dict[str, Any]:
+    response = client.post(
+        "/mcp/",
+        headers=headers or _mcp_headers(),
+        json=_jsonrpc(
+            "tools/call",
+            {"name": name, "arguments": arguments},
+            request_id=request_id,
+        ),
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_auto_sfa_mcp_requires_agent_me_token(with_token: str) -> None:
     from agent_me.dashboard.app import build_app
 
@@ -100,6 +121,26 @@ def test_auto_sfa_mcp_lists_expected_tools(with_token: str) -> None:
     assert "confirmed" in release["inputSchema"]["properties"]
     assert "confirmation_token" in create["inputSchema"]["properties"]
     assert "confirmation_token" in release["inputSchema"]["properties"]
+    assert "prompt" not in create["inputSchema"]["properties"]
+    assert "prompt" not in release["inputSchema"]["properties"]
+
+
+def test_auto_sfa_mcp_rejects_prompt_argument(with_token: str) -> None:
+    from agent_me.dashboard.app import build_app
+
+    with TestClient(build_app()) as client:
+        body = _call_tool_body(
+            client,
+            "create_sfa_tasks",
+            {
+                "prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+            },
+        )
+
+    assert body["error"]["code"] == -32602
+    assert body["error"]["data"]["tool_name"] == "create_sfa_tasks"
+    assert body["error"]["data"]["unknown_arguments"] == ["prompt"]
+    assert "prompt" not in body["error"]["data"]["allowed_arguments"]
 
 
 def test_create_sfa_tasks_preview_uses_basic_auth_credentials(with_token: str) -> None:
@@ -110,7 +151,8 @@ def test_create_sfa_tasks_preview_uses_basic_auth_credentials(with_token: str) -
             client,
             "create_sfa_tasks",
             {
-                "prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+                "display_name": "Thanh Phan",
+                "folder_id": "494139",
                 "confirmed": False,
             },
         )
@@ -144,7 +186,8 @@ def test_create_sfa_tasks_preview_uses_bearer_token_credentials(
             client,
             "create_sfa_tasks",
             {
-                "prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+                "display_name": "Thanh Phan",
+                "folder_id": "494139",
                 "confirmed": False,
             },
             headers=_bearer_headers(created.token),
@@ -163,7 +206,7 @@ def test_release_sfa_tasks_general_request_requires_plan_mode(with_token: str) -
         result = _call_tool(
             client,
             "release_sfa_tasks",
-            {"prompt": "release sfa"},
+            {},
         )
 
     assert result["status"] == "needs_input"
@@ -221,7 +264,8 @@ def test_create_sfa_tasks_confirmed_starts_background_job(
             client,
             "create_sfa_tasks",
             {
-                "prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+                "display_name": "Thanh Phan",
+                "folder_id": "494139",
             },
         )
 
@@ -264,7 +308,8 @@ def test_auto_sfa_mcp_job_url_uses_request_origin(
             client,
             "create_sfa_tasks",
             {
-                "prompt": 'Create SFA Tasks for "Thanh Phan" in folder "494139"',
+                "display_name": "Thanh Phan",
+                "folder_id": "494139",
             },
             headers={**_mcp_headers(), "Host": "agent-me.nvidia.com"},
         )
@@ -360,7 +405,7 @@ def test_release_sfa_tasks_release_type_keeps_explicit_destination(
     assert request.devtest_folder_id == 1155188
 
 
-def test_release_sfa_tasks_prompt_destination_skips_auto_resolve(
+def test_release_sfa_tasks_structured_destination_skips_auto_resolve(
     with_token: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -391,10 +436,10 @@ def test_release_sfa_tasks_prompt_destination_skips_auto_resolve(
             client,
             "release_sfa_tasks",
             {
-                "prompt": 'Mark auto template cho "Thanh Phan" with this url '
-                "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123 "
-                "to folderID 1155188",
+                "display_name": "Thanh Phan",
+                "url_path": "https://gitlab-master.nvidia.com/group/repo/-/merge_requests/123",
                 "release_type": "Linux Release",
+                "devtest_folder_id": "1155188",
             },
         )
 

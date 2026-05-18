@@ -53,6 +53,11 @@ Tool execution model:
 - Complete `create_sfa_tasks` and `release_sfa_tasks` calls execute in one
   request after the MCP client/user approves the tool call. The `confirmed`
   argument defaults to `true`.
+- Tool arguments are structured-only. Auto SFA MCP does not expose or accept a
+  `prompt` argument, and the HTTP guard rejects unknown arguments before the
+  tool runs. Agent clients must map the user's request into the fields listed
+  in the tool schema, adding optional fields only when the user provides those
+  details.
 - Agent clients should include default choices explicitly in tool arguments
   when possible, especially `release_type="Linux Release"` for release calls
   where the user did not ask for `Release`, so the approval UI shows exactly

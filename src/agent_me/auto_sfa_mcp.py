@@ -29,12 +29,9 @@ from starlette.responses import JSONResponse, Response
 
 from agent_me.auto_sfa import (
     AutoSFAValidationError,
-    auto_sfa_destination_folder_mentioned,
     build_auto_sfa_request,
     build_update_template_request,
     missing_update_template_fields,
-    parse_auto_sfa_message,
-    parse_update_template_message,
     resolve_destination_folder_id,
 )
 from agent_me.auto_sfa_mcp_store import credentials_for_bearer_token
@@ -64,6 +61,36 @@ _CURRENT_PUBLIC_BASE_URL: contextvars.ContextVar[str | None] = contextvars.Conte
 )
 
 MCP_AUTO_SFA_RUNNER = AutoSFARunner(trigger_source="mcp")
+
+_CREATE_SFA_TASK_ARGS = frozenset({
+    "display_name",
+    "folder_id",
+    "template_ids",
+    "template_ids_enabled",
+    "win_linux",
+    "confirmed",
+    "confirmation_token",
+})
+_RELEASE_SFA_TASK_ARGS = frozenset({
+    "display_name",
+    "url_path",
+    "release_type",
+    "source_folder_id",
+    "devtest_folder_id",
+    "start_date",
+    "finish_date",
+    "task_ids",
+    "task_ids_enabled",
+    "complexity_level",
+    "log_file_provider",
+    "auto_resolve_destination",
+    "confirmed",
+    "confirmation_token",
+})
+_MCP_TOOL_ARGUMENT_ALLOWLIST = {
+    "create_sfa_tasks": _CREATE_SFA_TASK_ARGS,
+    "release_sfa_tasks": _RELEASE_SFA_TASK_ARGS,
+}
 
 
 def _truthy(value: Any) -> bool:
@@ -191,6 +218,88 @@ def _credentials_from_bearer_authorization(value: str) -> DevTestCredentials | N
     return DevTestCredentials(username=stored.username, password=stored.password)
 
 
+async def _read_http_body(receive) -> bytes:
+    chunks: list[bytes] = []
+    more_body = True
+    while more_body:
+        message = await receive()
+        if message.get("type") != "http.request":
+            break
+        chunks.append(message.get("body", b""))
+        more_body = bool(message.get("more_body"))
+    return b"".join(chunks)
+
+
+def _replay_http_body(body: bytes):
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return receive
+
+
+def _invalid_tool_arguments_response(message: dict[str, Any]) -> JSONResponse | None:
+    if message.get("method") != "tools/call":
+        return None
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return None
+    tool_name = params.get("name")
+    allowed = _MCP_TOOL_ARGUMENT_ALLOWLIST.get(str(tool_name or ""))
+    if allowed is None:
+        return None
+    arguments = params.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        return None
+    unknown = sorted(str(key) for key in arguments if key not in allowed)
+    if not unknown:
+        return None
+    return JSONResponse(
+        {
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "error": {
+                "code": -32602,
+                "message": "Invalid tool arguments",
+                "data": {
+                    "tool_name": tool_name,
+                    "unknown_arguments": unknown,
+                    "allowed_arguments": sorted(allowed),
+                    "detail": (
+                        "Auto SFA MCP tools accept only structured fields from "
+                        "the tool schema. Do not pass a prompt argument; map the "
+                        "user request into the named fields before calling."
+                    ),
+                },
+            },
+        },
+        status_code=200,
+    )
+
+
+def _tool_argument_guard_response(body: bytes) -> JSONResponse | None:
+    if not body.strip():
+        return None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        return _invalid_tool_arguments_response(payload)
+    if isinstance(payload, list):
+        for message in payload:
+            if isinstance(message, dict):
+                response = _invalid_tool_arguments_response(message)
+                if response is not None:
+                    return response
+    return None
+
+
 class AutoSFAMCPAuthMiddleware:
     """ASGI auth wrapper that exposes DevTest credentials to tools."""
 
@@ -238,6 +347,13 @@ class AutoSFAMCPAuthMiddleware:
 
         token = _CURRENT_DEVTEST_CREDENTIALS.set(credentials)
         try:
+            if str(scope.get("method") or "").upper() == "POST":
+                body = await _read_http_body(receive)
+                response = _tool_argument_guard_response(body)
+                if response is not None:
+                    await response(scope, receive, send)
+                    return
+                receive = _replay_http_body(body)
             await self.app(scope, receive, send)
         finally:
             _CURRENT_DEVTEST_CREDENTIALS.reset(token)
@@ -404,34 +520,8 @@ def _safe_values(values: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
-def _prompt_has_display_signal(prompt: str | None) -> bool:
-    return bool(
-        re.search(
-            r"(?is)\b(?:display[-_ ]?name|automation[-_ ]?dev[-_ ]?linux|"
-            r"dev[-_ ]?display[-_ ]?name|template[-_ ]?owner|owner|for|cho)\b",
-            prompt or "",
-        )
-    )
-
-
-def _clear_general_prompt_display_name(
-    values: dict[str, Any],
-    *,
-    prompt: str | None,
-    explicit_display_name: str | None,
-) -> dict[str, Any]:
-    if explicit_display_name or not prompt:
-        return values
-    if "\n" in prompt.strip() or _prompt_has_display_signal(prompt):
-        return values
-    normalized = dict(values)
-    normalized.pop("display_name", None)
-    return normalized
-
-
 def _create_values_from_args(
     *,
-    prompt: str | None,
     display_name: str | None,
     folder_id: int | str | None,
     template_ids: str | None,
@@ -449,14 +539,7 @@ def _create_values_from_args(
         existing["template_ids_enabled"] = True
     if win_linux:
         existing["win_linux"] = win_linux
-    values = parse_update_template_message(prompt, existing) if prompt else existing
-    values = _clear_general_prompt_display_name(
-        values,
-        prompt=prompt,
-        explicit_display_name=display_name,
-    )
-    values["flow_type"] = "create"
-    return values
+    return existing
 
 
 def _today() -> date:
@@ -477,29 +560,8 @@ def _release_source_for_type(release_type: str) -> int:
     return AUTO_SFA_MCP_RELEASE_TYPE_SOURCES[_normalize_release_type(release_type)]
 
 
-def _release_type_mentioned(text: str | None) -> bool:
-    return bool(
-        re.search(
-            r"(?is)\b(?:release[-_ ]?type|type)\b"
-            r"\s*(?:[:=]|\bis\b|\bla\b|\blà\b)?\s*"
-            r"(?:linux\s+release|release)\b",
-            text or "",
-        )
-    )
-
-
-def _source_folder_mentioned(text: str | None) -> bool:
-    return bool(
-        re.search(
-            r"(?is)\b(?:source[-_ ]?folder(?:[-_ ]?id)?|source[-_ ]?fodler(?:[-_ ]?id)?|from[-_ ]?folder(?:[-_ ]?id)?)\b",
-            text or "",
-        )
-    )
-
-
 def _release_values_from_args(
     *,
-    prompt: str | None,
     display_name: str | None,
     url_path: str | None,
     release_type: str | None,
@@ -536,47 +598,25 @@ def _release_values_from_args(
     if log_file_provider:
         existing["log_file_provider"] = log_file_provider
 
-    values = parse_auto_sfa_message(prompt, existing) if prompt else existing
-    values = _clear_general_prompt_display_name(
-        values,
-        prompt=prompt,
-        explicit_display_name=display_name,
-    )
-    values["flow_type"] = "release"
-
     end_date = _today()
     start = end_date - timedelta(days=7)
     normalized_release_type = _normalize_release_type(
-        values.get("release_type") or AUTO_SFA_MCP_DEFAULT_RELEASE_TYPE
+        existing.get("release_type") or AUTO_SFA_MCP_DEFAULT_RELEASE_TYPE
     )
-    values["release_type"] = normalized_release_type
-    destination_folder_explicit = (
-        devtest_folder_id not in (None, "")
-        or auto_sfa_destination_folder_mentioned(prompt)
-    )
-    if (
-        (_release_type_mentioned(prompt) or release_type)
-        and not (_source_folder_mentioned(prompt) or source_folder_id not in (None, ""))
-    ):
-        values["source_folder_id"] = str(_release_source_for_type(normalized_release_type))
-        if not destination_folder_explicit:
-            values.pop("devtest_folder_id", None)
-    else:
-        values.setdefault("source_folder_id", str(_release_source_for_type(normalized_release_type)))
-    values.setdefault("start_date", start.isoformat())
-    values.setdefault("finish_date", end_date.isoformat())
-    return values
+    existing["release_type"] = normalized_release_type
+    existing.setdefault("source_folder_id", str(_release_source_for_type(normalized_release_type)))
+    existing.setdefault("start_date", start.isoformat())
+    existing.setdefault("finish_date", end_date.isoformat())
+    return existing
 
 
 def _release_type_explicit(
     *,
-    prompt: str | None,
     release_type: str | None,
     source_folder_id: int | str | None,
 ) -> bool:
     return bool(
         release_type
-        or _release_type_mentioned(prompt)
         or source_folder_id not in (None, "")
     )
 
@@ -611,6 +651,8 @@ TOOL_USAGE_RULES = (
     "Use this tool only when the user has given a concrete Auto SFA request. "
     "If the user asks generally or omits required fields, enter the agent client's "
     "plan/clarification mode and collect the missing fields before calling. "
+    "Do not pass a prompt or any other non-schema argument; map the user's request "
+    "into the structured fields defined by this tool. "
     "For complete requests, the MCP client's tool approval is the confirmation; "
     "call once with confirmed=true or omit confirmed because it defaults to true. "
     "Include default choices explicitly in tool arguments when possible so the "
@@ -629,8 +671,9 @@ def _new_fastmcp() -> FastMCP:
             "Expose Auto SFA as deterministic tools for external agents. "
             "Authenticate every MCP request with an Agent Me bearer token from "
             "/mcp/setup. Complete tool calls execute after MCP client approval; "
-            "incomplete calls return structured clarification responses. Use "
-            "the returned job_url for live dashboard progress."
+            "incomplete calls return structured clarification responses. Tool "
+            "arguments are schema-only; do not pass a prompt argument. Use the "
+            "returned job_url for live dashboard progress."
         ),
         stateless_http=True,
         json_response=True,
@@ -658,7 +701,6 @@ AUTO_SFA_MCP = _new_fastmcp()
     structured_output=True,
 )
 async def create_sfa_tasks(
-    prompt: str | None = None,
     display_name: str | None = None,
     folder_id: int | str | None = None,
     template_ids: str | None = None,
@@ -673,8 +715,8 @@ async def create_sfa_tasks(
     do not ask for username/password as tool arguments on each call.
 
     Required business fields: display_name and folder_id. Natural-language
-    prompt examples are supported, such as
-    `Create SFA Tasks for "Thanh Phan" in folder "494139"`.
+    prompts are intentionally not accepted as tool arguments; the agent client
+    must map user wording into this tool's structured fields before calling.
 
     Agent-client rule: if the user's request is general or incomplete,
     use plan/clarification mode and do not call until required fields are
@@ -686,7 +728,6 @@ async def create_sfa_tasks(
     """
 
     values = _create_values_from_args(
-        prompt=prompt,
         display_name=display_name,
         folder_id=folder_id,
         template_ids=template_ids,
@@ -740,7 +781,6 @@ async def create_sfa_tasks(
     structured_output=True,
 )
 async def release_sfa_tasks(
-    prompt: str | None = None,
     display_name: str | None = None,
     url_path: str | None = None,
     release_type: str | None = None,
@@ -767,7 +807,9 @@ async def release_sfa_tasks(
     Required business fields: display_name and url_path. If
     devtest_folder_id is omitted and auto_resolve_destination is true,
     the server resolves the current-cycle destination folder from
-    source_folder_id using the caller's DevTest credentials.
+    source_folder_id using the caller's DevTest credentials. Natural-language
+    prompts are intentionally not accepted as tool arguments; the agent client
+    must map user wording into this tool's structured fields before calling.
 
     Agent-client rule: if the user's request is general or incomplete,
     use plan/clarification mode and do not call until required fields are
@@ -783,7 +825,6 @@ async def release_sfa_tasks(
     """
 
     values = _release_values_from_args(
-        prompt=prompt,
         display_name=display_name,
         url_path=url_path,
         release_type=release_type,
@@ -801,7 +842,6 @@ async def release_sfa_tasks(
         return _needs_input_response(flow_type="release", missing=missing, values=values)
 
     release_type_was_explicit = _release_type_explicit(
-        prompt=prompt,
         release_type=release_type,
         source_folder_id=source_folder_id,
     )
