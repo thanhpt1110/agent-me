@@ -63,7 +63,7 @@ tool.
 - Optional: `template_ids`, `template_ids_enabled`, `win_linux`.
 - Default: `win_linux = Linux Only`.
 - Natural prompt example: `Create SFA Tasks for "Thanh Phan" in folder "494139"`.
-- Runs `magic-auto update-template` through the existing Auto SFA runner.
+- Runs `devtest-wrapper update-template` through the existing Auto SFA runner.
 
 `release_sfa_tasks`:
 

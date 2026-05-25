@@ -102,7 +102,7 @@ Claude/Codex MCP auth, and access to `devtest-wrapper` for Auto SFA workflows.
 Install:
 
 ```bash
-git clone git@github.com:thanhpt1110/agent-me.git
+git clone https://gitlab-master.nvidia.com/vrdc-swqa/swqa-2e2-workflow/agent-me.git
 cd agent-me
 uv sync --dev
 cp configs/.env.example configs/.env

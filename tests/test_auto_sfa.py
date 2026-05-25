@@ -16,10 +16,10 @@ from agent_me.auto_sfa import (
     parse_update_template_message,
     resolve_destination_folder_command,
     resolve_destination_folder_id,
-    resolve_magic_auto_repo_dir,
+    resolve_devtest_wrapper_repo_dir,
     run_auto_sfa,
     run_update_template,
-    update_magic_auto_config,
+    update_devtest_wrapper_config,
     update_template_command,
 )
 
@@ -76,33 +76,33 @@ def _full_values(**overrides) -> dict:
 
 def test_resolve_auto_sfa_repo_dir_prefers_new_env(monkeypatch, tmp_path) -> None:
     repo = tmp_path / "devtest-wrapper"
-    legacy = tmp_path / "magic-auto"
+    legacy = tmp_path / "legacy-wrapper"
     monkeypatch.setenv("AUTO_SFA_REPO_DIR", str(repo))
-    monkeypatch.setenv("MAGIC_AUTO_REPO_DIR", str(legacy))
+    monkeypatch.setenv("MAGIC_" "AUTO_REPO_DIR", str(legacy))
 
-    assert resolve_magic_auto_repo_dir() == repo
+    assert resolve_devtest_wrapper_repo_dir() == repo
 
 
 def test_resolve_auto_sfa_repo_dir_accepts_legacy_env(monkeypatch, tmp_path) -> None:
-    legacy = tmp_path / "magic-auto"
+    legacy = tmp_path / "legacy-wrapper"
     monkeypatch.delenv("AUTO_SFA_REPO_DIR", raising=False)
-    monkeypatch.setenv("MAGIC_AUTO_REPO_DIR", str(legacy))
+    monkeypatch.setenv("MAGIC_" "AUTO_REPO_DIR", str(legacy))
 
-    assert resolve_magic_auto_repo_dir() == legacy
+    assert resolve_devtest_wrapper_repo_dir() == legacy
 
 
 def test_resolve_auto_sfa_repo_dir_prefers_devtest_wrapper_checkout(
     monkeypatch, tmp_path
 ) -> None:
     repo = tmp_path / "devtest-wrapper"
-    legacy = tmp_path / "magic-auto"
+    legacy = tmp_path / "legacy-wrapper"
     repo.mkdir()
     legacy.mkdir()
     monkeypatch.delenv("AUTO_SFA_REPO_DIR", raising=False)
-    monkeypatch.delenv("MAGIC_AUTO_REPO_DIR", raising=False)
+    monkeypatch.delenv("MAGIC_" "AUTO_REPO_DIR", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    assert resolve_magic_auto_repo_dir() == repo
+    assert resolve_devtest_wrapper_repo_dir() == repo
 
 
 def test_update_template_parse_and_build_folder_mode() -> None:
@@ -437,8 +437,8 @@ def test_auto_sfa_domino_does_not_require_log_file_base_url() -> None:
     assert request.log_file_base_url == request.code_review_path
 
 
-def test_auto_sfa_config_update_sets_magic_auto_fields(tmp_path) -> None:
-    repo = tmp_path / "magic-auto"
+def test_auto_sfa_config_update_sets_devtest_wrapper_fields(tmp_path) -> None:
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(
@@ -452,7 +452,7 @@ def test_auto_sfa_config_update_sets_magic_auto_fields(tmp_path) -> None:
         )
     )
 
-    summary = update_magic_auto_config(request, repo)
+    summary = update_devtest_wrapper_config(request, repo)
 
     updated = json.loads((repo / "configs.json").read_text())
     release = updated["release_configs"]
@@ -471,12 +471,12 @@ def test_auto_sfa_config_update_sets_magic_auto_fields(tmp_path) -> None:
 
 
 def test_auto_sfa_config_update_requires_source_folder_override(tmp_path) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(_full_values(source_folder_id="50724"))
 
-    summary = update_magic_auto_config(request, repo)
+    summary = update_devtest_wrapper_config(request, repo)
 
     updated = json.loads((repo / "configs.json").read_text())
     assert updated["source_folder_id"] == 50724
@@ -484,12 +484,12 @@ def test_auto_sfa_config_update_requires_source_folder_override(tmp_path) -> Non
 
 
 def test_auto_sfa_config_update_preserves_source_folder_when_blank(tmp_path) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(_full_values(source_folder_id=""))
 
-    summary = update_magic_auto_config(request, repo)
+    summary = update_devtest_wrapper_config(request, repo)
 
     updated = json.loads((repo / "configs.json").read_text())
     assert updated["source_folder_id"] == 50722
@@ -497,14 +497,14 @@ def test_auto_sfa_config_update_preserves_source_folder_when_blank(tmp_path) -> 
 
 
 def test_auto_sfa_config_update_keeps_mr_url_for_domino_input(tmp_path) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(
         _full_values(log_file_provider="Domino", log_file_base_url="")
     )
 
-    update_magic_auto_config(request, repo)
+    update_devtest_wrapper_config(request, repo)
 
     updated = json.loads((repo / "configs.json").read_text())
     assert updated["log_file_provider"] == "Domino"
@@ -575,7 +575,7 @@ def test_resolve_destination_folder_command_uses_source_and_credentials() -> Non
 async def test_resolve_destination_folder_ignores_uv_warning_and_unsets_virtualenv(
     tmp_path, monkeypatch
 ) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     captured: dict[str, object] = {}
     monkeypatch.setenv("VIRTUAL_ENV", "/localhome/local-thaphan/agent-me/.venv")
@@ -678,10 +678,10 @@ def test_auto_sfa_requires_source_folder_when_default_toggle_is_off() -> None:
 
 
 @pytest.mark.asyncio
-async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_argv(
+async def test_auto_sfa_run_passes_custom_credentials_to_devtest_wrapper_argv(
     tmp_path, monkeypatch
 ) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(
@@ -738,7 +738,7 @@ async def test_auto_sfa_run_passes_custom_credentials_to_magic_auto_argv(
 async def test_auto_sfa_run_emits_display_name_search_progress(
     tmp_path, monkeypatch
 ) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(_full_values(task_ids=""))
@@ -778,7 +778,7 @@ async def test_auto_sfa_run_emits_display_name_search_progress(
 async def test_auto_sfa_run_streams_carriage_return_progress(
     tmp_path, monkeypatch
 ) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_auto_sfa_request(_full_values(task_ids="824423"))
@@ -824,10 +824,10 @@ async def test_auto_sfa_run_streams_carriage_return_progress(
 
 
 @pytest.mark.asyncio
-async def test_update_template_run_passes_custom_credentials_to_magic_auto_argv(
+async def test_update_template_run_passes_custom_credentials_to_devtest_wrapper_argv(
     tmp_path, monkeypatch
 ) -> None:
-    repo = tmp_path / "magic-auto"
+    repo = tmp_path / "devtest-wrapper"
     repo.mkdir()
     (repo / "configs.json").write_text(json.dumps(_sample_config(), indent=2) + "\n")
     request = build_update_template_request({

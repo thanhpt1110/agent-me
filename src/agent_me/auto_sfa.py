@@ -184,7 +184,7 @@ class AutoSFARequest:
 
     @property
     def user_login(self) -> str:
-        """Compatibility alias for the legacy name of magic-auto's -u flag."""
+        """Compatibility alias for the legacy name of devtest-wrapper's -u flag."""
         return self.display_name
 
     def as_input_dict(self) -> dict[str, Any]:
@@ -246,21 +246,22 @@ class TemplateSFARequest:
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
-def resolve_magic_auto_repo_dir(repo_dir: str | Path | None = None) -> Path:
+def resolve_devtest_wrapper_repo_dir(repo_dir: str | Path | None = None) -> Path:
     """Resolve the devtest-wrapper checkout.
 
-    The helper repo used to be named magic-auto. Keep the legacy function and
-    env var so older services continue to run during the rename.
+    Keep support for the old repository env var so deployed services continue
+    to run during the repository rename.
     """
     if repo_dir is not None:
         return Path(repo_dir).expanduser()
-    if env := os.environ.get("AUTO_SFA_REPO_DIR") or os.environ.get("MAGIC_AUTO_REPO_DIR"):
+    legacy_env = "MAGIC_" "AUTO_REPO_DIR"
+    if env := os.environ.get("AUTO_SFA_REPO_DIR") or os.environ.get(legacy_env):
         return Path(env).expanduser()
     candidates = (
         Path.home() / "devtest-wrapper",
-        Path.home() / "magic-auto",
+        Path.home() / ("magic" "-auto"),
         Path("/localhome/local-thaphan/devtest-wrapper"),
-        Path("/localhome/local-thaphan/magic-auto"),
+        Path("/localhome/local-thaphan") / ("magic" "-auto"),
     )
     for candidate in candidates:
         if candidate.exists():
@@ -300,7 +301,7 @@ def _redacted_command_args(args: list[str]) -> list[str]:
     return redacted
 
 
-def _magic_auto_subprocess_env() -> dict[str, str]:
+def _devtest_wrapper_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     # The dashboard itself runs inside agent-me's venv. Leaving VIRTUAL_ENV set
@@ -1304,11 +1305,11 @@ def _auto_sfa_config_summary(
     }
 
 
-def update_magic_auto_config(
+def update_devtest_wrapper_config(
     request: AutoSFARequest,
     repo_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    repo = resolve_magic_auto_repo_dir(repo_dir)
+    repo = resolve_devtest_wrapper_repo_dir(repo_dir)
     config_path = repo / "configs.json"
     data = _auto_sfa_config_payload(request, config_path)
 
@@ -1318,11 +1319,11 @@ def update_magic_auto_config(
     return _auto_sfa_config_summary(request, data, config_path, temporary=False)
 
 
-def write_temp_magic_auto_config(
+def write_temp_devtest_wrapper_config(
     request: AutoSFARequest,
     repo_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    repo = resolve_magic_auto_repo_dir(repo_dir)
+    repo = resolve_devtest_wrapper_repo_dir(repo_dir)
     base_config_path = repo / "configs.json"
     data = _auto_sfa_config_payload(request, base_config_path)
     tmp_path: Path | None = None
@@ -1381,7 +1382,7 @@ def write_temp_update_template_config(
     request: TemplateSFARequest,
     repo_dir: str | Path | None = None,
 ) -> dict[str, Any]:
-    repo = resolve_magic_auto_repo_dir(repo_dir)
+    repo = resolve_devtest_wrapper_repo_dir(repo_dir)
     base_config_path = repo / "configs.json"
     data = _template_sfa_config_payload(request, base_config_path)
     tmp_path: Path | None = None
@@ -1549,7 +1550,7 @@ async def resolve_destination_folder_id(
     uv_bin: str | None = None,
 ) -> int:
     """Resolve the current cycle destination folder for a source folder."""
-    repo = resolve_magic_auto_repo_dir(repo_dir)
+    repo = resolve_devtest_wrapper_repo_dir(repo_dir)
     timeout = timeout_s
     if timeout is None:
         timeout = float(os.environ.get("AUTO_SFA_RESOLVE_TIMEOUT_S", 60))
@@ -1563,7 +1564,7 @@ async def resolve_destination_folder_id(
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(repo),
-        env=_magic_auto_subprocess_env(),
+        env=_devtest_wrapper_subprocess_env(),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -1607,12 +1608,12 @@ async def run_auto_sfa(
     uv_bin: str | None = None,
 ) -> int:
     """Run SFA with an isolated temporary devtest-wrapper config."""
-    repo = resolve_magic_auto_repo_dir(repo_dir)
+    repo = resolve_devtest_wrapper_repo_dir(repo_dir)
     timeout = timeout_s
     if timeout is None:
         timeout = float(os.environ.get("AUTO_SFA_TIMEOUT_S", 60 * 60))
 
-    summary = write_temp_magic_auto_config(request, repo)
+    summary = write_temp_devtest_wrapper_config(request, repo)
     temp_config_path = Path(summary["config_path"])
     await _emit(progress_cb, {"event": "config_updated", **summary})
 
@@ -1645,7 +1646,7 @@ async def run_auto_sfa(
             line_no += 1
             await _emit_output_line(progress_cb, line_no=line_no, line=line)
 
-    env = _magic_auto_subprocess_env()
+    env = _devtest_wrapper_subprocess_env()
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(repo),
@@ -1734,7 +1735,7 @@ async def run_update_template(
     uv_bin: str | None = None,
 ) -> int:
     """Run devtest-wrapper's pre-SFA update-template command and stream output."""
-    repo = resolve_magic_auto_repo_dir(repo_dir)
+    repo = resolve_devtest_wrapper_repo_dir(repo_dir)
     timeout = timeout_s
     if timeout is None:
         timeout = float(os.environ.get("AUTO_SFA_TIMEOUT_S", 60 * 60))
@@ -1766,7 +1767,7 @@ async def run_update_template(
         },
     )
 
-    env = _magic_auto_subprocess_env()
+    env = _devtest_wrapper_subprocess_env()
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(repo),

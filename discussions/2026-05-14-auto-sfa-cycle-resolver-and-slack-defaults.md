@@ -3,7 +3,7 @@
 ## Context
 
 The Auto SFA integration was refreshed after reading the current
-`magic-auto/INTEGRATION.md` contract and validating the manual `magic-auto`
+`devtest-wrapper/INTEGRATION.md` contract and validating the manual `devtest-wrapper`
 commands.
 
 Important CLI contracts:
@@ -53,7 +53,7 @@ Current behavior:
   `Type/MM-YYYY/WeekA-B` plus a short note that it is auto-resolved by today's
   date and still editable.
 - The resolver endpoint handles `uv` virtualenv warning lines and extracts the
-  final numeric destination id from `magic-auto` output.
+  final numeric destination id from `devtest-wrapper` output.
 - Browser localStorage persists Release type and the shared Display
   Name/credential settings.
 

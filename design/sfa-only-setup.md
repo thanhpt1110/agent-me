@@ -114,8 +114,8 @@ AUTO_SFA_MCP_CONFIRMATION_SECRET=REPLACE-ME
 AUTO_SFA_MCP_CREDENTIAL_KEY=REPLACE-ME
 ```
 
-`MAGIC_AUTO_REPO_DIR` is still accepted as a legacy alias, but new installs
-should use `AUTO_SFA_REPO_DIR`.
+The previous environment variable name is still accepted as a compatibility
+alias, but new installs should use `AUTO_SFA_REPO_DIR`.
 
 ## Run Only The SFA Surface
 

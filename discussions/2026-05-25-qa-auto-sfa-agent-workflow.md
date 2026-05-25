@@ -14,7 +14,7 @@ placement.
 - The MCP boundary is schema-only: external agents must choose
   `create_sfa_tasks` or `release_sfa_tasks` and pass structured arguments.
 - `create_sfa_tasks` is template prep for existing templates through
-  `magic-auto update-template`; it is not true DevTest template creation.
+  `devtest-wrapper update-template`; it is not true DevTest template creation.
 - `release_sfa_tasks` is the right route for release, auto, and mark-auto
   wording.
 - The workflow should support an autopilot prompt so users can say

@@ -47,7 +47,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   from dashboard bearer/cookie auth because it has its own Agent Me MCP token
   auth. Direct DevTest Basic Auth remains accepted as a temporary fallback.
 - MCP setup lives at `/mcp/setup`. Users who want MCP enter DevTest
-  credentials there once; agent-me verifies them with `magic-auto`
+  credentials there once; agent-me verifies them with `devtest-wrapper`
   `resolve-destination-folder`, stores the password encrypted in
   `${AGENT_ME_STATE_DIR}/auto-sfa-mcp.db`, and shows a bearer token plus
   one-command install for Cursor/Codex/Claude. The Fernet key is read from
@@ -65,7 +65,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   page origin.
 - MCP auth is `Authorization: Bearer <agent-me-token>`. The server resolves
   the token to the caller's stored DevTest credentials and passes those
-  credentials to `magic-auto` for that run.
+  credentials to `devtest-wrapper` for that run.
 - MCP tools are deterministic and do not call Codex, Claude, or another LLM:
   `create_sfa_tasks` maps to the create/template-prep runner and
   `release_sfa_tasks` maps to the release/auto runner.
@@ -91,7 +91,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   `Release SFA Tasks`. The header has a direct `MCP Setup` link aligned with
   the subtitle; it opens `/mcp/setup` where MCP users create or copy their
   Agent Me token.
-- `Create SFA Tasks` is the template-prep step for `magic-auto`
+- `Create SFA Tasks` is the template-prep step for `devtest-wrapper`
   `update-template`. The only required user inputs are `display_name` and
   `folder_id`; `template_ids` is optional for specific-ID mode. Dashboard users
   can choose `Win_Linux` as `Linux Only`, `Windows Only`, or `Both`; Slack
@@ -100,7 +100,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
 - `Release SFA Tasks` keeps the existing SFA release form, but the dashboard
   now has a type selector above source/destination: `Linux Release` (default,
   source `50722`) or `Release` (source `47877`). Changing the type calls
-  `magic-auto resolve-destination-folder -s <source>` and fills the current
+  `devtest-wrapper resolve-destination-folder -s <source>` and fills the current
   cycle destination. Source and destination remain editable and are not
   re-resolved when the user edits either input.
 - Slack Release uses a compact contract: `Release SFA Tasks for "<Display Name>"
@@ -136,7 +136,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   and Release history on the Release tab.
 - Dashboard jobs are concurrent by design. Each run gets its own job id,
   subprocess, SSE stream, per-process DevTest credentials, and temp
-  `magic-auto` config file for release runs. Cancelling a job terminates only
+  `devtest-wrapper` config file for release runs. Cancelling a job terminates only
   that job's subprocess and logs a cancelled terminal state.
 - Auto SFA terminal output on the dashboard is compact, black, monospace,
   timestamped, and SSE-backed. The header includes cancel, clear, autoscroll,
@@ -231,7 +231,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   hallucinated `user cancelled MCP tool call` outcomes.
 - [x] **Auto SFA (2026-05-12; refreshed 2026-05-14; MCP added 2026-05-16)** — Slack `/help`,
   dashboard `/auto-sfa`, and MCP `/mcp/` expose two workflows under the same Auto SFA entry point:
-  `Create SFA Tasks` and `Release SFA Tasks`. Create runs `magic-auto`
+  `Create SFA Tasks` and `Release SFA Tasks`. Create runs `devtest-wrapper`
   `update-template` for project `1072` from `display_name`, `folder_id`, and
   optional `template_ids`, updating `Automation Dev Linux`,
   `Automation Status Linux`, and `Win_Linux` on matching templates. Dashboard
@@ -243,7 +243,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   defaults Linux Release source/dates unless overridden with `type: Release` or
   `type: Linux Release`, and resolves the destination before launching. Release
   runs use a per-job temp config passed
-  with `-c` instead of mutating the shared `magic-auto/configs.json`;
+  with `-c` instead of mutating the shared `devtest-wrapper/configs.json`;
   credentials are per-process env vars. The dashboard runner supports
   concurrent jobs, cancel, new terminal, SSE log streaming, browser
   localStorage for requested settings, and flow-separated trigger history
@@ -434,7 +434,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   mark-auto routing. The docs explicitly separate true DevTest template
   creation through `cloud-service-qa/devtest-helper` from Agent Me
   `create_sfa_tasks`, which only prepares existing templates through
-  `magic-auto update-template`. Step 2 now includes exact fallback Excel
+  `devtest-wrapper update-template`. Step 2 now includes exact fallback Excel
   headers and a standalone `.xlsx` template generator for cases where no
   sample workbook exists. No Python runtime changed.
 - **2026-05-25 — QA Auto SFA skill autopilot prompt added.**
