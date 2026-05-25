@@ -1,0 +1,197 @@
+version: 1
+name: qa-auto-sfa-agent-rules
+owner: NVIDIA VRDC SWQA
+purpose: Route each QA-to-Automated-SFA workflow step to the correct agent tool.
+
+autopilot_mode:
+  trigger_examples:
+    - execute qa-auto-sfa-workflow
+    - process this test request
+    - handle this QA request
+  default_start_step: 1
+  work_folder_pattern: artifacts/qa-auto-sfa/<YYYYMMDD-HHMM>-<request-slug>/
+  behavior:
+    - Read the skill and current-step references before asking follow-up questions.
+    - Ask only for values that block the next gate.
+    - Use reasonable defaults for non-blocking fields and record them as assumptions.
+    - Stop at required human gates before generating downstream artifacts or writing external systems.
+  minimum_intake_question: >-
+    Send the PRD/test-plan source for this request: local file path,
+    Glean/Drive/SharePoint link, or pasted text. Also include the
+    feature/release name and tell me if you want me to stop after Step 1 or
+    continue to Excel after approval.
+
+human_gates:
+  intake_manifest: required_before_test_case_generation
+  test_case_review: required_before_devtest_writes
+  devtest_jira_writes: requires_explicit_user_approval
+  script_location: requires_human_repo_and_folder_choice
+  auto_sfa_mcp_call: requires_client_tool_approval
+
+steps:
+  - id: 1
+    name: Review Test Plan
+    triggers:
+      - review test plan
+      - read PRD
+      - convert pdf/docx to markdown
+      - pull doc from Glean
+    primary_tools:
+      - microsoft/markitdown
+      - Glean MCP file search and retrieval
+      - local file reads
+    outputs:
+      - intake/manifest.md
+      - review/test-plan-review.md
+    rule: Convert source docs to Markdown first, then summarize coverage and open questions.
+
+  - id: 2
+    name: Write Test Cases
+    triggers:
+      - write test cases
+      - generate DevTest Excel
+      - create ST2110/API-style workbook
+    primary_tools:
+      - Python openpyxl
+      - qa-auto-sfa-workflow/scripts/create_devtest_excel_template.py
+    required_schema_source:
+      preferred: user-provided ST2110/API sample workbook
+      fallback: devtest-helper create-template headers
+    outputs:
+      - test-cases/devtest-test-cases.xlsx
+      - test-cases/test-case-review.md
+    rule: Generate Excel only after intake assumptions are reviewed; if no workbook exists, bootstrap a new .xlsx with fallback DevTest headers.
+
+  - id: 3
+    name: Create DevTest Templates and Tasks
+    triggers:
+      - create DevTest templates
+      - create Jira tasks
+      - create template folder
+    primary_tools:
+      - cloud-service-qa/devtest-helper main.py
+      - cloud-service-qa/devtest-helper jira/create_jira.py
+      - Agent Me create_sfa_tasks for existing template prep only
+    external_writes:
+      - DevTest template create/update
+      - Jira ticket create/update
+      - Auto SFA update-template
+    outputs:
+      - devtest/devtest-helper-runbook.md
+      - template IDs or preview command list
+    rule: Separate true DevTest template creation from Agent Me update-template.
+
+  - id: 4
+    name: Script Completed Test Cases
+    triggers:
+      - write automation script
+      - implement pytest
+      - validate script
+    primary_tools:
+      - target test repository
+      - pytest
+      - devtest-helper utils/script_validation_workflow_helper.py
+    outputs:
+      - scripts/script-plan.md
+      - code patch after human folder approval
+    rule: Ask the human to choose the repo and folder before editing code.
+
+  - id: 5
+    name: Release SFA Tasks
+    triggers:
+      - release SFA tasks
+      - run Auto SFA
+      - release template auto
+    primary_tools:
+      - Agent Me MCP release_sfa_tasks
+      - Agent Me dashboard /auto-sfa
+    required_fields:
+      - display_name
+      - url_path
+    defaults:
+      release_type: Linux Release
+      source_folder_id: 50722
+      complexity_level: L2
+      date_window: finish today in Asia/Ho_Chi_Minh, start seven days earlier
+    outputs:
+      - auto-sfa/job-links.md
+    rule: Call structured MCP fields only; never pass a prompt argument.
+
+  - id: 6
+    name: Mark as Automated
+    triggers:
+      - mark auto
+      - mark template auto
+      - auto these templates
+    primary_tools:
+      - Agent Me MCP release_sfa_tasks
+    outputs:
+      - DevTest automated coverage state
+      - dashboard job_url
+    rule: Treat mark-auto wording as the release_sfa_tasks flow.
+
+tool_contracts:
+  markitdown:
+    command_examples:
+      - markitdown input.pdf > intake/input.md
+      - markitdown input.docx > intake/input-docx.md
+
+  devtest_helper:
+    repo: https://gitlab-master.nvidia.com/cloud-service-qa/devtest-helper.git
+    fallback_headers:
+      - folderPath
+      - Template ID
+      - Title
+      - Template State
+      - Template Owner
+      - Test Description
+      - Test Procedure
+      - Expected Result
+      - E. Setup Time
+      - E.Test Time
+      - Origin
+      - Template Priority
+      - Automation Status
+      - Automation Status Linux
+      - KPI
+      - Execution Owner
+      - SWQA User Mode
+      - Functional Test Type
+      - Release
+      - Tool/App. Location
+      - Tool/App. Required for Execution
+    create_templates: python3 main.py -f <file.xlsx> -c
+    update_templates: python3 main.py -f <file.xlsx> -u
+    query_templates: python3 main.py -f <output.xlsx> -q -i "ID1,ID2"
+    create_jira: python jira/create_jira.py -t <template_id> -e <epic>
+    folder_jira: python jira/create_jira.py -f "\\Folder\\Path" -e <epic>
+
+  agent_me_auto_sfa:
+    mcp_endpoint: /mcp/
+    setup_page: /mcp/setup
+    dashboard: /auto-sfa
+    create_sfa_tasks:
+      required:
+        - display_name
+        - folder_id
+      optional:
+        - template_ids
+        - template_ids_enabled
+        - win_linux
+        - confirmed
+    release_sfa_tasks:
+      required:
+        - display_name
+        - url_path
+      optional:
+        - release_type
+        - source_folder_id
+        - devtest_folder_id
+        - start_date
+        - finish_date
+        - task_ids
+        - task_ids_enabled
+        - complexity_level
+        - log_file_provider
+        - auto_resolve_destination
+        - confirmed

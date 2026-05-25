@@ -1,0 +1,7 @@
+interface:
+  display_name: "QA Auto SFA Workflow"
+  short_description: "Run QA intake through Auto SFA"
+  default_prompt: "Use $qa-auto-sfa-workflow to process a new QA test request in autopilot mode and ask only for missing blocker information."
+
+policy:
+  allow_implicit_invocation: true

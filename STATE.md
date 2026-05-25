@@ -2,6 +2,24 @@
 
 _Last updated: 2026-05-18 by Codex — **Auto SFA MCP v1.3.5 structured-only tool arguments shipped** on the dashboard service: `create_sfa_tasks` and `release_sfa_tasks` no longer expose or accept a free-form `prompt` argument. The MCP HTTP guard rejects unknown tool arguments before FastMCP can ignore them, so agent clients must map user wording into the fields defined by the tool schema and add optional fields only when the user provided those details. `/mcp/setup` verifies DevTest credentials once, stores the password encrypted server-side, and issues a long-lived masked `agme-...` Agent Me bearer token for Cursor/Codex/Claude MCP clients. Tokens do not expire by default; users generate a replacement token if they need to rotate client config, and pre-`agme-` tokens were purged for a clean reset in v1.3.4. `/mcp/` uses official MCP Streamable HTTP with deterministic `create_sfa_tasks` and `release_sfa_tasks`, structured clarification/preview responses, single-call execution for complete approved tool calls, job-url live dashboard progress, and no second agent/LLM hop inside the server. Runtime decision remains: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has Slack, dashboard, and MCP entry points over the same builders/runners. Dashboard and MCP jobs run with one child process and one temp config per run, per-request DevTest credentials, SSE terminal output, cancel support, flow-separated trigger history, and browser localStorage for requested dashboard settings. MCP job responses include a dashboard `job_url`; agent clients should show that link instead of polling MCP tools for progress because many clients prompt on every tool call. The password is encrypted in the MCP token store and is not written to server config, public job history, or MCP public responses. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-16-auto-sfa-mcp.md`](discussions/2026-05-16-auto-sfa-mcp.md), [`discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md`](discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md), [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: `uv run ruff check src tests`, `uv run pytest tests/test_auto_sfa_mcp.py -q`, and `uv run pytest -q`._
 
+_Addendum 2026-05-25 by Codex — QA to Automated SFA upstream orchestration was
+packaged as docs/rules only, with no runtime code changes. Added the repo-local
+Cursor skill `.cursor/skills/qa-auto-sfa-workflow/`, the manager-facing design
+doc `design/qa-auto-sfa-agent-workflow.md`, machine-readable routing rules in
+`artifacts/qa-auto-sfa-agent-rules.yaml`, and the demo talk track
+`artifacts/qa-auto-sfa-manager-demo.md`. Discussion:
+[`discussions/2026-05-25-qa-auto-sfa-agent-workflow.md`](discussions/2026-05-25-qa-auto-sfa-agent-workflow.md)._
+
+_Addendum 2026-05-25 by Codex — Step 2 now has a concrete fallback workbook
+contract. If no ST2110/API sample workbook exists, the skill tells agents to
+create a `.xlsx` with the DevTest fallback headers from `devtest-helper` using
+`.cursor/skills/qa-auto-sfa-workflow/scripts/create_devtest_excel_template.py`.
+The same skill was installed for Codex at
+`~/.codex/skills/qa-auto-sfa-workflow`. The repo-local and Codex-installed
+skills now include autopilot intake behavior for minimal prompts such as
+`execute qa-auto-sfa-workflow`, asking only for missing blocker information at
+the next human gate._
+
 ## Phase
 
 **Phase 2a + brief fan-out + Slack session persistence live + Phase 4
@@ -409,6 +427,23 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
 
 ## Recent decisions
 
+- **2026-05-25 — QA to Automated SFA upstream flow packaged as agent skills/rules.**
+  Added a repo-local Cursor skill and references for the six-step workflow:
+  intake/review, test-case Excel generation, DevTest template/JIRA task
+  creation, script planning with human folder selection, Auto SFA release, and
+  mark-auto routing. The docs explicitly separate true DevTest template
+  creation through `cloud-service-qa/devtest-helper` from Agent Me
+  `create_sfa_tasks`, which only prepares existing templates through
+  `magic-auto update-template`. Step 2 now includes exact fallback Excel
+  headers and a standalone `.xlsx` template generator for cases where no
+  sample workbook exists. No Python runtime changed.
+- **2026-05-25 — QA Auto SFA skill autopilot prompt added.**
+  The repo-local `.cursor/skills/qa-auto-sfa-workflow` skill and the
+  machine-readable rules now support minimal prompts such as
+  `execute qa-auto-sfa-workflow`. Agents start at Step 1, read only the
+  relevant references for the current step, create a dated work folder, proceed
+  with documented defaults for non-blocking values, and ask the user only for
+  information that blocks the next human gate.
 - **2026-05-18 — Auto SFA MCP rejects prompt-style tool arguments.**
   Auto SFA MCP is now schema-only at the tool boundary. The public tool
   signatures no longer include `prompt`, and the HTTP guard rejects `prompt`
