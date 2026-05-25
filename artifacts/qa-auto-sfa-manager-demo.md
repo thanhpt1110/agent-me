@@ -8,25 +8,26 @@ external records, or modify test repositories.
 
 ## Demo Flow
 
-1. Open `artifacts/qa-auto-workflow.png` to show the six-step workflow.
-2. Open `.cursor/skills/qa-auto-sfa-workflow/SKILL.md` and highlight the
+1. Open `design/sfa-only-setup.md` to show the shareable SFA-only entry point.
+2. Open `artifacts/qa-auto-workflow.png` to show the six-step workflow.
+3. Open `.cursor/skills/qa-auto-sfa-workflow/SKILL.md` and highlight the
    autopilot entry point:
 
    ```text
    execute qa-auto-sfa-workflow
    ```
 
-3. Explain that the agent starts at Step 1, reads only the current-step
+4. Explain that the agent starts at Step 1, reads only the current-step
    references, asks for missing blocker information, and records assumptions.
-4. Show `references/intake-and-review.md` for PRD/test-plan conversion and the
+5. Show `references/intake-and-review.md` for PRD/test-plan conversion and the
    intake manifest gate.
-5. Show `references/test-case-excel.md` and
+6. Show `references/test-case-excel.md` and
    `artifacts/devtest-test-case-template.xlsx` for the fallback DevTest workbook
    contract.
-6. Show `references/devtest-and-auto-sfa.md` to explain the boundary:
+7. Show `references/devtest-and-auto-sfa.md` to explain the boundary:
    DevTest/JIRA creation stays with `devtest-helper`; Agent Me MCP handles
    existing template prep and Auto SFA release/mark-auto.
-7. Open the Agent Me `/auto-sfa` dashboard or an existing dashboard screenshot
+8. Open the Agent Me `/auto-sfa` dashboard or an existing dashboard screenshot
    to show the production execution layer and terminal job URL.
 
 ## Key Message

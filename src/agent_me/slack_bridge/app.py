@@ -1544,7 +1544,7 @@ AUTO_SFA_RELEASE_HELP_TEXT = "\n".join((
 AUTO_SFA_CREATE_HELP_TEXT = "\n".join((
     "*Create SFA Tasks* — prepares templates before releasing SFA tasks.",
     "",
-    "This flow calls `magic-auto update-template` in project `1072` and updates:",
+    "This flow calls `devtest-wrapper update-template` in project `1072` and updates:",
     "• `Automation Dev Linux` = Display Name",
     "• `Automation Status Linux` = `In A&T`",
     "• `Win_Linux` = selected platform",

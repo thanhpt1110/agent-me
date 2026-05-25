@@ -56,7 +56,7 @@ flowchart LR
 
 Implemented:
 
-- `src/agent_me/auto_sfa.py`: parsers, builders, and `magic-auto` command
+- `src/agent_me/auto_sfa.py`: parsers, builders, and `devtest-wrapper` command
   generation for create/update-template and release flows.
 - `src/agent_me/auto_sfa_mcp.py`: MCP endpoint with structured-only
   `create_sfa_tasks` and `release_sfa_tasks`.
@@ -99,7 +99,7 @@ template_ids_enabled: optional
 win_linux: optional, default "Linux Only"
 ```
 
-Effect: runs `magic-auto update-template`, updating matching templates before
+Effect: runs `devtest-wrapper update-template`, updating matching templates before
 release.
 
 ### `release_sfa_tasks`

@@ -16,6 +16,7 @@ from agent_me.auto_sfa import (
     parse_update_template_message,
     resolve_destination_folder_command,
     resolve_destination_folder_id,
+    resolve_magic_auto_repo_dir,
     run_auto_sfa,
     run_update_template,
     update_magic_auto_config,
@@ -71,6 +72,37 @@ def _full_values(**overrides) -> dict:
     }
     values.update(overrides)
     return values
+
+
+def test_resolve_auto_sfa_repo_dir_prefers_new_env(monkeypatch, tmp_path) -> None:
+    repo = tmp_path / "devtest-wrapper"
+    legacy = tmp_path / "magic-auto"
+    monkeypatch.setenv("AUTO_SFA_REPO_DIR", str(repo))
+    monkeypatch.setenv("MAGIC_AUTO_REPO_DIR", str(legacy))
+
+    assert resolve_magic_auto_repo_dir() == repo
+
+
+def test_resolve_auto_sfa_repo_dir_accepts_legacy_env(monkeypatch, tmp_path) -> None:
+    legacy = tmp_path / "magic-auto"
+    monkeypatch.delenv("AUTO_SFA_REPO_DIR", raising=False)
+    monkeypatch.setenv("MAGIC_AUTO_REPO_DIR", str(legacy))
+
+    assert resolve_magic_auto_repo_dir() == legacy
+
+
+def test_resolve_auto_sfa_repo_dir_prefers_devtest_wrapper_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    repo = tmp_path / "devtest-wrapper"
+    legacy = tmp_path / "magic-auto"
+    repo.mkdir()
+    legacy.mkdir()
+    monkeypatch.delenv("AUTO_SFA_REPO_DIR", raising=False)
+    monkeypatch.delenv("MAGIC_AUTO_REPO_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert resolve_magic_auto_repo_dir() == repo
 
 
 def test_update_template_parse_and_build_folder_mode() -> None:

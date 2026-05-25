@@ -9,10 +9,10 @@ There are two different systems:
 - `cloud-service-qa/devtest-helper`: creates/query/updates DevTest templates
   from Excel/CSV and creates JIRA tickets from templates.
 - `agent-me` Auto SFA: prepares existing templates for SFA and releases SFA
-  tasks through `magic-auto`/`dtoperator.py`.
+  tasks through `devtest-wrapper`/`dtoperator.py`.
 
 Do not describe Agent Me `create_sfa_tasks` as true template creation. In this
-repo it maps to `magic-auto update-template`, which updates matching existing
+repo it maps to `devtest-wrapper update-template`, which updates matching existing
 templates.
 
 ## DevTest Helper Commands
@@ -103,7 +103,7 @@ Agent Me exposes `/mcp/` with two schema-only tools:
 ### `create_sfa_tasks`
 
 Purpose: prepare existing templates before release by running
-`magic-auto update-template`.
+`devtest-wrapper update-template`.
 
 Required:
 

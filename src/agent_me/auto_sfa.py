@@ -247,14 +247,25 @@ ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def resolve_magic_auto_repo_dir(repo_dir: str | Path | None = None) -> Path:
+    """Resolve the devtest-wrapper checkout.
+
+    The helper repo used to be named magic-auto. Keep the legacy function and
+    env var so older services continue to run during the rename.
+    """
     if repo_dir is not None:
         return Path(repo_dir).expanduser()
-    env = (
-        os.environ.get("AUTO_SFA_REPO_DIR")
-        or os.environ.get("MAGIC_AUTO_REPO_DIR")
-        or "/localhome/local-thaphan/magic-auto"
+    if env := os.environ.get("AUTO_SFA_REPO_DIR") or os.environ.get("MAGIC_AUTO_REPO_DIR"):
+        return Path(env).expanduser()
+    candidates = (
+        Path.home() / "devtest-wrapper",
+        Path.home() / "magic-auto",
+        Path("/localhome/local-thaphan/devtest-wrapper"),
+        Path("/localhome/local-thaphan/magic-auto"),
     )
-    return Path(env).expanduser()
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.expanduser()
+    return (Path.home() / "devtest-wrapper").expanduser()
 
 
 def resolve_uv_bin() -> str:
@@ -293,7 +304,7 @@ def _magic_auto_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     # The dashboard itself runs inside agent-me's venv. Leaving VIRTUAL_ENV set
-    # makes `uv run` in magic-auto print a warning before the command output.
+    # makes `uv run` in devtest-wrapper print a warning before command output.
     env.pop("VIRTUAL_ENV", None)
     return env
 
@@ -1234,7 +1245,7 @@ def build_update_template_request(values: dict[str, Any]) -> TemplateSFARequest:
 
 def _auto_sfa_config_payload(request: AutoSFARequest, config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
-        raise FileNotFoundError(f"magic-auto config not found: {config_path}")
+        raise FileNotFoundError(f"devtest-wrapper config not found: {config_path}")
 
     data = json.loads(config_path.read_text())
     release_configs = data.setdefault("release_configs", {})
@@ -1339,7 +1350,7 @@ def write_temp_magic_auto_config(
 
 def _template_sfa_config_payload(request: TemplateSFARequest, config_path: Path) -> dict[str, Any]:
     if not config_path.exists():
-        raise FileNotFoundError(f"magic-auto config not found: {config_path}")
+        raise FileNotFoundError(f"devtest-wrapper config not found: {config_path}")
 
     data = json.loads(config_path.read_text())
     data["devtest_project_id"] = request.template_project_id
@@ -1483,7 +1494,7 @@ async def _drain_process_output(
             elapsed = int(now - started)
             await emit_line(
                 "[agent-me] Still running after "
-                f"{elapsed}s; waiting for magic-auto output. {heartbeat_label}"
+                f"{elapsed}s; waiting for devtest-wrapper output. {heartbeat_label}"
             )
 
     heartbeat_task = asyncio.create_task(heartbeat())
@@ -1595,7 +1606,7 @@ async def run_auto_sfa(
     timeout_s: float | None = None,
     uv_bin: str | None = None,
 ) -> int:
-    """Run SFA with an isolated temporary magic-auto config."""
+    """Run SFA with an isolated temporary devtest-wrapper config."""
     repo = resolve_magic_auto_repo_dir(repo_dir)
     timeout = timeout_s
     if timeout is None:
@@ -1623,7 +1634,7 @@ async def run_auto_sfa(
     if not request.task_ids:
         pool_owner = summary.get("pool_owner_login") or "Admin"
         search_parts = [
-            "[agent-me] Display-name mode: magic-auto will scan tasks under "
+            "[agent-me] Display-name mode: devtest-wrapper will scan tasks under "
             f"Task Owner pool {pool_owner!r}, then filter Automation Dev Linux = "
             f"{request.display_name!r}.",
             "[agent-me] Destination folder is "
@@ -1722,7 +1733,7 @@ async def run_update_template(
     timeout_s: float | None = None,
     uv_bin: str | None = None,
 ) -> int:
-    """Run magic-auto's pre-SFA update-template command and stream output."""
+    """Run devtest-wrapper's pre-SFA update-template command and stream output."""
     repo = resolve_magic_auto_repo_dir(repo_dir)
     timeout = timeout_s
     if timeout is None:

@@ -50,7 +50,7 @@ dashboard cache files, and the encrypted MCP token store.
 | Slack | Slack Bolt, Socket Mode |
 | Agent runtime | Codex CLI, Codex app-server, MCP |
 | Storage | SQLite, JSON cache files, encrypted Fernet token store |
-| Auto SFA | `magic-auto` / `dtoperator.py` |
+| Auto SFA | `devtest-wrapper` / `dtoperator.py` |
 | Ops | systemd user services, shell deploy/auth helpers |
 
 ## Services
@@ -70,7 +70,7 @@ dashboard cache files, and the encrypted MCP token store.
 | Slack agent | DMs, mentions, and slash/plain-text commands run through Codex with thread memory. Permissioned writes are confirmed through Slack approvals. |
 | Daily brief | `brief`, `brief week`, and `brief month` collect work signals and post summaries to Slack and the dashboard cache. |
 | Dashboard | `/` shows brief/source status, `/ops` shows service health/logs, `/auto-sfa` runs Auto SFA jobs, and `/mcp/setup` creates reusable MCP tokens. |
-| Auto SFA UI | Creates SFA tasks and releases templates through `magic-auto`, using per-run DevTest credentials and live SSE terminal output. |
+| Auto SFA UI | Creates SFA tasks and releases templates through `devtest-wrapper`, using per-run DevTest credentials and live SSE terminal output. |
 | Auto SFA MCP | `http://agent-me.nvidia.com/mcp/` exposes `create_sfa_tasks` and `release_sfa_tasks`. Users set up once at `/mcp/setup`, then connect clients with a masked `agme-...` bearer token. |
 | MCP auth refresh | Refresh scripts keep Claude/Codex MCP credentials usable for Codex subprocesses and bridge operations. |
 
@@ -87,10 +87,17 @@ dashboard cache files, and the encrypted MCP token store.
 
 </details>
 
+## SFA-Only Reference
+
+Teams that only need the QA to Automated SFA path do not need the Slack bridge,
+daily brief sources, or personal-assistant workflows. Use
+[`design/sfa-only-setup.md`](design/sfa-only-setup.md) as the shareable entry
+point for the SFA-only setup, repo boundaries, and manager reference links.
+
 ## Quickstart
 
 Prerequisites: Linux, Python 3.12+, `uv`, Slack app credentials, Codex CLI,
-Claude/Codex MCP auth, and access to `magic-auto` for Auto SFA workflows.
+Claude/Codex MCP auth, and access to `devtest-wrapper` for Auto SFA workflows.
 
 Install:
 

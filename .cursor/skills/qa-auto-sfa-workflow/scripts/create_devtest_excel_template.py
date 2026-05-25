@@ -14,7 +14,6 @@ import html
 import zipfile
 from pathlib import Path
 
-
 DEVTEST_TEMPLATE_HEADERS = [
     "folderPath",
     "Template ID",

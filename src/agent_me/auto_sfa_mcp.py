@@ -709,7 +709,7 @@ async def create_sfa_tasks(
     confirmed: bool = True,
     confirmation_token: str | None = None,
 ) -> dict[str, Any]:
-    """Prepare templates for SFA using magic-auto update-template.
+    """Prepare templates for SFA using devtest-wrapper update-template.
 
     DevTest credentials come from the MCP connection's Agent Me bearer token;
     do not ask for username/password as tool arguments on each call.
@@ -796,7 +796,7 @@ async def release_sfa_tasks(
     confirmed: bool = True,
     confirmation_token: str | None = None,
 ) -> dict[str, Any]:
-    """Release existing SFA tasks using magic-auto sfa.
+    """Release existing SFA tasks using devtest-wrapper sfa.
 
     Also use this tool for user wording such as "auto template",
     "mark template auto", "release template auto", or "auto these templates"

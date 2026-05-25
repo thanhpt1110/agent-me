@@ -35,7 +35,7 @@ differ from the dashboard page origin.
 Credential model:
 
 - User enters DevTest username/password once on `/mcp/setup`.
-- Agent-me verifies the credentials with `magic-auto resolve-destination-folder`.
+- Agent-me verifies the credentials with `devtest-wrapper resolve-destination-folder`.
 - Agent-me stores the DevTest password and bearer token encrypted server-side,
   then returns an `agme-...` bearer token. Setup pages mask token displays but
   copy buttons still copy the full token/config value.
@@ -44,7 +44,7 @@ Credential model:
 - Cursor, Codex, and Claude Code send `Authorization: Bearer <token>` to
   `/mcp/`.
 - Tool calls resolve the token to stored DevTest credentials and pass those
-  credentials to `magic-auto` for that run.
+  credentials to `devtest-wrapper` for that run.
 - Tokens do not expire by default. Set `AUTO_SFA_MCP_TOKEN_TTL_DAYS` only if
   automatic expiry is desired.
 

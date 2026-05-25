@@ -54,7 +54,7 @@ want MCP visit `/mcp/setup`, verify DevTest credentials once, and receive
 a long-lived Agent Me bearer token for Cursor/Codex/Claude. Each HTTP
 MCP request carries `Authorization: Bearer <token>`; the server resolves
 that token to encrypted server-side DevTest credentials and passes those
-credentials to `magic-auto` for that run.
+credentials to `devtest-wrapper` for that run.
 
 The UI derives the MCP endpoint from the dashboard page origin, so an
 HTTP-only public page naturally shows an HTTP MCP URL and an HTTPS page
