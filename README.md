@@ -56,7 +56,7 @@ dashboard cache files, and the encrypted MCP token store.
 ## Services
 
 | Service | Command | Purpose |
-| --- | --- |
+| --- | --- | --- |
 | Slack bridge | `uv run agent-me-bridge` | Slack chat, commands, Codex execution, approvals |
 | Dashboard | `uv run agent-me-dashboard` | Web UI, APIs, logs, Auto SFA UI, MCP endpoint |
 | Daily brief | `uv run agent-me-brief` | Multi-source daily/weekly/monthly summaries |
