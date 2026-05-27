@@ -271,7 +271,9 @@ def test_auto_sfa_page_renders(
     assert "/api/auto-sfa/resolve-destination" in r.text
     assert "display_name: String(this.form.display_name" in r.text
     assert "async fetchJson" in r.text
-    assert "scheduleDestinationResolve" not in r.text
+    assert "scheduleDestinationResolve" in r.text
+    assert 'if (next === "release")' in r.text
+    assert "this.scheduleDestinationResolve(true);" in r.text
     assert "auto_resolve_destination" not in r.text
     assert "use_default_source_folder" not in r.text
     assert "destination_folder_id" in r.text

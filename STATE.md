@@ -99,9 +99,10 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   `1072` internally and does not ask users to fill release-only fields.
 - `Release SFA Tasks` keeps the existing SFA release form, but the dashboard
   now has a type selector above source/destination: `Linux Release` (default,
-  source `50722`) or `Release` (source `47877`). Changing the type calls
-  `devtest-wrapper resolve-destination-folder -s <source>` and fills the current
-  cycle destination. Source and destination remain editable and are not
+  source `50722`) or `Release` (source `47877`). Entering the release tab,
+  restoring a release flow, changing credentials, or changing the type calls
+  `devtest-wrapper resolve-destination-folder -s <source>` and fills the
+  current cycle destination. Source and destination remain editable and are not
   re-resolved when the user edits either input.
 - Slack Release uses a compact contract: `Release SFA Tasks for "<Display Name>"
   with URL_PATH <link>`. It defaults Type to `Linux Release`, source to `50722`,

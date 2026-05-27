@@ -483,21 +483,30 @@
         this.$watch("form.display_name", () => this.persistPreferences());
         this.$watch("form.use_default_credentials", () => {
           this.persistPreferences();
+          this.scheduleDestinationResolve(true);
         });
         this.$watch("form.auth_username", () => {
           this.persistPreferences();
+          this.scheduleDestinationResolve(true);
         });
         this.$watch("form.auth_password", () => {
           this.persistPreferences();
+          this.scheduleDestinationResolve(true);
         });
         this.$watch("form.win_linux", () => this.persistPreferences());
         this.$watch("form.release_type", () => this.persistPreferences());
+        if (this.workflow === "release") {
+          this.scheduleDestinationResolve();
+        }
       },
 
       switchWorkflow(next) {
         if (this.busy || this.workflow === next) return;
         this.workflow = next;
         this.error = null;
+        if (next === "release") {
+          this.scheduleDestinationResolve();
+        }
       },
 
       workflowLabel() {
@@ -661,6 +670,18 @@
           ? "default"
           : String(this.form.auth_username || "").trim().toLowerCase();
         return `${sourceFolderId}:${username}`;
+      },
+
+      scheduleDestinationResolve(force = false) {
+        if (this._destinationResolveTimer) {
+          clearTimeout(this._destinationResolveTimer);
+          this._destinationResolveTimer = null;
+        }
+        if (this.workflow !== "release" || this.busy) return;
+        this._destinationResolveTimer = setTimeout(() => {
+          this._destinationResolveTimer = null;
+          this.resolveDestination(force);
+        }, 250);
       },
 
       async resolveDestination(force = false) {
