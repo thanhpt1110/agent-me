@@ -1,0 +1,19 @@
+[Unit]
+# OPTIONAL: public https://<random>.trycloudflare.com URL for the DEV chat, to reach
+# it off the NVIDIA network. Enable: systemctl --user enable --now agent-me-chat-tunnel
+# Read the URL: journalctl --user -u agent-me-chat-tunnel | grep trycloudflare
+Description=agent-me chat DEV Cloudflare quick tunnel (public URL)
+After=network-online.target agent-me-chat.service
+Wants=network-online.target agent-me-chat.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8787
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
