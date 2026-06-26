@@ -1,0 +1,372 @@
+{% extends "base.html" %}
+{% block title %}Chat · agent-me{% endblock %}
+
+{% block content %}
+<div x-data="chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }})" x-init="init()"
+     class="grid grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]" style="height: calc(100vh - 9rem);">
+
+  <!-- ── Sidebar: sessions ──────────────────────────────────────────── -->
+  <aside class="flex min-h-0 flex-col rounded-card border border-ink-700 bg-ink-900">
+    <div class="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-3">
+      <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Chats</span>
+      <button type="button" @click="newSession()"
+              class="rounded bg-accent-400 px-2.5 py-1 text-xs font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
+        + New
+      </button>
+    </div>
+    <ul class="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+      <template x-for="s in sessions" :key="s.id">
+        <li>
+          <button type="button" @click="selectSession(s.id)"
+                  class="group flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-ink-800"
+                  :class="s.id === currentId ? 'bg-ink-800 text-slate-100 ring-1 ring-ink-700' : 'text-slate-300'">
+            <span class="inline-block h-2 w-2 shrink-0 rounded-full"
+                  :class="s.busy ? 'bg-accent-400 animate-pulse' : 'bg-ink-600'"
+                  :title="s.busy ? 'agent running' : 'idle'"></span>
+            <span class="min-w-0 flex-1 truncate" x-text="s.title || 'New chat'"></span>
+            <span @click.stop="deleteSession(s.id)" role="button" tabindex="0" aria-label="Delete chat"
+                  @keydown.enter.stop="deleteSession(s.id)"
+                  class="opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-danger">✕</span>
+          </button>
+        </li>
+      </template>
+      <li x-show="!sessions.length" class="px-2.5 py-6 text-center text-xs text-slate-500">No chats yet.</li>
+    </ul>
+  </aside>
+
+  <!-- ── Main: transcript + composer ────────────────────────────────── -->
+  <section class="flex min-h-0 flex-col rounded-card border border-ink-700 bg-ink-900">
+    <!-- header -->
+    <div class="flex items-center justify-between gap-3 border-b border-ink-700 px-4 py-2.5">
+      <div class="min-w-0">
+        <div class="truncate text-sm font-semibold text-slate-100" x-text="currentTitle()"></div>
+        <div class="truncate font-mono text-[11px] text-slate-500" x-text="currentCwd()"></div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span x-show="busy" x-cloak class="flex items-center gap-1.5 text-xs text-accent-400">
+          <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400"></span> agent working…
+        </span>
+        <button type="button" x-show="busy" x-cloak @click="cancel()"
+                class="rounded border border-ink-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-danger hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
+          ■ Stop
+        </button>
+        <span class="text-[11px]" :class="connected ? 'text-accent-400' : 'text-slate-500'"
+              x-text="connected ? '● live' : '○ idle'"></span>
+      </div>
+    </div>
+
+    <!-- transcript (a11y: polite live log) -->
+    <div class="relative min-h-0 flex-1">
+      <div x-ref="scroll" @scroll="onScroll()" @wheel="userScrolled()" @touchstart="userScrolled()"
+           role="log" aria-live="polite" aria-atomic="false" aria-relevant="additions text"
+           aria-label="Conversation"
+           class="h-full overflow-y-auto px-4 py-4">
+
+        <!-- empty / welcome state -->
+        <div x-show="currentId && !events.length" x-cloak class="mx-auto mt-10 max-w-2xl text-center">
+          <div class="text-sm text-slate-400">Start a Claude Code session on this VM. The agent has full
+            workspace access; turns keep running even if you close the tab.</div>
+          <div class="mt-4 flex flex-wrap justify-center gap-2">
+            <template x-for="p in examplePrompts" :key="p">
+              <button type="button" @click="useExample(p)"
+                      class="rounded-full border border-ink-700 bg-ink-800 px-3 py-1.5 text-xs text-slate-300 hover:border-accent-400 hover:text-slate-100"
+                      x-text="p"></button>
+            </template>
+          </div>
+        </div>
+
+        <div x-show="!currentId" x-cloak class="mt-20 text-center text-sm text-slate-500">
+          Select a chat, or create a new one.
+        </div>
+
+        <!-- messages -->
+        <div class="mx-auto max-w-3xl space-y-3">
+          <template x-for="(ev, i) in events" :key="i">
+            <div>
+              <!-- user -->
+              <template x-if="ev.kind === 'user'">
+                <div class="rounded-lg border border-ink-700 bg-ink-800/60 px-4 py-3">
+                  <div class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">You</div>
+                  <div class="prose-chat text-sm text-slate-100" x-html="ev.html"></div>
+                </div>
+              </template>
+              <!-- assistant text -->
+              <template x-if="ev.kind === 'text'">
+                <div class="px-1 py-1">
+                  <div class="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent-400">
+                    <span class="inline-block h-1.5 w-1.5 rounded-full bg-accent-400"></span> Claude
+                  </div>
+                  <div class="prose-chat text-sm leading-relaxed text-slate-200" x-html="ev.html"></div>
+                </div>
+              </template>
+              <!-- thinking (collapsed) -->
+              <template x-if="ev.kind === 'thinking'">
+                <details class="rounded border border-ink-800 bg-ink-950/40">
+                  <summary class="cursor-pointer px-3 py-1.5 text-xs text-slate-500">💭 Thinking</summary>
+                  <div class="prose-chat border-t border-ink-800 px-3 py-2 text-xs italic text-slate-400" x-html="ev.html"></div>
+                </details>
+              </template>
+              <!-- tool use (collapsed one-liner → args) -->
+              <template x-if="ev.kind === 'tool_use'">
+                <details class="rounded border border-ink-800 bg-ink-950/40 font-mono text-xs">
+                  <summary class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-slate-300">
+                    <span class="text-accent-400">⚙</span><span class="font-semibold" x-text="ev.name"></span>
+                    <span class="truncate text-slate-500" x-text="ev.summary"></span>
+                  </summary>
+                  <pre class="overflow-x-auto border-t border-ink-800 px-3 py-2 text-slate-400 whitespace-pre-wrap" x-text="ev.detail"></pre>
+                </details>
+              </template>
+              <!-- tool result (collapsed) -->
+              <template x-if="ev.kind === 'tool_result'">
+                <details class="rounded border border-ink-800 bg-ink-950/40 font-mono text-xs"
+                         :class="ev.isError ? 'border-danger/50' : ''">
+                  <summary class="cursor-pointer px-3 py-1.5"
+                           :class="ev.isError ? 'text-danger' : 'text-slate-500'"
+                           x-text="ev.isError ? '⚠ result' : '↳ result'"></summary>
+                  <pre class="max-h-80 overflow-auto border-t border-ink-800 px-3 py-2 text-slate-400 whitespace-pre-wrap" x-text="ev.content"></pre>
+                </details>
+              </template>
+              <!-- error -->
+              <template x-if="ev.kind === 'error'">
+                <div class="rounded border border-danger/50 bg-danger/10 px-3 py-2 text-sm text-danger" x-text="ev.text"></div>
+              </template>
+            </div>
+          </template>
+          <!-- streaming caret -->
+          <div x-show="busy" x-cloak class="flex items-center gap-1 px-1 text-accent-400">
+            <span class="chat-caret">▍</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- jump to latest -->
+      <button type="button" x-show="!atBottom" x-cloak @click="scrollToBottom(true)"
+              class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-ink-700 bg-ink-800 px-3 py-1 text-xs text-slate-200 shadow-lg hover:border-accent-400">
+        ↓ Jump to latest
+      </button>
+    </div>
+
+    <!-- sr-only announcer (completed messages only) -->
+    <div class="sr-only" aria-live="polite" x-ref="announcer"></div>
+
+    <!-- composer -->
+    <form @submit.prevent="send()" class="border-t border-ink-700 p-3">
+      <div class="flex items-end gap-2">
+        <textarea x-ref="input" x-model="input" rows="1" :disabled="!currentId"
+                  @keydown.enter="onEnter($event)" @input="grow($event)"
+                  aria-describedby="composer-hint"
+                  placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"
+                  class="max-h-48 min-h-[2.5rem] flex-1 resize-none rounded-lg border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:opacity-50"></textarea>
+        <button type="submit" :disabled="!currentId || busy || !input.trim()"
+                class="rounded-lg bg-accent-400 px-4 py-2 text-sm font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:cursor-not-allowed disabled:opacity-50">
+          Send
+        </button>
+      </div>
+      <div id="composer-hint" class="mt-1 px-1 text-[11px] text-slate-600">
+        Enter to send · Shift+Enter for a new line · turns run server-side and survive disconnects
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function chat(initialSessions, defaultCwd) {
+  return {
+    sessions: initialSessions || [],
+    defaultCwd: defaultCwd || "",
+    currentId: null,
+    events: [],
+    seenSeq: new Set(),
+    busy: false,
+    connected: false,
+    input: "",
+    atBottom: true,
+    _userScrolledAt: 0,
+    es: null,
+    examplePrompts: [
+      "List the files in this repo and summarise the architecture.",
+      "Run the test suite and report failures.",
+      "What does the dashboard auth middleware do?",
+    ],
+
+    init() {
+      if (this.sessions.length) this.selectSession(this.sessions[0].id);
+      window.addEventListener("beforeunload", () => this.closeStream());
+    },
+
+    // ---- session list ----
+    async refreshSessions() {
+      try { this.sessions = (await (await fetch("/api/chat/sessions")).json()).sessions || []; }
+      catch (e) { /* keep stale list */ }
+    },
+    currentMeta() { return this.sessions.find(s => s.id === this.currentId); },
+    currentTitle() { const m = this.currentMeta(); return m ? (m.title || "New chat") : "No session"; },
+    currentCwd() { const m = this.currentMeta(); return m ? m.cwd : ""; },
+
+    async newSession() {
+      const r = await fetch("/api/chat/sessions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: this.defaultCwd }),
+      });
+      const meta = await r.json();
+      await this.refreshSessions();
+      this.selectSession(meta.id);
+      this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
+    },
+
+    async deleteSession(id) {
+      if (!confirm("Delete this chat?")) return;
+      await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
+      if (this.currentId === id) { this.closeStream(); this.currentId = null; this.events = []; }
+      await this.refreshSessions();
+    },
+
+    selectSession(id) {
+      this.closeStream();
+      this.currentId = id;
+      this.events = [];
+      this.seenSeq = new Set();
+      this.openStream(id);
+    },
+
+    // ---- SSE stream (single source of truth; dedup by seq) ----
+    openStream(id) {
+      this.closeStream();
+      const es = new EventSource(`/api/sse/chat/${id}`);
+      this.es = es;
+      // Do NOT clear on (re)open — global seq dedup makes the transcript replay
+      // idempotent, so reconnects don't flash or re-announce. selectSession() is
+      // the only place that resets events/seenSeq.
+      es.onopen = () => { this.connected = true; };
+      es.onerror = () => { this.connected = false; };  // browser auto-reconnects
+      const kinds = ["snapshot", "user", "init", "text", "thinking",
+                     "tool_use", "tool_result", "result", "turn_end", "error", "timeout"];
+      kinds.forEach(k => es.addEventListener(k, (e) => {
+        let d; try { d = JSON.parse(e.data); } catch { return; }
+        this.handleEvent(k, d);
+      }));
+    },
+    closeStream() { if (this.es) { this.es.close(); this.es = null; } this.connected = false; },
+
+    handleEvent(kind, d) {
+      if (d.seq != null) { if (this.seenSeq.has(d.seq)) return; this.seenSeq.add(d.seq); }
+      if (this.currentMeta()) this.currentMeta().busy = (kind !== "turn_end" && kind !== "snapshot");
+      switch (kind) {
+        case "snapshot":
+          if (d.status === "idle") { this.busy = false; this.closeStream(); }
+          else this.busy = true;
+          return;
+        case "timeout": return;                  // keepalive
+        case "init": return;                     // session id captured server-side
+        case "result": return;                   // final text already streamed as 'text'
+        case "turn_end":
+          this.busy = false; this.closeStream(); this.refreshSessions(); return;
+        case "user":
+          this.busy = true;
+          this.push({ kind: "user", html: this.md(d.text || "") }); return;
+        case "text":
+          this.push({ kind: "text", html: this.md(d.text || "") });
+          this.announce(d.text || ""); return;
+        case "thinking":
+          this.push({ kind: "thinking", html: this.md(d.text || "") }); return;
+        case "tool_use":
+          this.push({ kind: "tool_use", name: d.name || "tool",
+                      summary: this.toolSummary(d.input), detail: this.pretty(d.input) }); return;
+        case "tool_result":
+          this.push({ kind: "tool_result", content: d.content || "", isError: !!d.is_error }); return;
+        case "error":
+          this.busy = false;
+          this.push({ kind: "error", text: d.text || "error" }); return;
+      }
+    },
+
+    push(ev) {
+      const stick = this.atBottom;
+      this.events.push(ev);
+      if (stick) this.$nextTick(() => this.scrollToBottom(false));
+    },
+
+    // ---- send / cancel ----
+    async send() {
+      const text = this.input.trim();
+      if (!text || !this.currentId || this.busy) return;
+      this.input = ""; this.grow({ target: this.$refs.input });
+      this.busy = true;
+      if (!this.es) this.openStream(this.currentId);
+      const r = await fetch(`/api/chat/sessions/${this.currentId}/message`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (r.status === 409) { this.busy = false; this.announce("A turn is already running."); }
+      this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
+    },
+    async cancel() {
+      if (!this.currentId) return;
+      await fetch(`/api/chat/sessions/${this.currentId}/cancel`, { method: "POST" });
+    },
+
+    // ---- composer keyboard ----
+    onEnter(e) {
+      if (e.isComposing || e.shiftKey) return;   // IME / newline
+      e.preventDefault(); this.send();
+    },
+    grow(e) { const t = e.target; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 192) + "px"; },
+    useExample(p) { this.input = p; this.$nextTick(() => { this.$refs.input.focus(); this.grow({ target: this.$refs.input }); }); },
+
+    // ---- autoscroll (respect manual scroll-up) ----
+    onScroll() {
+      const el = this.$refs.scroll; if (!el) return;
+      this.atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 120;
+    },
+    userScrolled() { this._userScrolledAt = Date.now(); },
+    scrollToBottom(force) {
+      const el = this.$refs.scroll; if (!el) return;
+      if (!force && Date.now() - this._userScrolledAt < 800 && !this.atBottom) return;
+      el.scrollTop = el.scrollHeight; this.atBottom = true;
+    },
+
+    // ---- a11y announcer (completed message) ----
+    announce(text) {
+      const a = this.$refs.announcer; if (!a || !text) return;
+      a.textContent = ""; setTimeout(() => { a.textContent = text.slice(0, 400); }, 120);
+    },
+
+    // ---- tiny helpers ----
+    toolSummary(input) {
+      if (!input || typeof input !== "object") return "";
+      for (const k of ["command", "file_path", "path", "pattern", "url", "prompt"])
+        if (input[k]) return String(input[k]).slice(0, 120);
+      return JSON.stringify(input).slice(0, 120);
+    },
+    pretty(v) { try { return JSON.stringify(v, null, 2); } catch { return String(v); } },
+
+    // ---- minimal, safe markdown (escape first, then format) ----
+    md(src) {
+      const esc = (s) => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+      const parts = String(src).split("```");
+      let out = "";
+      parts.forEach((b, i) => {
+        if (i % 2) {
+          const nl = b.indexOf("\n");
+          const lang = nl >= 0 ? b.slice(0, nl).trim() : "";
+          const code = nl >= 0 ? b.slice(nl + 1) : b;
+          out += `<div class="chat-code"><div class="chat-code-bar"><span>${esc(lang) || "code"}</span>`
+               + `<button type="button" class="chat-copy" onclick="(function(b){const t=b.parentElement.nextElementSibling.innerText;navigator.clipboard.writeText(t);b.textContent='Copied ✓';setTimeout(()=>b.textContent='Copy',1200);})(this)">Copy</button></div>`
+               + `<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre></div>`;
+        } else {
+          out += esc(b)
+            .replace(/`([^`]+)`/g, "<code>$1</code>")
+            .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+            .replace(/^### (.*)$/gm, "<h4>$1</h4>")
+            .replace(/^## (.*)$/gm, "<h3>$1</h3>")
+            .replace(/\n/g, "<br>");
+        }
+      });
+      return out;
+    },
+  };
+}
+</script>
+{% endblock %}

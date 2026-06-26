@@ -25,6 +25,18 @@ A 24/7 always-on autonomous agent framework, inspired by NVIDIA's Personal Assis
 2. **Append a discussion log** in `discussions/YYYY-MM-DD-<short-topic>.md` if the session involved decisions, debates, or design work.
 3. **Append to `discussions/ideas.md`** if user dropped ideas you didn't act on yet — date-stamped, one bullet each.
 
+## Documenting a change is part of "done" (enforced)
+
+Every time you implement, change, or remove a feature here, you **must** also update the docs in the same session — agents read these to orient, so stale docs silently break the next agent:
+
+1. **`STATE.md`** — add a dated addendum (`_Addendum YYYY-MM-DD by <agent> — …_`): what changed, what's now next, blockers, and how you verified (commands run). It's the single source of truth; keep it a status board, not a journal.
+2. **`discussions/YYYY-MM-DD-<topic>.md`** — append a short log for anything involving decisions or design.
+3. **`design/<doc>.md`** — add/refresh an architecture doc when the change is structural (new module, route, or service).
+4. **`configs/.env.example`** — document any new env var, with a comment.
+5. **`CLAUDE.md`** (this file) — update the Folder map / conventions when they change.
+
+This holds on **every branch, including `big-update`**. A code change with no `STATE.md` update is **not finished**. A project **Stop hook** (`scripts/check-docs-updated.sh`, wired in `.claude/settings.json`) nudges you at end-of-turn when code changed but `STATE.md` didn't — treat that as a checklist, not noise.
+
 ## Auto-capture ideas (user's standing request)
 
 When the user mentions a new idea casually mid-task ("oh, also we should…", "I just thought of…", "if an idea comes up from time to time…"), **don't wait to be told** — append it to `discussions/ideas.md` immediately with today's date and a one-line description, then continue with the current task. Confirm briefly ("noted in ideas.md").
@@ -78,5 +90,12 @@ agent-me/
 ├── scripts/             ← shell scripts (bootstrap.sh, etc.)
 └── src/agent_me/
     ├── slack_bridge/    ← Python Slack bridge (entry: `uv run agent-me-bridge`)
+    ├── dashboard/       ← Starlette web dashboard (entry: `uv run agent-me-dashboard`)
+    │   └── chat/        ← native Chat feature (SOLID: models/config/store/runner/jobs/service)
     └── scripts/         ← Python CLI helpers (reauth_mcps.py, etc.)
 ```
+
+> **Note (big-update branch):** the dashboard now serves a native **Chat** page
+> (`/chat`, nav entry) that spawns persistent `claude` CLI sessions over SSE. The
+> DEV deployment runs the dashboard on **:8787** (`DEPLOY_ENV=dev`, direct access)
+> via `deploy/agent-me-dashboard-dev.service`; production stays on the A100 (:8765).

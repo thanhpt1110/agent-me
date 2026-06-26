@@ -15,6 +15,12 @@
           Overview
         </a>
 
+        <a href="/chat"
+           class="flex items-center gap-1.5 rounded px-2 py-2 font-medium hover:bg-ink-700 sm:px-3 {% if path.startswith('/chat') %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
+          <span aria-hidden="true" class="text-accent-400">▮</span>
+          Chat
+        </a>
+
         <details class="nav-dropdown relative">
           <summary class="flex cursor-pointer select-none items-center gap-1 rounded px-2 py-2 font-medium hover:bg-ink-700 sm:px-3 {% if is_source %}bg-ink-700 text-slate-100{% else %}text-slate-300{% endif %}">
             Sources

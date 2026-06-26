@@ -73,6 +73,9 @@ brev/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
+# Chat feature — per-session transcripts/state (never commit)
+/data/
+
 # OS / misc
 Thumbs.db
 ehthumbs.db

@@ -119,6 +119,16 @@ STATIC_DIR = PKG_DIR / "static"
 START_TS = time.time()
 RUNNER = BriefRunner()
 AUTO_SFA_RUNNER = AutoSFARunner()
+
+# Native chat feature (DEV migration target). DEPLOY_ENV drives the global banner.
+from agent_me.dashboard.chat import build_chat_service  # noqa: E402
+
+DEPLOY_ENV = os.environ.get("DEPLOY_ENV", "production").strip().lower()
+try:
+    CHAT_SERVICE = build_chat_service(REPO_DIR)
+except Exception:  # a chat misconfig must not take down the whole dashboard
+    log.exception("chat feature failed to initialise; /chat disabled")
+    CHAT_SERVICE = None
 OPERATOR_ACTION_CODE_HEADER = "x-agent-me-action-code"
 OPERATOR_ACTION_TOKEN_HEADER = "x-agent-me-operator-token"
 MCP_SETUP_COOKIE_NAME = "agent_me_auto_sfa_mcp_setup"
@@ -546,6 +556,7 @@ def _pending_groups_from_snapshots(snapshots: list[Any]) -> list[dict[str, Any]]
 TEMPLATES.env.filters["age"] = _ms_to_human
 TEMPLATES.env.filters["datetime_label"] = _ms_to_datetime_label
 TEMPLATES.env.globals["dashboard_release_info"] = dashboard_release_info
+TEMPLATES.env.globals["deploy_env"] = DEPLOY_ENV
 
 
 # ── Routes: HTML pages ───────────────────────────────────────────────────
@@ -1205,6 +1216,100 @@ async def sse_auto_sfa(request: Request):
     return EventSourceResponse(stream())
 
 
+# ── Routes: chat (thin handlers → ChatService) ──────────────────────────
+
+CHAT_MAX_BODY = 2 * 1024 * 1024  # parity with the prototype's express.json limit
+
+
+def _chat_unavailable() -> JSONResponse | None:
+    if CHAT_SERVICE is None:
+        return JSONResponse({"error": "chat feature unavailable"}, status_code=503)
+    return None
+
+
+async def _chat_json(request: Request) -> tuple[dict | None, JSONResponse | None]:
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > CHAT_MAX_BODY:
+        return None, JSONResponse({"error": "request body too large"}, status_code=413)
+    try:
+        data = await request.json()
+    except Exception:
+        return None, JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(data, dict):
+        return None, JSONResponse({"error": "expected a JSON object"}, status_code=400)
+    return data, None
+
+
+async def page_chat(request: Request):
+    sessions = CHAT_SERVICE.session_dicts() if CHAT_SERVICE else []
+    default_cwd = CHAT_SERVICE.config.default_cwd if CHAT_SERVICE else ""
+    return TEMPLATES.TemplateResponse(request, "chat.html", {
+        "sessions_json": sessions, "default_cwd": default_cwd,
+        "chat_enabled": CHAT_SERVICE is not None,
+    })
+
+
+async def api_chat_sessions(request: Request):
+    if (unavailable := _chat_unavailable()):
+        return unavailable
+    if request.method == "POST":
+        body, err = await _chat_json(request)
+        if err:
+            return err
+        meta = CHAT_SERVICE.create_session(
+            title=body.get("title"), cwd=body.get("cwd"), model=body.get("model"))
+        return JSONResponse(meta.public_dict(), status_code=201)
+    return JSONResponse({"sessions": CHAT_SERVICE.session_dicts()})
+
+
+async def api_chat_session(request: Request):
+    if (unavailable := _chat_unavailable()):
+        return unavailable
+    sid = request.path_params["session_id"]
+    if request.method == "DELETE":
+        if not CHAT_SERVICE.delete_session(sid):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"ok": True})
+    data = CHAT_SERVICE.get_session(sid)
+    if data is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(data)
+
+
+async def api_chat_message(request: Request):
+    if (unavailable := _chat_unavailable()):
+        return unavailable
+    sid = request.path_params["session_id"]
+    body, err = await _chat_json(request)
+    if err:
+        return err
+    ok, err = await CHAT_SERVICE.start_turn(sid, str(body.get("text", "")))
+    if ok:
+        return JSONResponse({"ok": True}, status_code=202)
+    status = {"not_found": 404, "empty": 400, "busy": 409}.get(err, 400)
+    return JSONResponse({"error": err}, status_code=status)
+
+
+async def api_chat_cancel(request: Request):
+    if (unavailable := _chat_unavailable()):
+        return unavailable
+    sid = request.path_params["session_id"]
+    cancelled = await CHAT_SERVICE.cancel_turn(sid)
+    return JSONResponse({"ok": cancelled}, status_code=200 if cancelled else 409)
+
+
+async def sse_chat(request: Request):
+    if (unavailable := _chat_unavailable()):
+        return unavailable
+    sid = request.path_params["session_id"]
+
+    async def stream():
+        async for evt in CHAT_SERVICE.stream(sid):
+            yield {"event": evt.get("kind", "message"),
+                   "data": json.dumps(evt, ensure_ascii=False, default=str)}
+    return EventSourceResponse(stream())
+
+
 # ── Healthz / login ─────────────────────────────────────────────────────
 
 async def healthz(_request: Request):
@@ -1284,6 +1389,17 @@ def build_app() -> Starlette:
         Route("/api/sse/logs/session", sse_logs_session, name="sse_logs_session"),
         Route("/api/sse/refresh/{job_id}", sse_refresh, name="sse_refresh"),
         Route("/api/sse/auto-sfa/{job_id}", sse_auto_sfa, name="sse_auto_sfa"),
+        # chat (gated by AuthMiddleware like every non-exempt path)
+        Route("/chat", page_chat, name="chat"),
+        Route("/api/chat/sessions", api_chat_sessions, methods=["GET", "POST"],
+              name="api_chat_sessions"),
+        Route("/api/chat/sessions/{session_id}", api_chat_session,
+              methods=["GET", "DELETE"], name="api_chat_session"),
+        Route("/api/chat/sessions/{session_id}/message", api_chat_message,
+              methods=["POST"], name="api_chat_message"),
+        Route("/api/chat/sessions/{session_id}/cancel", api_chat_cancel,
+              methods=["POST"], name="api_chat_cancel"),
+        Route("/api/sse/chat/{session_id}", sse_chat, name="sse_chat"),
         Route("/healthz", healthz, name="healthz"),
         Mount("/mcp", app=auto_sfa_mcp_asgi_app(auto_sfa_mcp), name="auto_sfa_mcp"),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),
