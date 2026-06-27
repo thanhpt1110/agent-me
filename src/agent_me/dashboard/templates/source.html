@@ -10,13 +10,13 @@
       <span class="text-2xl">{{ snapshot.icon }}</span>
       <h1 class="text-2xl font-semibold text-slate-100">{{ snapshot.label }}</h1>
       {% if snapshot.error %}
-      <span class="text-xs px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800">error</span>
+      <span class="text-xs inline-flex items-center gap-1.5 status-text-error"><span class="status-dot status-error"></span>error</span>
       {% elif snapshot.fetched_at == 0 %}
-      <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">no cache yet</span>
+      <span class="text-xs inline-flex items-center gap-1.5 text-slate-400"><span class="status-dot status-idle"></span>no cache yet</span>
       {% elif snapshot.stale %}
-      <span class="text-xs px-2 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800">stale</span>
+      <span class="text-xs inline-flex items-center gap-1.5 status-text-warn"><span class="status-dot status-warn"></span>stale</span>
       {% else %}
-      <span class="text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">fresh</span>
+      <span class="text-xs inline-flex items-center gap-1.5 status-text-ok"><span class="status-dot status-ok"></span>fresh</span>
       {% endif %}
     </div>
     <p class="mt-1 text-sm text-slate-400">
@@ -41,8 +41,8 @@
             class="action-icon-btn action-icon-refresh"
             aria-label="Refresh {{ snapshot.label }}"
             title="Refresh {{ snapshot.label }}">
-      <span x-show="!busy" class="action-icon-symbol" aria-hidden="true">⟳</span>
-      <span x-show="busy" x-cloak class="action-icon-symbol action-icon-spin" aria-hidden="true">⟳</span>
+      <svg x-show="!busy" class="icon"><use href="#icon-refresh"/></svg>
+      <svg x-show="busy" x-cloak class="icon icon-spin"><use href="#icon-loader"/></svg>
     </button>
   </div>
 </section>
@@ -53,14 +53,22 @@
   <div class="flex items-center justify-between">
     <div class="flex items-center gap-2">
       <span class="text-sm font-mono" x-text="`job ${job?.job_id?.slice(0,6) || ''}`"></span>
-      <span class="text-xs px-2 py-0.5 rounded"
+      <span class="text-xs inline-flex items-center gap-1.5"
             :class="{
-              'bg-slate-700 text-slate-300': job?.status === 'pending',
-              'bg-accent-600/30 text-accent-400': job?.status === 'running',
-              'bg-emerald-900/40 text-emerald-300': job?.status === 'done',
-              'bg-rose-900/50 text-rose-300': job?.status === 'error',
-            }"
-            x-text="job?.status"></span>
+              'text-slate-400': job?.status === 'pending',
+              'status-text-warn': job?.status === 'running',
+              'status-text-ok': job?.status === 'done',
+              'status-text-error': job?.status === 'error',
+            }">
+        <span class="status-dot"
+              :class="{
+                'status-idle': job?.status === 'pending',
+                'status-warn': job?.status === 'running',
+                'status-ok': job?.status === 'done',
+                'status-error': job?.status === 'error',
+              }"></span>
+        <span x-text="job?.status"></span>
+      </span>
     </div>
     <div class="text-xs text-slate-500" x-text="job?.seconds ? `${job.seconds}s` : ''"></div>
   </div>
@@ -97,7 +105,7 @@
         <div class="rounded-lg border border-ink-700 bg-ink-900 overflow-hidden">
           <div class="px-4 py-2 border-b border-ink-700 flex items-center justify-between bg-ink-800">
             <div class="flex items-center gap-2">
-              <span>📁</span>
+              <svg class="icon text-slate-400" aria-hidden="true"><use href="#icon-folder"/></svg>
               <span class="font-mono text-sm text-slate-200" x-text="group.name"></span>
             </div>
             <span class="text-xs text-slate-500" x-text="`${group.items.length} item(s)`"></span>

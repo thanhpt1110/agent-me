@@ -4,21 +4,37 @@
   <meta charset="utf-8" />
   <title>Login · agent-me dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Mirror the NVIDIA brand palette from base.html so this standalone
+    // login page (which does not extend base.html / load app.css) stays
+    // on the black + accent-green brand.
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            nvgreen: { 300: "#76b900", 500: "#549a00", 700: "#3f8500" },
+            ink: { 950: "#000000", 900: "#0a0a0a", 800: "#1a1a1a", 700: "#313131" },
+            accent: { 400: "#76b900", 500: "#549a00", 600: "#3f8500" },
+          },
+        },
+      },
+    };
+  </script>
 </head>
-<body class="h-full bg-slate-950 text-slate-200 flex items-center justify-center">
+<body class="h-full bg-ink-950 text-slate-200 flex items-center justify-center">
   <form action="/api/login" method="post"
-        class="w-full max-w-sm rounded-lg border border-slate-800 bg-slate-900 p-6 space-y-4">
+        class="w-full max-w-sm rounded-lg border border-ink-800 bg-ink-900 p-6 space-y-4">
     <h1 class="text-lg font-semibold text-slate-100">agent-me dashboard</h1>
     <p class="text-sm text-slate-400">
       Paste your <code class="font-mono">DASHBOARD_TOKEN</code> to continue.
     </p>
     <input type="password" name="token" required autofocus
-           class="w-full rounded bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 font-mono text-sm" />
+           class="w-full rounded bg-ink-800 border border-ink-700 px-3 py-2 text-slate-100 font-mono text-sm focus:border-accent-400 focus:outline-none focus:ring-1 focus:ring-accent-400" />
     {% if error %}
     <p class="text-xs text-rose-300">{{ error }}</p>
     {% endif %}
     <button type="submit"
-            class="w-full rounded bg-sky-600 hover:bg-sky-500 text-white text-sm py-2">
+            class="w-full rounded bg-accent-600 hover:bg-accent-500 text-white text-sm py-2 font-semibold">
       Continue
     </button>
   </form>

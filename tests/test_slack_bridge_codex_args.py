@@ -505,11 +505,11 @@ def test_model_free_prompt_always_creates_new_draft(monkeypatch, tmp_path) -> No
 
     captured: dict[str, str] = {}
 
-    async def fake_spawn_codex_app_server(prompt):
+    async def fake_spawn_write_agent(prompt):
         captured["prompt"] = prompt
         return "ok", None
 
-    monkeypatch.setattr(app, "spawn_codex_app_server", fake_spawn_codex_app_server)
+    monkeypatch.setattr(app, "spawn_write_agent", fake_spawn_write_agent)
 
     import asyncio
 

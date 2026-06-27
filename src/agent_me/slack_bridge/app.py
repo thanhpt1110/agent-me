@@ -66,6 +66,7 @@ from agent_me.auto_sfa import (
     run_update_template,
 )
 from agent_me.auto_sfa_history import record_auto_sfa_run
+from agent_me.claude_agent import ClaudeAgentRunner, RunnerConfig
 from agent_me.codex_app_server import (
     codex_app_server_args,
     run_codex_app_server,
@@ -81,6 +82,7 @@ from agent_me.mcp_tokens import (
     refresh_mcp_tokens,
 )
 from agent_me.slack_bridge import approvals
+from agent_me.slack_bridge.claude_agent import run_turn_with_progress
 
 # ── Repo dir resolution ──────────────────────────────────────────────────
 
@@ -635,6 +637,22 @@ MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
 CHAT_CWD = STATE_DIR / "chat-cwd"
 CHAT_CWD.mkdir(parents=True, exist_ok=True)
 
+# ── Claude backend (default; AGENT_BACKEND=codex restores the legacy path) ──
+# The interactive Slack agent runs claude inside the agent-me workspace, so a
+# Slack prompt behaves like a terminal session: read/edit files, shell, git, MCP.
+AGENT_BACKEND = (os.environ.get("AGENT_BACKEND") or "claude").strip().lower()
+CLAUDE_BIN = resolve_cli_bin("CLAUDE_BIN", "claude")
+SLACK_AGENT_CWD = (os.environ.get("SLACK_AGENT_CWD") or str(REPO_DIR)).strip()
+CLAUDE_MODEL = (
+    os.environ.get("CLAUDE_MODEL") or os.environ.get("AGENT_MODEL") or ""
+).strip() or None
+CLAUDE_TURN_TIMEOUT_S = float(
+    os.environ.get("CLAUDE_TURN_TIMEOUT_S", os.environ.get("AGENT_TIMEOUT_S", 20 * 60))
+)
+_claude_runner = ClaudeAgentRunner(
+    RunnerConfig(claude_bin=CLAUDE_BIN, turn_timeout_s=CLAUDE_TURN_TIMEOUT_S)
+)
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def clip(s: str | None, n: int = MAX_LOG_TEXT) -> str | None:
@@ -689,28 +707,66 @@ def chunk_for_slack(text: str) -> list[str]:
     ]
 
 
-# Streaming progress: Slack tier-2 chat.update is ~1 req/s before
-# throttling kicks in. Two seconds gives headroom across burst events
-# (the orchestrator can emit a flurry of tool_use blocks in one
-# assistant turn) without making the placeholder feel stale.
-PROGRESS_UPDATE_MIN_INTERVAL_S = 2.0
+# Streaming progress: Slack chat.update is tier-3 (~1 req/s sustained). The
+# callback coalesces bursts to at most one update per this interval, but always
+# flushes the latest state at the end of the window (see
+# make_slack_progress_callback) so the placeholder never gets stuck on a stale
+# frame — the original bug was the first (empty) frame anchoring the throttle and
+# every later update getting dropped.
+PROGRESS_UPDATE_MIN_INTERVAL_S = 1.5
+
+# Heartbeat tick for the live placeholder. Even when claude emits nothing for a
+# while (slow MCP call mid-flight, silent extended thinking), the renderer is
+# re-invoked on this cadence so the elapsed time + spinner keep advancing and
+# the user can see the agent is alive, not stalled. Stays well under Slack's
+# ~1 req/s chat.update budget once the min-interval throttle is applied.
+PROGRESS_HEARTBEAT_S = float(os.environ.get("SLACK_PROGRESS_HEARTBEAT_S", "3.0"))
+
+PROGRESS_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    secs = max(0, int(seconds))
+    if secs < 60:
+        return f"{secs}s"
+    return f"{secs // 60}m{secs % 60:02d}s"
 
 
 def format_progress(state: dict[str, Any]) -> str:
-    """Render the live progress block shown on the Slack placeholder."""
+    """Render the live progress block shown on the Slack placeholder.
+
+    Shows an animated spinner + elapsed time so the message visibly advances on
+    every heartbeat, the current phase (thinking / running tools / working), a
+    one-line description of the freshest activity, and the recent tool history.
+    """
     started = state["tools_started"]
     done = state["tools_done"]
     in_flight = list(state["in_flight"].values())
     completed = state["completed"]
-    lines = [f"🔄 *{done}/{started} tool calls done* (live progress)"]
+    elapsed = time.monotonic() - state.get("started", time.monotonic())
+    spin = PROGRESS_SPINNER[int(elapsed) % len(PROGRESS_SPINNER)]
     if in_flight:
+        phase = f"running {len(in_flight)} tool" + ("s" if len(in_flight) != 1 else "")
+    elif started:
+        phase = "working"
+    else:
+        phase = "thinking"
+    lines = [
+        f"{spin} *agent-me — {phase}…*  ·  ⏱ {_fmt_elapsed(elapsed)}  ·  "
+        f"{done}/{started} tools"
+    ]
+    if activity := state.get("activity"):
+        lines.append(activity)
+    # A single in-flight tool is already named in the activity line (with its
+    # hint); only list the running set when several overlap.
+    if len(in_flight) > 1:
         head = ", ".join(f"`{t}`" for t in in_flight[:6])
         if len(in_flight) > 6:
             head += f", +{len(in_flight) - 6} more"
         lines.append(f"▸ running: {head}")
     if completed:
         recent = completed[-6:]
-        lines.append("▸ completed: " + ", ".join(f"`{t}`" for t in recent))
+        lines.append("▸ done: " + ", ".join(f"`{t}`" for t in recent))
     return "\n".join(lines)
 
 
@@ -922,6 +978,8 @@ async def spawn_codex(
         "final_text": None,
         "is_error": False,
         "error_message": None,
+        "started": time.monotonic(),
+        "activity": None,
     }
 
     async def _emit():
@@ -966,8 +1024,10 @@ async def spawn_codex(
                         item = evt.get("item") or {}
                         iid = item.get("id")
                         if iid and item.get("type") in {"mcp_tool_call", "command_execution"}:
-                            state["in_flight"][iid] = _codex_item_name(item)
+                            name = _codex_item_name(item)
+                            state["in_flight"][iid] = name
                             state["tools_started"] += 1
+                            state["activity"] = f"🔧 {name}"
                             changed = True
                     elif etype == "item.completed":
                         item = evt.get("item") or {}
@@ -1029,6 +1089,116 @@ async def spawn_codex(
              tools_started=state["tools_started"],
              tools_done=state["tools_done"])
     return final, state["session_id"]
+
+
+# ── Claude agent (default backend) ────────────────────────────────────────
+
+CLAUDE_SYSTEM_PROMPT_TEMPLATE = """\
+You are agent-me, the user's (Thanh Phan) autonomous personal assistant, running \
+on Claude Code as a REMOTE TERMINAL driven from Slack. Today: {today}. \
+Timezone: Asia/Ho_Chi_Minh.
+
+You run inside the agent-me workspace at `{cwd}` with full tools: read/edit \
+files, run shell and git, and call the registered MCP tools (Jira, GitLab, \
+NVBugs, Slack, Outlook, Calendar, Confluence, Glean, …). Treat each Slack \
+message as if the user typed it at a terminal in this repo — do the work, don't \
+just describe it.
+
+RULES
+- The bridge posts your FINAL message to the current Slack thread automatically. \
+Do NOT call any Slack send/post tool to reply here. Use a Slack write tool only \
+when the user explicitly asks you to message a DIFFERENT person or channel.
+- Enterprise reads/writes go through the registered MCP tools, not ad-hoc browser \
+automation. This Slack request IS the user's authorization for writes; for \
+email/Outlook, draft-first unless they explicitly say "send"; modify only the \
+requested target.
+- Replies are read in Slack: synthesize, do NOT dump raw tool output. Keep the \
+final reply under ~6000 characters with short headers and one-line bullets.
+- The repo's CLAUDE.md carries docs-discipline (update STATE.md, discussions, \
+etc.). Follow it ONLY when you actually change code/features in this repo; skip \
+it for casual questions and read-only requests.
+- When you finish multi-step work, END with a short "Done:" summary of what you \
+changed/ran and the outcome — that line is the thread's record of the session.
+
+Model Free standing rule: if the user asks to fetch/check/draft a "Model Free \
+2.0.x" email, create exactly one reply-all Outlook DRAFT (never send) tied to \
+the latest inbound non-self message whose subject contains that exact version.
+"""
+
+
+def build_claude_system_prompt() -> str:
+    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
+    return CLAUDE_SYSTEM_PROMPT_TEMPLATE.format(today=today, cwd=SLACK_AGENT_CWD)
+
+
+async def spawn_claude(
+    prompt: str,
+    *,
+    resume_session_id: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    thread_ts: str | None = None,
+    append_system_prompt: str | None = None,
+) -> tuple[str, str | None]:
+    """Run one turn on claude in the workspace; returns (final_text, session_id).
+
+    Raises SessionExpired when a --resume hits an unknown session so the caller
+    can retry fresh. Session ids are minted on the first turn, resumed after.
+    """
+    session_id = resume_session_id or str(uuid.uuid4())
+    resume = bool(resume_session_id)
+    asp = append_system_prompt if append_system_prompt is not None else build_claude_system_prompt()
+    log.info("claude_spawn", cwd=SLACK_AGENT_CWD, model=(CLAUDE_MODEL or "(cli-default)"),
+             prompt_len=len(prompt), resume=resume_session_id)
+
+    result, state, final = await run_turn_with_progress(
+        runner=_claude_runner, prompt=prompt, cwd=SLACK_AGENT_CWD,
+        session_id=session_id, resume=resume, model=CLAUDE_MODEL,
+        append_system_prompt=asp, progress_cb=progress_cb,
+        heartbeat_interval_s=PROGRESS_HEARTBEAT_S,
+    )
+
+    if result.is_error:
+        blob = f"{state.get('error_message') or ''} {result.stderr or ''}".lower()
+        if resume and any(s in blob for s in (
+            "no conversation", "session not found", "no such session",
+            "could not find session", "invalid session id", "--resume",
+        )):
+            raise SessionExpired(
+                f"claude resume failed for {str(resume_session_id)[:8]}…: {blob[:200]}"
+            )
+        detail = (state.get("error_message") or result.stderr or "").strip()[:500]
+        raise RuntimeError(f"claude exited {result.exit_code}: {detail}")
+
+    log.info("claude_done", session_id=state["session_id"],
+             tools_started=state["tools_started"], tools_done=state["tools_done"])
+    return final, state["session_id"] or session_id
+
+
+async def spawn_agent(
+    prompt: str,
+    *,
+    resume_session_id: str | None = None,
+    progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    thread_ts: str | None = None,
+) -> tuple[str, str | None]:
+    """Dispatch one interactive turn to the configured backend (claude default)."""
+    if AGENT_BACKEND == "codex":
+        return await spawn_codex(
+            prompt, resume_session_id=resume_session_id,
+            progress_cb=progress_cb, thread_ts=thread_ts,
+        )
+    return await spawn_claude(
+        prompt, resume_session_id=resume_session_id,
+        progress_cb=progress_cb, thread_ts=thread_ts,
+    )
+
+
+async def spawn_write_agent(prompt: str) -> tuple[str, str | None]:
+    """One-shot turn for permissioned connector/MCP writes (no thread resume)."""
+    if AGENT_BACKEND == "codex":
+        return await spawn_codex_app_server(prompt)
+    answer, _sid = await spawn_claude(prompt)
+    return answer, None
 
 
 # ── Bolt app ────────────────────────────────────────────────────────────
@@ -1382,7 +1552,7 @@ async def cmd_model_free_draft(
     subject_pattern = subject_pattern or MODEL_FREE_SUBJECT_PATTERN
     prompt = f"""The user explicitly authorized an Outlook reply-all draft for a Model Free email.
 
-Use only the Codex Outlook Email connector tools. Do not use shell commands.
+Use the available Outlook MCP tools (maas-outlook). Do not use shell commands.
 Do not send the email; create exactly one new reply-all draft.
 Do not ask for confirmation. Do not skip because a previous user-authored
 reply or draft already exists; this is a feature test and the user wants a
@@ -1418,22 +1588,22 @@ Return a concise Vietnamese status:
         await progress_cb({
             "tools_started": 1,
             "tools_done": 0,
-            "in_flight": {"app-server": "codex-app-server:outlook"},
+            "in_flight": {"write": "outlook:create_reply_draft"},
             "completed": [],
             "session_id": None,
             "final_text": None,
             "is_error": False,
             "error_message": None,
         })
-    answer, _sid = await spawn_codex_app_server(prompt)
+    answer, _sid = await spawn_write_agent(prompt)
     return answer.strip() or "_(no output)_"
 
 
 async def cmd_permissioned_app_server_write(user_request: str) -> str:
     prompt = f"""The Slack user explicitly requested a permissioned connector/MCP write action.
 
-Use the relevant Codex app connector or registered MCP tools directly. Do not
-use shell commands, PA, Claude CLI, browser automation, or local files.
+Use the relevant registered MCP tools (maas-*) directly. Do not use browser
+automation or local files to perform the write.
 
 Rules:
 - This current Slack request is the user's authorization. Do not ask for
@@ -1451,7 +1621,7 @@ Rules:
 
 Current user request: {user_request}
 """
-    answer, _sid = await spawn_codex_app_server(prompt)
+    answer, _sid = await spawn_write_agent(prompt)
     return answer.strip() or "_(no output)_"
 
 
@@ -2161,27 +2331,76 @@ async def update_progress(client, channel: str, ts: str, text: str) -> None:
 def make_slack_progress_callback(
     client, channel: str, placeholder_ts: str,
 ) -> Callable[[dict[str, Any]], Awaitable[None]]:
-    """Create a throttled Codex progress callback for one Slack placeholder."""
-    progress_state: dict[str, float] = {"last": 0.0}
-    progress_lock = asyncio.Lock()
+    """Create a coalescing, trailing progress callback for one Slack placeholder.
 
-    async def progress_cb(state: dict[str, Any]) -> None:
-        now = time.monotonic()
-        is_final = state.get("final_text") is not None or state.get("is_error")
-        async with progress_lock:
-            if not is_final and now - progress_state["last"] < PROGRESS_UPDATE_MIN_INTERVAL_S:
-                return
-            progress_state["last"] = now
-            if is_final:
-                return  # final reply replaces the placeholder.
-            text = format_progress(state)
+    Sends at most one ``chat.update`` per ``PROGRESS_UPDATE_MIN_INTERVAL_S`` to
+    respect Slack's rate limit, but never *drops* the latest state: an update
+    that arrives mid-cooldown is coalesced and flushed when the window opens, so
+    the placeholder always catches up to what the agent is currently doing.
+    ``await progress_cb.aclose()`` before posting the final reply cancels any
+    pending flush and stops further updates (prevents a stale frame from
+    overwriting the answer).
+    """
+    lock = asyncio.Lock()
+    st: dict[str, Any] = {
+        "last_sent": 0.0, "pending_text": None, "flush_task": None,
+        "closed": False, "last_text": None,
+    }
+
+    async def _send(text: str) -> None:
+        if text == st["last_text"]:
+            return  # nothing changed since the last update; skip the API call
+        st["last_text"] = text
         try:
-            await client.chat_update(
-                channel=channel, ts=placeholder_ts, text=text,
-            )
+            await client.chat_update(channel=channel, ts=placeholder_ts, text=text)
         except Exception as exc:
             log.warning("progress_update_failed", err=str(exc))
 
+    async def _flush_after(delay: float) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(delay)
+            async with lock:
+                st["flush_task"] = None
+                if st["closed"] or st["pending_text"] is None:
+                    return
+                text = st["pending_text"]
+                st["pending_text"] = None
+                st["last_sent"] = time.monotonic()
+            await _send(text)
+
+    async def progress_cb(state: dict[str, Any]) -> None:
+        if state.get("final_text") is not None or state.get("is_error"):
+            return  # the final reply (or error handler) replaces the placeholder
+        text = format_progress(state)
+        now = time.monotonic()
+        async with lock:
+            if st["closed"]:
+                return
+            elapsed = now - st["last_sent"]
+            if elapsed >= PROGRESS_UPDATE_MIN_INTERVAL_S and st["flush_task"] is None:
+                st["last_sent"] = now
+                send_now = True
+            else:
+                st["pending_text"] = text  # coalesce; flushed when the window opens
+                send_now = False
+                if st["flush_task"] is None:
+                    st["flush_task"] = asyncio.ensure_future(
+                        _flush_after(max(0.0, PROGRESS_UPDATE_MIN_INTERVAL_S - elapsed))
+                    )
+        if send_now:
+            await _send(text)
+
+    async def aclose() -> None:
+        async with lock:
+            st["closed"] = True
+            task = st["flush_task"]
+            st["flush_task"] = None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    progress_cb.aclose = aclose
     return progress_cb
 
 
@@ -2267,6 +2486,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             result = await handle_slash(cmd, user_id, args_text,
                                          channel=channel, thread_ts=thread_ts,
                                          progress_cb=progress_cb)
+            await progress_cb.aclose()
             text, blocks = _split_result(result)
             if blocks:
                 # chat.update accepts blocks; include text as fallback for
@@ -2280,6 +2500,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             log.info(f"{label}_handled", cmd=cmd, thread_ts=thread_ts, args=args_text)
         except Exception as exc:
             log.error(f"{label}_failed", cmd=cmd, err=str(exc))
+            await progress_cb.aclose()
             await update_progress(client, channel, placeholder_ts,
                                   f"⚠️ `{cmd}` failed: `{exc}`")
 
@@ -2356,6 +2577,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
                 user_request=cleaned,
                 progress_cb=progress_cb,
             )
+            await progress_cb.aclose()
             await update_progress(client, channel, placeholder_ts, result)
             await insert_message(thread_ts, "assistant", result, placeholder_ts)
             log.info(
@@ -2365,6 +2587,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             )
         except Exception as exc:
             log.error("model_free_email_failed", err=str(exc), thread_ts=thread_ts)
+            await progress_cb.aclose()
             await update_progress(
                 client, channel, placeholder_ts,
                 f"⚠️ Model Free draft check failed: `{str(exc)[:600]}`",
@@ -2440,33 +2663,39 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     start = time.time()
     progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
 
+    # Codex needs a per-turn anchor to counter the "tools disconnected"
+    # hallucination on resumed sessions; the claude backend carries the same
+    # guidance durably in its system prompt, so it gets the raw user text.
+    agent_prompt = cleaned_with_reset if AGENT_BACKEND == "codex" else cleaned
+
     try:
-        # Look up the Codex session for this Slack thread. First message
-        # means no session yet; Codex creates one and we save the ID.
-        # Subsequent messages resume the same session, which is how
-        # context, prompt-cache hits, and tool-use history are preserved.
+        # Look up the agent session for this Slack thread. First message means
+        # no session yet; the backend creates one and we save the ID. Subsequent
+        # messages resume the same session, preserving context, prompt-cache
+        # hits, and tool-use history. (Table name stays `claude_sessions`.)
         existing_sid = await get_session_id(thread_ts)
         try:
-            answer, new_sid = await spawn_codex(
-                cleaned_with_reset, resume_session_id=existing_sid,
+            answer, new_sid = await spawn_agent(
+                agent_prompt, resume_session_id=existing_sid,
                 progress_cb=progress_cb, thread_ts=thread_ts,
             )
         except SessionExpired as exc:
-            # The on-disk session went away (Codex was restarted, project
-            # path changed, file got cleaned, etc.). Retry without --resume
-            # so the user sees the bridge respond gracefully instead of an
-            # error message — they lose continuity, that's it.
+            # The on-disk session went away (CLI restarted, project path
+            # changed, file got cleaned, etc.). Retry without --resume so the
+            # user sees the bridge respond gracefully instead of an error
+            # message — they lose continuity, that's it.
             log.warning("session_expired_starting_fresh",
                         thread_ts=thread_ts, expired=existing_sid, err=str(exc))
             await clear_session(thread_ts)
-            answer, new_sid = await spawn_codex(
-                cleaned_with_reset, progress_cb=progress_cb,
+            answer, new_sid = await spawn_agent(
+                agent_prompt, progress_cb=progress_cb,
                 thread_ts=thread_ts,
             )
 
         if new_sid:
             await upsert_session(thread_ts, new_sid)
 
+        await progress_cb.aclose()
         final = answer if answer.strip() else "_(no output)_"
         await post_chunked_reply(
             client, channel=channel, placeholder_ts=placeholder_ts,
@@ -2482,6 +2711,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         log.error("query_failed", thread_ts=thread_ts, err=str(exc),
                   ms=int((time.time() - start) * 1000), prompt=clip(cleaned))
         try:
+            await progress_cb.aclose()
             await update_progress(client, channel, placeholder_ts,
                                   f"⚠️ Error: `{str(exc)[:600]}`")
         except Exception as exc2:

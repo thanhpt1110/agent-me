@@ -10,11 +10,24 @@ Covers two cross-cutting concerns:
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import time
 from pathlib import Path
 
 import pytest
+
+# Load configs/.env once now (the dashboard does it at import) so the autouse
+# delenv below reliably strips the operator passcode for every test.
+with contextlib.suppress(Exception):
+    import agent_me.dashboard.app  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _isolate_operator_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """configs/.env is loaded at import; keep its operator passcode out of tests
+    so the chat/operator gate stays off unless a test sets it explicitly."""
+    monkeypatch.delenv("DASHBOARD_OPERATOR_ACTION_CODE", raising=False)
 
 
 @pytest.fixture

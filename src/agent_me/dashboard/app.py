@@ -298,6 +298,33 @@ def _operator_action_headers_or_denied(request: Request) -> dict[str, str] | JSO
     return JSONResponse({"error": "operator passcode required"}, status_code=403)
 
 
+CHAT_ACCESS_COOKIE_NAME = "agent_me_chat_access"
+CHAT_ACCESS_COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60
+
+
+def _issue_chat_access_cookie() -> str:
+    return _operator_token_serializer().dumps({"scope": "chat-access", "version": 1})
+
+
+def _chat_access_cookie_valid(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        data = _operator_token_serializer().loads(value)
+    except BadSignature:
+        return False
+    return isinstance(data, dict) and data.get("scope") == "chat-access" and data.get("version") == 1
+
+
+def chat_locked(request: Request) -> bool:
+    # No passcode configured → the gate is off so the operator is never locked out.
+    if not _operator_action_code():
+        return False
+    if _chat_access_cookie_valid(request.cookies.get(CHAT_ACCESS_COOKIE_NAME)):
+        return False
+    return not _operator_token_valid(request.headers.get(OPERATOR_ACTION_TOKEN_HEADER))
+
+
 # ── Template helpers ─────────────────────────────────────────────────────
 
 def _ms_to_human(ms: int | None) -> str:
@@ -1227,6 +1254,14 @@ def _chat_unavailable() -> JSONResponse | None:
     return None
 
 
+def _chat_guard(request: Request) -> JSONResponse | None:
+    if (unavailable := _chat_unavailable()):
+        return unavailable
+    if chat_locked(request):
+        return JSONResponse({"error": "chat_locked"}, status_code=403)
+    return None
+
+
 async def _chat_json(request: Request) -> tuple[dict | None, JSONResponse | None]:
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > CHAT_MAX_BODY:
@@ -1241,17 +1276,35 @@ async def _chat_json(request: Request) -> tuple[dict | None, JSONResponse | None
 
 
 async def page_chat(request: Request):
-    sessions = CHAT_SERVICE.session_dicts() if CHAT_SERVICE else []
+    locked = chat_locked(request)
+    sessions = [] if locked else (CHAT_SERVICE.session_dicts() if CHAT_SERVICE else [])
     default_cwd = CHAT_SERVICE.config.default_cwd if CHAT_SERVICE else ""
     return TEMPLATES.TemplateResponse(request, "chat.html", {
         "sessions_json": sessions, "default_cwd": default_cwd,
         "chat_enabled": CHAT_SERVICE is not None,
+        "chat_locked": locked,
     })
 
 
+async def api_chat_unlock(request: Request):
+    configured = _operator_action_code()
+    if not configured:
+        return JSONResponse({"ok": True, "gate": False})
+    submitted = request.headers.get(OPERATOR_ACTION_CODE_HEADER) or ""
+    if not secrets.compare_digest(submitted, configured):
+        return JSONResponse({"error": "operator passcode required"}, status_code=403)
+    resp = JSONResponse({"ok": True, "gate": True})
+    resp.set_cookie(
+        CHAT_ACCESS_COOKIE_NAME, _issue_chat_access_cookie(),
+        max_age=CHAT_ACCESS_COOKIE_MAX_AGE_S, httponly=True,
+        samesite="lax", secure=_request_is_secure(request), path="/",
+    )
+    return resp
+
+
 async def api_chat_sessions(request: Request):
-    if (unavailable := _chat_unavailable()):
-        return unavailable
+    if (blocked := _chat_guard(request)):
+        return blocked
     if request.method == "POST":
         body, err = await _chat_json(request)
         if err:
@@ -1263,8 +1316,8 @@ async def api_chat_sessions(request: Request):
 
 
 async def api_chat_session(request: Request):
-    if (unavailable := _chat_unavailable()):
-        return unavailable
+    if (blocked := _chat_guard(request)):
+        return blocked
     sid = request.path_params["session_id"]
     if request.method == "DELETE":
         if not CHAT_SERVICE.delete_session(sid):
@@ -1277,8 +1330,8 @@ async def api_chat_session(request: Request):
 
 
 async def api_chat_message(request: Request):
-    if (unavailable := _chat_unavailable()):
-        return unavailable
+    if (blocked := _chat_guard(request)):
+        return blocked
     sid = request.path_params["session_id"]
     body, err = await _chat_json(request)
     if err:
@@ -1291,16 +1344,16 @@ async def api_chat_message(request: Request):
 
 
 async def api_chat_cancel(request: Request):
-    if (unavailable := _chat_unavailable()):
-        return unavailable
+    if (blocked := _chat_guard(request)):
+        return blocked
     sid = request.path_params["session_id"]
     cancelled = await CHAT_SERVICE.cancel_turn(sid)
     return JSONResponse({"ok": cancelled}, status_code=200 if cancelled else 409)
 
 
 async def sse_chat(request: Request):
-    if (unavailable := _chat_unavailable()):
-        return unavailable
+    if (blocked := _chat_guard(request)):
+        return blocked
     sid = request.path_params["session_id"]
 
     async def stream():
@@ -1389,8 +1442,10 @@ def build_app() -> Starlette:
         Route("/api/sse/logs/session", sse_logs_session, name="sse_logs_session"),
         Route("/api/sse/refresh/{job_id}", sse_refresh, name="sse_refresh"),
         Route("/api/sse/auto-sfa/{job_id}", sse_auto_sfa, name="sse_auto_sfa"),
-        # chat (gated by AuthMiddleware like every non-exempt path)
+        # chat (gated by AuthMiddleware + the operator passcode for /chat)
         Route("/chat", page_chat, name="chat"),
+        Route("/api/chat/unlock", api_chat_unlock, methods=["POST"],
+              name="api_chat_unlock"),
         Route("/api/chat/sessions", api_chat_sessions, methods=["GET", "POST"],
               name="api_chat_sessions"),
         Route("/api/chat/sessions/{session_id}", api_chat_session,

@@ -42,14 +42,18 @@
     <div class="flex flex-wrap items-center justify-end gap-2 text-sm">
       <span class="mr-1 text-xs text-slate-500" x-text="checkedAtLabel()"></span>
       <button @click="requestOperatorAction()" :disabled="authBusy"
-              class="inline-flex min-h-9 items-center gap-2 rounded bg-accent-600 px-3 py-2 font-semibold text-white hover:bg-accent-500 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label="Refresh auth" title="Refresh auth">
+              class="btn btn-primary" aria-label="Refresh auth" title="Refresh auth">
+        <svg class="icon" :class="authBusy && 'icon-spin'" aria-hidden="true">
+          <use :href="authBusy ? '#icon-loader' : '#icon-key'"/>
+        </svg>
         <span x-show="!authBusy">Refresh auth</span>
         <span x-show="authBusy" x-cloak>Refreshing...</span>
       </button>
       <button @click="refresh()" :disabled="busy"
-              class="inline-flex min-h-9 items-center gap-2 rounded border border-ink-600 bg-ink-900 px-3 py-2 font-semibold text-slate-100 hover:border-accent-600 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label="Probe now" title="Probe now">
+              class="btn btn-secondary" aria-label="Probe now" title="Probe now">
+        <svg class="icon" :class="busy && 'icon-spin'" aria-hidden="true">
+          <use :href="busy ? '#icon-loader' : '#icon-refresh'"/>
+        </svg>
         <span x-show="!busy">Probe now</span>
         <span x-show="busy" x-cloak>Probing...</span>
       </button>
@@ -60,7 +64,7 @@
       <div class="rounded-lg border border-ink-700 bg-ink-950 p-5">
         <div class="text-sm font-semibold text-slate-100">No MCP probe cached yet</div>
         <p class="mt-2 max-w-2xl text-sm text-slate-400">
-          Use the probe control to run <code class="font-mono">codex mcp list</code>,
+          Use the probe control to run <code class="font-mono">claude mcp list</code>,
           or the auth refresh control to reload host credentials before probing.
         </p>
       </div>
@@ -102,13 +106,20 @@
                 <div class="font-mono text-sm font-semibold text-slate-100 truncate" x-text="s.name"></div>
                 <div class="mt-1 text-xs text-slate-500 truncate" x-text="authLabel(s)"></div>
               </div>
-              <span class="shrink-0 text-xs px-2 py-0.5 rounded border"
+              <span class="shrink-0 inline-flex items-center gap-1.5 text-xs font-semibold"
                     :class="{
-                      'bg-emerald-900/40 text-emerald-300 border-emerald-800': s.connected,
-                      'bg-amber-900/40 text-amber-300 border-amber-800': s.needs_auth,
-                      'bg-rose-900/50 text-rose-300 border-rose-800': !s.connected && !s.needs_auth,
-                    }"
-                    x-text="s.connected ? 'connected' : (s.needs_auth ? 'needs auth' : 'failed')"></span>
+                      'status-text-ok': s.connected,
+                      'status-text-warn': s.needs_auth,
+                      'status-text-error': !s.connected && !s.needs_auth,
+                    }">
+                <span class="status-dot"
+                      :class="{
+                        'status-ok': s.connected,
+                        'status-warn': s.needs_auth,
+                        'status-error': !s.connected && !s.needs_auth,
+                      }"></span>
+                <span x-text="s.connected ? 'connected' : (s.needs_auth ? 'needs auth' : 'failed')"></span>
+              </span>
             </div>
           </article>
         </template>
@@ -135,12 +146,13 @@
              x-text="operatorGate.error"></div>
       </template>
       <div class="mt-5 flex justify-end gap-2">
-        <button type="button" @click="closeOperatorGate()"
-                class="rounded border border-ink-600 px-3 py-2 text-sm text-slate-200 hover:border-accent-600">
+        <button type="button" @click="closeOperatorGate()" class="btn btn-secondary btn-sm">
           Close
         </button>
-        <button type="submit" :disabled="operatorGate.busy"
-                class="rounded bg-accent-600 px-3 py-2 text-sm font-semibold text-white hover:bg-accent-500 disabled:opacity-50">
+        <button type="submit" :disabled="operatorGate.busy" class="btn btn-primary btn-sm">
+          <svg class="icon icon-sm" :class="operatorGate.busy && 'icon-spin'" aria-hidden="true">
+            <use :href="operatorGate.busy ? '#icon-loader' : '#icon-key'"/>
+          </svg>
           <span x-show="!operatorGate.busy">Continue</span>
           <span x-show="operatorGate.busy" x-cloak>Checking...</span>
         </button>
@@ -215,7 +227,10 @@
       <label class="flex items-center gap-1 text-slate-400">
         <input type="checkbox" x-model="autoScroll" class="accent-accent-500" /> auto-scroll
       </label>
-      <button @click="lines = []" class="text-slate-400 hover:text-accent-400">clear</button>
+      <button @click="lines = []" class="btn btn-ghost btn-sm btn-icon"
+              aria-label="Clear logs" title="Clear logs">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="#icon-trash"/></svg>
+      </button>
       <span class="text-slate-500" x-text="`${lines.length} lines`"></span>
     </div>
   </header>

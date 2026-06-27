@@ -62,6 +62,7 @@ import structlog
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 
+from agent_me.claude_agent import ClaudeAgentRunner, RunnerConfig
 from agent_me.codex_app_server import run_codex_app_server
 from agent_me.mcp_tokens import codex_mcp_token_env, refresh_expired_mcp_tokens
 
@@ -87,6 +88,7 @@ USER_FULL_NAME = os.environ.get("AGENT_ME_FULL_NAME", "Thanh Phan")
 DEFAULT_MIRROR_EMAIL = os.environ.get("BRIEF_MIRROR_EMAIL", "thaphan@nvidia.com")
 AGENT_TIMEOUT_S = float(os.environ.get("AGENT_TIMEOUT_S", os.environ.get("CODEX_TIMEOUT_S", 240.0)))
 MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
+CLAUDE_BRIEF_MODEL = (os.environ.get("CLAUDE_BRIEF_MODEL") or os.environ.get("CLAUDE_MODEL") or "").strip() or None
 PRIORITY_WINDOW_DAYS = 7
 ITEMS_PER_GROUP = 5
 SLACK_SECTION_MAX_CHARS = 2900   # Slack hard limit is 3000; keep buffer.
@@ -710,9 +712,9 @@ If the tool errors (auth, approval, timeout, or otherwise), return
 SLACK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 You are READ-ONLY. Do NOT call any tool that posts, sends, replies,
-deletes, or modifies messages. Use Codex Slack app read tools directly:
-`slack_slack_search_public_and_private`, `slack_slack_read_channel`, and
-`slack_slack_read_thread`.
+deletes, or modifies messages. Use the maas-slack MCP read tools directly:
+`slack_search_messages`, `slack_get_conversation_history`, and
+`slack_get_thread_replies`.
 
 User: `{user}` (NVIDIA). Find recent Slack messages in the last
 {period_days} day(s) where someone needs my attention:
@@ -769,18 +771,12 @@ OUTLOOK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 You are READ-ONLY. Do NOT call any tool that sends, replies, drafts,
 deletes, or modifies emails or calendar events.
 
-Use only Codex Outlook Email read tools:
-  - `microsoft outlook email_list_messages`
-  - `microsoft outlook email_fetch_message` only if the list result lacks a
-    usable snippet/body preview
+Use only the maas-outlook MCP read tools:
+  - `outlook_list_messages` (plain recent inbox list, newest first, no filter)
+  - `outlook_get_message` only if the list result lacks a usable snippet/body
 
-Do NOT use Outlook search tools for this source. Do NOT pass any `filter`,
-`$filter`, OData expression, OR clause, receivedDateTime predicate,
-toRecipients predicate, ccRecipients predicate, or isRead predicate. The first
-data call MUST be a plain recent message list with `top=40`,
-`order_by="receivedDateTime desc"`, and the filter argument omitted. If the
-tool returns `ErrorInvalidUrlQueryFilter`, that attempt is invalid; retry with
-the same plain list call and no filter instead of returning the error.
+Start with a plain recent message list sorted by received time descending
+(top 40). Do not pass KQL/OData filter expressions on the first call.
 
 User: `{user}@nvidia.com`. Fetch recent inbox/mailbox messages first, then
 filter locally for the brief. Start with a plain recent message list sorted by
@@ -811,8 +807,8 @@ Do not report errors as "nothing pending". JSON ONLY."""
 CALENDAR_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 You are READ-ONLY. Do NOT call any tool that creates, updates, replies to,
-deletes, or modifies calendar events. Use Codex Outlook Calendar app read
-tools directly, preferably `microsoft outlook calendar_list_events`.
+deletes, or modifies calendar events. Use the maas-outlook MCP calendar read
+tools, preferably `outlook_list_calendar_view` (or `outlook_list_events`).
 
 User: `{user}@nvidia.com`. Timezone: `{timezone}`.
 Window: `{start_at}` inclusive to `{end_at}` exclusive
@@ -964,33 +960,52 @@ async def codex_fetcher(spec: SourceSpec, period_days: int) -> dict:
     return await _codex_fetch_prompt(spec, _render_source_prompt(spec, period_days))
 
 
-async def outlook_fetcher(spec: SourceSpec, period_days: int) -> dict:
-    """Fetch Outlook with a list-only retry for invalid OData filter drift."""
-    prompt = _render_source_prompt(spec, period_days)
+CLAUDE_BRIEF_SYSTEM_PROMPT = (
+    "Return only the JSON object the source prompt asks for. Use the registered "
+    "maas-* MCP read tools directly; do not run shell commands or read local "
+    'files. If a source tool fails, return an explicit {"error": "<exact tool '
+    'error>", "items": []} object instead of an empty list.'
+)
+
+CLAUDE_SOURCE_TOOLS = {
+    "slack": "mcp__maas-slack__*",
+    "outlook": "mcp__maas-outlook__*",
+    "calendar": "mcp__maas-outlook__*",
+}
+
+_brief_claude_runner = ClaudeAgentRunner(RunnerConfig(turn_timeout_s=AGENT_TIMEOUT_S))
+
+
+async def _run_claude_brief(prompt: str, tool_glob: str | None, timeout_s: float) -> str:
+    result = await _brief_claude_runner.run_turn(
+        prompt=prompt, cwd=str(REPO_DIR),
+        allowed_tools=[tool_glob] if tool_glob else None,
+        append_system_prompt=CLAUDE_BRIEF_SYSTEM_PROMPT, model=CLAUDE_BRIEF_MODEL,
+    )
+    if result.is_error:
+        raise RuntimeError(f"claude exited {result.exit_code}: {(result.stderr or '')[:400]}")
+    return (result.result or "").strip()
+
+
+async def _claude_fetch_prompt(spec: SourceSpec, prompt: str) -> dict:
+    started = time.time()
+    log.info("subagent_start", source=spec.id, backend="claude", hint=spec.allowed_tools)
+    raw = await _run_claude_brief(prompt, CLAUDE_SOURCE_TOOLS.get(spec.id), AGENT_TIMEOUT_S)
+    elapsed = int(time.time() - started)
     try:
-        return await _codex_fetch_prompt(spec, prompt)
-    except RuntimeError as exc:
-        msg = str(exc)
-        retryable = (
-            "ErrorInvalidUrlQueryFilter",
-            "INVALID_ARGUMENT",
-            "Transport send error",
-            "Unexpected content type",
-            "upstream connect error",
-            "connection timeout",
-        )
-        if not any(term in msg for term in retryable):
-            raise
-        log.warning("outlook_retry_list_only", err=msg[:300])
-        retry_prompt = (
-            "The previous Outlook attempt failed because it used an invalid "
-            "filter/OData query. Retry from scratch. Use only "
-            "`microsoft outlook email_list_messages` with `top=40`, "
-            '`order_by="receivedDateTime desc"`, and NO filter argument. '
-            "Do not call search tools. Do not return the previous error.\n\n"
-            + prompt
-        )
-        return await _codex_fetch_prompt(spec, retry_prompt)
+        data = _strip_to_json(raw)
+    except json.JSONDecodeError as exc:
+        log.error("subagent_parse_failed", source=spec.id, err=str(exc), preview=raw[:200])
+        raise RuntimeError(f"non-JSON response: {raw[:200]}") from exc
+    if data.get("error"):
+        raise RuntimeError(str(data["error"])[:500])
+    log.info("subagent_done", source=spec.id, seconds=elapsed,
+             item_count=len(data.get("items", []) or []))
+    return data
+
+
+async def claude_fetcher(spec: SourceSpec, period_days: int) -> dict:
+    return await _claude_fetch_prompt(spec, _render_source_prompt(spec, period_days))
 
 
 async def _jira_search(
@@ -1432,12 +1447,12 @@ SOURCES: list[SourceSpec] = [
     SourceSpec(id="github", label="GitHub", icon="🐱",
                fetcher=github_fetcher, parser=parse_github),
     SourceSpec(id="calendar", label="Meetings", icon="📅",
-               fetcher=codex_fetcher, parser=parse_calendar,
-               allowed_tools="codex-outlook-calendar-app",
+               fetcher=claude_fetcher, parser=parse_calendar,
+               allowed_tools="maas-outlook",
                prompt_template=CALENDAR_PROMPT),
     SourceSpec(id="outlook", label="Email", icon="📧",
-               fetcher=outlook_fetcher, parser=parse_outlook,
-               allowed_tools="codex-outlook-email-app",
+               fetcher=claude_fetcher, parser=parse_outlook,
+               allowed_tools="maas-outlook",
                prompt_template=OUTLOOK_PROMPT),
     SourceSpec(id="jira", label="Jira", icon="📋",
                fetcher=jira_fetcher, parser=parse_jira,
@@ -1448,8 +1463,8 @@ SOURCES: list[SourceSpec] = [
                allowed_tools="codex-teams-app",
                prompt_template=TEAMS_PROMPT),
     SourceSpec(id="slack", label="Slack", icon="💬",
-               fetcher=codex_fetcher, parser=parse_slack,
-               allowed_tools="codex-slack-app",
+               fetcher=claude_fetcher, parser=parse_slack,
+               allowed_tools="maas-slack",
                prompt_template=SLACK_PROMPT),
 ]
 

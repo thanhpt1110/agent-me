@@ -23,8 +23,8 @@
     <button @click="requestOperatorAction('refresh_all')" :disabled="busy"
             class="action-icon-btn action-icon-refresh"
             aria-label="Refresh all sources" title="Refresh all sources">
-      <span x-show="!busy" class="action-icon-symbol" aria-hidden="true">⟳</span>
-      <span x-show="busy" x-cloak class="action-icon-symbol action-icon-spin" aria-hidden="true">⟳</span>
+      <span x-show="!busy" class="action-icon-symbol" aria-hidden="true"><svg class="icon"><use href="#icon-refresh"/></svg></span>
+      <span x-show="busy" x-cloak class="action-icon-symbol action-icon-spin" aria-hidden="true"><svg class="icon"><use href="#icon-refresh"/></svg></span>
     </button>
   </div>
 </section>
@@ -68,8 +68,8 @@
         <button @click="requestOperatorAction('mcp_auth')" :disabled="authBusy"
                 class="operator-refresh-button operator-refresh-button-icon"
                 aria-label="Refresh MCP auth" title="Refresh MCP auth">
-          <span x-show="!authBusy" class="action-icon-symbol text-lg" aria-hidden="true">⟳</span>
-          <span x-show="authBusy" x-cloak class="action-icon-symbol action-icon-spin text-lg" aria-hidden="true">⟳</span>
+          <span x-show="!authBusy" class="action-icon-symbol text-lg" aria-hidden="true"><svg class="icon"><use href="#icon-refresh"/></svg></span>
+          <span x-show="authBusy" x-cloak class="action-icon-symbol action-icon-spin text-lg" aria-hidden="true"><svg class="icon"><use href="#icon-refresh"/></svg></span>
         </button>
         <template x-if="authResult || authError">
           <div class="rounded border px-3 py-2 text-xs"
@@ -110,7 +110,7 @@
     <div class="text-xs text-slate-500 mt-1" x-text="`${stats.threads_total} total`"></div>
   </div>
   <div class="rounded-lg border border-ink-700 bg-ink-900 p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Codex sessions</div>
+    <div class="text-xs uppercase tracking-wide text-slate-500">Claude sessions</div>
     <div class="mt-1 text-2xl font-semibold text-slate-100" x-text="stats.sessions_total"></div>
     <div class="text-xs text-slate-500 mt-1">
       last used {{ bridge_stats.last_session_used_at | age }}
@@ -140,10 +140,17 @@
       </span>
       <span x-show="busy" x-cloak class="text-xs text-slate-400" x-text="aggregateLabel()"></span>
     </div>
-    <div class="flex items-center gap-2 text-xs">
-      <button @click="expandAll()" class="text-slate-400 hover:text-accent-400">expand all</button>
-      <span class="text-slate-700">·</span>
-      <button @click="collapseAll()" class="text-slate-400 hover:text-accent-400">collapse all</button>
+    <div class="flex items-center gap-2">
+      <button @click="expandAll()"
+              class="action-icon-btn action-icon-btn-sm action-icon-expand"
+              aria-label="Expand all" title="Expand all">
+        <span class="action-icon-symbol" aria-hidden="true"><svg class="icon"><use href="#icon-chevron-down"/></svg></span>
+      </button>
+      <button @click="collapseAll()"
+              class="action-icon-btn action-icon-btn-sm action-icon-expand"
+              aria-label="Collapse all" title="Collapse all">
+        <span class="action-icon-symbol" aria-hidden="true"><svg class="icon"><use href="#icon-chevron-up"/></svg></span>
+      </button>
     </div>
   </div>
 
@@ -176,18 +183,33 @@
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <span x-show="!jobStatus[g.group_id]"
-                  class="text-xs px-2 py-0.5 rounded border"
+                  class="text-xs inline-flex items-center gap-1.5"
                   :class="{
-                    'bg-emerald-900/40 text-emerald-300 border-emerald-800': g.cache_state === 'fresh',
-                    'bg-amber-900/40 text-amber-300 border-amber-800': g.cache_state === 'stale' || g.cache_state === 'mock',
-                    'bg-rose-900/50 text-rose-300 border-rose-800': g.cache_state === 'error',
-                    'bg-slate-800 text-slate-400 border-slate-700': g.cache_state === 'empty',
-                  }"
-                  x-text="g.cache_label"></span>
+                    'status-text-ok': g.cache_state === 'fresh',
+                    'status-text-warn': g.cache_state === 'stale' || g.cache_state === 'mock',
+                    'status-text-error': g.cache_state === 'error',
+                    'text-slate-400': g.cache_state === 'empty',
+                  }">
+              <span class="status-dot"
+                    :class="{
+                      'status-ok': g.cache_state === 'fresh',
+                      'status-warn': g.cache_state === 'stale' || g.cache_state === 'mock',
+                      'status-error': g.cache_state === 'error',
+                      'status-idle': g.cache_state === 'empty',
+                    }"></span>
+              <span x-text="g.cache_label"></span>
+            </span>
             <span x-show="jobStatus[g.group_id]" x-cloak
-                  class="text-xs px-2 py-0.5 rounded border"
-                  :class="badgeClass(jobStatus[g.group_id])"
-                  x-text="badgeText(g.group_id)"></span>
+                  class="text-xs inline-flex items-center gap-1.5"
+                  :class="badgeClass(jobStatus[g.group_id])">
+              <span class="status-dot"
+                    :class="{
+                      'status-warn': jobStatus[g.group_id] === 'running',
+                      'status-ok': jobStatus[g.group_id] === 'done',
+                      'status-error': jobStatus[g.group_id] === 'error',
+                    }"></span>
+              <span x-text="badgeText(g.group_id)"></span>
+            </span>
             <button @click.stop="requestOperatorAction('refresh_source', g.group_id)"
                     :disabled="busy || jobStatus[g.group_id] === 'running'"
                     class="action-icon-btn action-icon-btn-sm action-icon-refresh"
@@ -195,7 +217,7 @@
                     :title="`Refresh ${g.label}`">
               <span class="action-icon-symbol"
                     :class="jobStatus[g.group_id] === 'running' ? 'action-icon-spin' : ''"
-                    aria-hidden="true">⟳</span>
+                    aria-hidden="true"><svg class="icon"><use href="#icon-refresh"/></svg></span>
             </button>
           </div>
         </header>
@@ -385,9 +407,9 @@
 
       badgeClass(state) {
         return {
-          "bg-accent-600/20 text-accent-400 border-accent-600/40": state === "running",
-          "bg-emerald-900/40 text-emerald-300 border-emerald-800": state === "done",
-          "bg-rose-900/50 text-rose-300 border-rose-800": state === "error",
+          "status-text-warn": state === "running",
+          "status-text-ok": state === "done",
+          "status-text-error": state === "error",
         };
       },
       badgeText(source) {

@@ -16,15 +16,26 @@
 
 `agent-me` is a 24/7 personal-agent runtime for Slack, a web dashboard, daily
 engineering briefs, and Auto SFA automation. It keeps conversation state in
-SQLite, runs Codex with the right MCP environment, gates side effects through
-human approval when needed, and exposes Auto SFA as a native MCP endpoint for
-other agent clients.
+SQLite, runs Claude as the agent backend with the right MCP environment, gates
+side effects through human approval when needed, and exposes Auto SFA as a
+native MCP endpoint for other agent clients.
+
+## Start here
+
+| You want to… | Read |
+| --- | --- |
+| The current state / what's next | [`STATE.md`](STATE.md) — single source of truth, read first |
+| Work in this repo as an agent | [`CLAUDE.md`](CLAUDE.md) — conventions, rules, folder map |
+| Understand the architecture | [`design/`](design/) — one doc per subsystem |
+| Past decisions / session logs | [`discussions/`](discussions/) |
+| Just run it | [Quickstart](#quickstart) |
 
 ## What It Does
 
-- Slack bot for chat, commands, approvals, MCP auth checks, and daily briefs.
-- Web dashboard for source status, logs, brief output, operations, Auto SFA, and
-  MCP setup.
+- Slack bot: prompt Claude like a remote terminal, plus commands, approvals,
+  MCP auth checks, and daily briefs.
+- Web dashboard for source status, logs, brief output, operations, Auto SFA,
+  MCP setup, and a password-gated **Chat** page that drives Claude on the box.
 - Auto SFA UI for create/release flows with live terminal output and run
   history.
 - Auto SFA MCP server so Cursor, Codex, Claude, and other agent clients can call
@@ -48,7 +59,7 @@ dashboard cache files, and the encrypted MCP token store.
 | Runtime | Python 3.12, `uv` |
 | Web | Starlette, Uvicorn, Jinja2, SSE |
 | Slack | Slack Bolt, Socket Mode |
-| Agent runtime | Codex CLI, Codex app-server, MCP |
+| Agent runtime | Claude CLI (default), Codex (legacy fallback), MCP |
 | Storage | SQLite, JSON cache files, encrypted Fernet token store |
 | Auto SFA | `devtest-wrapper` / `dtoperator.py` |
 | Ops | systemd user services, shell deploy/auth helpers |
@@ -57,7 +68,7 @@ dashboard cache files, and the encrypted MCP token store.
 
 | Service | Command | Purpose |
 | --- | --- | --- |
-| Slack bridge | `uv run agent-me-bridge` | Slack chat, commands, Codex execution, approvals |
+| Slack bridge | `uv run agent-me-bridge` | Slack chat, commands, Claude execution in the workspace, approvals |
 | Dashboard | `uv run agent-me-dashboard` | Web UI, APIs, logs, Auto SFA UI, MCP endpoint |
 | Daily brief | `uv run agent-me-brief` | Multi-source daily/weekly/monthly summaries |
 | MCP auth refresh | `uv run agent-me-reauth` / `uv run agent-me-codex-reauth` | Refresh Claude/Codex MCP credentials |
@@ -67,7 +78,7 @@ dashboard cache files, and the encrypted MCP token store.
 
 | Workflow | Description |
 | --- | --- |
-| Slack agent | DMs, mentions, and slash/plain-text commands run through Codex with thread memory. Permissioned writes are confirmed through Slack approvals. |
+| Slack agent | DMs, mentions, and slash/plain-text commands run Claude in the `~/agent-me` workspace (terminal-like) with per-thread sessions. Permissioned writes are confirmed through Slack approvals. |
 | Daily brief | `brief`, `brief week`, and `brief month` collect work signals and post summaries to Slack and the dashboard cache. |
 | Dashboard | `/` shows brief/source status, `/ops` shows service health/logs, `/auto-sfa` runs Auto SFA jobs, and `/mcp/setup` creates reusable MCP tokens. |
 | Auto SFA UI | Creates SFA tasks and releases templates through `devtest-wrapper`, using per-run DevTest credentials and live SSE terminal output. |
@@ -149,14 +160,19 @@ See [`design/deploy-on-host.md`](design/deploy-on-host.md),
 ## Repo Layout
 
 ```text
-src/agent_me/    Python package for Slack, dashboard, MCP, briefs, Auto SFA
+src/agent_me/
+  claude_agent/  Shared `claude` CLI engine (used by chat, Slack bridge, brief)
+  slack_bridge/  Slack bot
+  dashboard/     Web dashboard, /chat, Auto SFA, MCP endpoint
+  scripts/       Brief + CLI helpers
 artifacts/       Visual README diagrams and workflow images
-configs/         Runtime configuration templates
+configs/         Runtime configuration templates (.env.example)
 deploy/          systemd user service files
-design/          Architecture and deployment notes
-discussions/     Decision records and implementation notes
-scripts/         Bootstrap, deploy, auth, sync, and log helpers
-tests/           Unit and integration tests
+design/          Architecture and deployment notes (one doc per subsystem)
+discussions/     Decision records and session logs
+scripts/         Bootstrap/deploy/auth/log helpers + verify_chat_ui.py
+tests/           Unit + behavior tests
+.github/         CI, issue/PR templates, CONTRIBUTING / SECURITY / CODE_OF_CONDUCT
 ```
 
 Useful diagnostics: `systemctl --user status ...`, `journalctl --user -u ...`,
@@ -168,7 +184,12 @@ and `./scripts/tail-log.sh`.
 uv run ruff check .
 uv run pytest
 uv run pyright
+# Behavior test for the /chat UI (needs a chromium browser; see the script header):
+uv run python scripts/verify_chat_ui.py
 ```
+
+Rule: after changing a feature, test its real behavior (drive the UI/CLI/agent),
+not just that an endpoint returns 200. See `CLAUDE.md` → "Testing is part of done".
 
 ## Project Status
 

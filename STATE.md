@@ -1,5 +1,14 @@
 # agent-me — Current State
 
+> ⚠️ **ACTIVE SESSION — COORDINATION REQUIRED (2026-06-26).** A Claude session is
+> actively implementing the **remote-chat feature** on branch `big-update`:
+> `/chat` password gate + Slack bot codex→claude migration + brief codex→claude +
+> a shared `claude_agent` engine. **If you are the `agent-me-qa-handsfree` session
+> (or any other agent) and were asked to work in this repo, STOP and read
+> [`COORDINATION.md`](COORDINATION.md) first** — it lists the files currently
+> claimed so we don't collide. Leave a note there to hand off / negotiate.
+> Remove this banner when the chat-feature work is merged.
+
 _Last updated: 2026-05-18 by Codex — **Auto SFA MCP v1.3.5 structured-only tool arguments shipped** on the dashboard service: `create_sfa_tasks` and `release_sfa_tasks` no longer expose or accept a free-form `prompt` argument. The MCP HTTP guard rejects unknown tool arguments before FastMCP can ignore them, so agent clients must map user wording into the fields defined by the tool schema and add optional fields only when the user provided those details. `/mcp/setup` verifies DevTest credentials once, stores the password encrypted server-side, and issues a long-lived masked `agme-...` Agent Me bearer token for Cursor/Codex/Claude MCP clients. Tokens do not expire by default; users generate a replacement token if they need to rotate client config, and pre-`agme-` tokens were purged for a clean reset in v1.3.4. `/mcp/` uses official MCP Streamable HTTP with deterministic `create_sfa_tasks` and `release_sfa_tasks`, structured clarification/preview responses, single-call execution for complete approved tool calls, job-url live dashboard progress, and no second agent/LLM hop inside the server. Runtime decision remains: reads/chat use `codex exec --json`; daily brief uses direct MCP JSON-RPC for Jira/GitLab/NVBugs, Codex/app connectors for Slack/Outlook Email/Outlook Calendar, and `gh` for GitHub; connector/MCP writes use `codex debug app-server send-message-v2` with app-server auto-review. Auto SFA now has Slack, dashboard, and MCP entry points over the same builders/runners. Dashboard and MCP jobs run with one child process and one temp config per run, per-request DevTest credentials, SSE terminal output, cancel support, flow-separated trigger history, and browser localStorage for requested dashboard settings. MCP job responses include a dashboard `job_url`; agent clients should show that link instead of polling MCP tools for progress because many clients prompt on every tool call. The password is encrypted in the MCP token store and is not written to server config, public job history, or MCP public responses. Claude Code is only a legacy MaaS OAuth bootstrap helper. Daily/weekly/monthly briefs mirror only important multi-source summaries to `thaphan@nvidia.com` through the Codex Slack connector via the app-server write path. Normal Slack chat does not mirror. User-facing chat may be Vietnamese, but repository content and commit messages stay English. Discussion: [`discussions/2026-05-16-auto-sfa-mcp.md`](discussions/2026-05-16-auto-sfa-mcp.md), [`discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md`](discussions/2026-05-14-auto-sfa-cycle-resolver-and-slack-defaults.md), [`discussions/2026-05-12-auto-sfa.md`](discussions/2026-05-12-auto-sfa.md), [`discussions/2026-05-12-daily-brief-source-hardening.md`](discussions/2026-05-12-daily-brief-source-hardening.md), [`discussions/2026-05-11-codex-first-migration.md`](discussions/2026-05-11-codex-first-migration.md), [`discussions/2026-05-11-brief-calendar-and-model-free-email.md`](discussions/2026-05-11-brief-calendar-and-model-free-email.md), and [`discussions/2026-05-11-agent-me-avatar.md`](discussions/2026-05-11-agent-me-avatar.md). Verified: `uv run ruff check src tests`, `uv run pytest tests/test_auto_sfa_mcp.py -q`, and `uv run pytest -q`._
 
 _Addendum 2026-05-25 by Codex — QA to Automated SFA upstream orchestration was
@@ -21,6 +30,71 @@ skills now include autopilot intake behavior for minimal prompts such as
 the next human gate._
 
 _Addendum 2026-06-26 by Claude (branch `big-update`) — **Native Chat feature shipped on the dashboard.** New SOLID package `src/agent_me/dashboard/chat/` (`models`, `config`, `store`, `runner`, `jobs`, `service`) spawns persistent `claude` CLI sessions (`-p --output-format stream-json --resume --dangerously-skip-permissions`; reuses the box's OAuth login, so no `ANTHROPIC_API_KEY`) and streams them to the browser over the dashboard's existing `sse-starlette` path. Each turn runs server-side in an `asyncio.Task` (survives client disconnect); every event is persisted to `data/chat-sessions/<id>/transcript.jsonl` and fanned out with a monotonic `seq` so clients dedup the transcript replay vs the live buffer and survive SSE reconnects. Thin handlers + 6 routes in `app.py` (`/chat`, `/api/chat/sessions[...]`, `/api/sse/chat/{id}`), a top-level **Chat** nav entry, and a site-wide **DEV banner** driven by `DEPLOY_ENV`. Auth is inherited from `AuthMiddleware` (no new SSO — that's a separate track; direct access via `DASHBOARD_TRUST_NETWORK=1`). UI follows the NVIDIA theme (green accent-only, **black text on green** buttons, JetBrains Mono tool blocks) with progressive-disclosure tool rows, autoscroll-respecting-scroll-up + jump-to-latest, a Stop control, and an ARIA live log. **DEV deploy:** `deploy/agent-me-dashboard-dev.service` runs the dashboard on **:8787** (`DEPLOY_ENV=dev`); production stays on the A100 (:8765). The earlier standalone Node prototype (`chat/`) was retired (superseded by this native port). Next: deeper SFA/tool wiring, multi-tab live-follow, optional Markdown lib. Verified: `uv run ruff check`, `uv run pytest -q` (216 passed, incl. new `tests/test_chat.py`), real end-to-end turn through `/chat` on :8787. Docs discipline + a Stop hook (`.claude/hooks/check-docs.sh`) added so agents keep STATE.md in sync. Discussion: [`discussions/2026-06-26-native-dashboard-chat.md`](discussions/2026-06-26-native-dashboard-chat.md); design: [`design/dashboard-chat.md`](design/dashboard-chat.md)._
+
+_Addendum 2026-06-27 by Claude (branch `big-update`) — **Interactive agent backend migrated codex→claude; /chat password gate; mobile UX; brief partial migration.**_
+
+- **Shared engine** `src/agent_me/claude_agent/` (`models`, `runner`): one place that spawns the `claude` CLI (`-p --output-format stream-json --verbose --dangerously-skip-permissions`, `--session-id`/`--resume`, optional `--allowedTools`/`--append-system-prompt`). The dashboard chat's `runner`/`models` now re-export from it (no behaviour change).
+- **Slack bridge → claude** (`slack_bridge/claude_agent.py` adapter + `spawn_claude`/`spawn_agent`/`spawn_write_agent` in `slack_bridge/app.py`): DMs run claude in the `~/agent-me` workspace (terminal-like — read/edit/shell/git/MCP), per-thread sessions (`claude_sessions` table, mint uuid → `--resume`), live `chat.update` progress, final in-thread summary. Default chat path + Model Free drafts + permissioned writes all route to claude. `AGENT_BACKEND=codex` restores the legacy path. Deliberately reverses the old "chat-cwd, not REPO_DIR" decision (operator wants remote terminal-grade work).
+- **/chat password gate** (`dashboard/app.py` + `templates/chat.html`): reuses `DASHBOARD_OPERATOR_ACTION_CODE`; cookie unlock (`POST /api/chat/unlock` with `X-Agent-Me-Action-Code` → signed `agent_me_chat_access` cookie) so SSE (no custom headers) is gated too. `/chat` shows a "Thanh Phan only" modal; `/api/chat/*` + SSE return 403 until unlocked. Off when no passcode configured.
+- **Chat prominence + responsive**: floating Chat button in `templates/base.html` (every page except `/chat`); `chat.html` mobile drawer sidebar + `dvh` height. Global nav/CSS responsive + menu-icon best-practice pass delegated to the qa-handsfree session (see `COORDINATION.md`).
+- **Brief → claude (partial)** (`scripts/daily_brief.py`): calendar/outlook/slack fetch via `claude_fetcher` + `maas-*` MCP read tools (prompts rewritten for MaaS MCP). Teams stays codex (no Claude Teams MCP) and the Slack/email mirror stays codex (maas-slack is read-only) — operator-approved fallback.
+- **Repo-wide rule added** to `CLAUDE.md`: clean code, no redundant comments, explicit names (operator request).
+
+Next: after the qa-handsfree dashboard refactor merges, do the global responsive/menu pass; live-verify the full brief with `uv run agent-me-brief --period day --dry-run`; revisit a Claude Teams/Slack-write path to retire the codex fallback.
+
+Blockers: codex is not installed on this dev box, so the Teams brief source + mirror don't run here (claude sources do). The `DASHBOARD_OPERATOR_ACTION_CODE` in `configs/.env` is a starter value — change it.
+
+Verified: `uv run ruff check` clean; `uv run python -m pytest -q` all pass (incl. new `tests/test_chat_gate.py`, `tests/test_slack_bridge_claude.py`); real `claude` turn + `--resume` through the engine (PONG / recalled secret); live `/chat` turn on :8787 (gate → unlock → PONG, session persisted); live brief calendar fetch via claude + `maas-outlook` returned a real meeting. Discussion: [`discussions/2026-06-27-codex-to-claude-and-chat-gate.md`](discussions/2026-06-27-codex-to-claude-and-chat-gate.md); design: [`design/claude-agent-and-chat-gate.md`](design/claude-agent-and-chat-gate.md); coordination: [`COORDINATION.md`](COORDINATION.md)._
+
+_Addendum 2026-06-27 (later) by Claude — **Fixed the dead /chat UI (the buttons + gate were not working in the browser).** Root cause: `chat.html` had `x-data="chat({{ … | tojson }} …)"` — `tojson` emits raw double-quotes, so inside a **double-quoted** attribute the browser truncated `x-data`, Alpine never initialised, and the gate modal (x-cloak) + every `@click` (New/Send) were dead. Pre-existing bug (only `chat.html` used double quotes; every other template already single-quotes `x-data`), so earlier curl/API checks missed it. Fix: single-quote the attribute. Added a regression guard (`tests/test_chat_gate.py::test_chat_xdata_attribute_is_well_formed`), a headless behavior verifier (`scripts/verify_chat_ui.py`, playwright), and an **enforced testing rule** in CLAUDE.md (test real behavior — drive the browser, not just curl). Verified: rendered `/chat` now `x-data='chat([], "…", true)'`; `ruff` clean; `pytest` green (one unrelated flaky auto_sfa timing test passes on retry); chat() JS + x-data syntax valid. Browser click-test pending host browser deps (no passwordless sudo here) — run `uv run python scripts/verify_chat_ui.py` after `sudo … playwright install-deps chromium`. Users must **hard-refresh** (Ctrl+Shift+R) to drop the cached broken page._
+
+_Addendum 2026-06-27 (UI polish + agent-context) by Claude — Chat UX fixes: sidebar
+and main headers are both `h-14` so the divider lines up; the composer is hidden
+(`x-show="currentId"`) and replaced by an onboarding empty state (avatar + "New
+chat") when no chat is selected/exists. Nav `Sources`/`Tools` are now an exclusive
+`<details name="nav-menu">` group (opening one closes the other — no overlap; tiny
+edit to the qa-handsfree session's nav.html, noted in COORDINATION.md). Added
+concise per-package `CLAUDE.md` files (`claude_agent`, `slack_bridge`, `dashboard`,
+`dashboard/chat`, `scripts`) for on-demand local agent context. Added two enforced
+repo rules to CLAUDE.md: **Research before you implement** (fan out subagents over
+codebase + MCP + web before coding, every prompt) and the earlier testing rule.
+Root `.md` decluttered to 4 (README/STATE/CLAUDE/COORDINATION); CONTRIBUTING/
+SECURITY/CODE_OF_CONDUCT moved to `.github/`; README got a "Start here" table and
+Codex→Claude accuracy fixes. Verified: `ruff` clean, `pytest` green, rendered
+markup correct (h-14 ×2, `name="nav-menu"` ×2, composer `x-show`, onboarding).
+Browser click-test still needs host browser deps (no passwordless sudo here)._
+
+_Addendum 2026-06-27 (Slack live progress) by Claude — **Fixed the Slack bot's
+dead "🔄 0/0 tool calls done" placeholder; it now shows real live progress.**
+Root cause: the bridge adapter (`slack_bridge/claude_agent.py`) only refreshed
+the placeholder on `tool_use`/`tool_result` events, so a reasoning turn with no
+tool calls (very common in chat) stayed frozen at the first `0/0` frame the
+whole turn; and the old 2s throttle anchored on that empty first frame and
+dropped every later update for short/bursty turns. Changes:_
+
+- _`slack_bridge/claude_agent.py`: surface `thinking`/`text`/`tool_use` as a
+  one-line `state["activity"]` (💭/💬/🔧 + arg hint), add `started` for elapsed,
+  and run a **heartbeat** (`heartbeat_interval_s`, env `SLACK_PROGRESS_HEARTBEAT_S`,
+  default 3s) inside `run_turn_with_progress` so the spinner + clock advance even
+  when the agent is silent mid-turn (slow MCP call). Helpers `one_line`/`tool_hint`._
+- _`slack_bridge/app.py`: `format_progress` now renders an animated spinner ·
+  phase (thinking/running N tools/working) · ⏱ elapsed · `done/started` tools ·
+  activity · recent tools. `make_slack_progress_callback` rewritten as a
+  **coalescing, trailing** throttle (`PROGRESS_UPDATE_MIN_INTERVAL_S` 1.5s) that
+  never drops the latest state, de-dupes identical renders, and exposes
+  `aclose()`; all 3 streaming handlers call `await progress_cb.aclose()` before
+  the final write so a pending flush can't overwrite the answer. Legacy codex
+  state dict got `started`/`activity` so the shared renderer stays correct._
+
+_Verified: `uv run ruff check` clean; `uv run python -m pytest -q` 245 passed
+(new `tests/test_slack_bridge_progress.py` + extended `test_slack_bridge_claude.py`);
+simulated the full pipeline (throttle + heartbeat + aclose) and a **real `claude`
+CLI turn** through `spawn_claude` — a 0-tool "PONG" turn now renders
+`thinking… · ⏱ 0s→3s · 💬 PONG` with an animating spinner (old code showed only
+`0/0 tool calls done`). New env var documented in `configs/.env.example`. Docs:
+`design/claude-agent-and-chat-gate.md` (Live progress section),
+`src/agent_me/slack_bridge/CLAUDE.md`; discussion:
+[`discussions/2026-06-27-slack-live-progress.md`](discussions/2026-06-27-slack-live-progress.md)._
 
 ## Phase
 
@@ -828,6 +902,8 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
   `_<group>_group()` factory with a real fetcher returning the
   same `PendingGroup` shape; UI + route need zero changes.
   Detailed playbook in `design/dashboard-pending-panel.md`.
+
+_Addendum 2026-06-27 (chat code-block copy + light-theme fix) by Claude — **Two chat code-block bugs fixed.** (1) **Copy button did nothing** over plain `http://` (the dev box off the VPN/tunnel): the inline `onclick` called `navigator.clipboard.writeText`, but `navigator.clipboard` is `undefined` in a non-secure context, so the handler threw silently. Replaced the inline handler with a **delegated click listener** on `$refs.scroll` (Alpine `@click` can't bind inside `x-html` content) plus `copyCode`/`copyText` methods that use the async Clipboard API in a secure context and fall back to a hidden-`textarea` + `document.execCommand("copy")` otherwise. (2) **Light theme rendered block code light-on-light (invisible).** Root cause was a CSS selector leak: the inline-code rule `.prose-chat :not(.chat-code) > code` also matched block code (`<pre><code>` — the `<code>`'s parent is `pre`, not `.chat-code`), so in the light theme it applied the light inline background `#eef0f2` to the block `<code>`, which kept its light text `#e6edf3`. Fixed the selector to `:not(pre) > code` (block code can no longer match it) and added explicit light-theme block-code colors (`html.theme-light .chat-code pre { background: #f6f8fa }` + `code { color: #1f2328 }`, plus light border). Files: `src/agent_me/dashboard/templates/chat.html`, `src/agent_me/dashboard/static/app.css`. Verified: `uv run ruff check` clean; `uv run python -m pytest -q` all pass incl. new guards `tests/test_app.py::test_chat_code_block_light_theme_is_legible` + `::test_chat_copy_button_uses_delegated_handler`; real-DOM verification with jsdom (`matches()` proves the old selector matched block code and the new one doesn't; inline-code matching unchanged; `copyCode` traversal reads the right `<pre>`; `copyText` fallback uses `execCommand` when clipboard is absent). Full headless-browser render (`scripts/verify_chat_ui.py`) still can't run in this sandbox — no passwordless sudo to `playwright install-deps` (missing `libatk` et al.); run it on the dev host. Users must hard-refresh (Ctrl+Shift+R) to drop the cached old CSS/JS. Discussion: [`discussions/2026-06-27-chat-code-block-copy-and-theme.md`](discussions/2026-06-27-chat-code-block-copy-and-theme.md)._
 
 ## Open questions / parking lot
 

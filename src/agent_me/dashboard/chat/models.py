@@ -1,56 +1,19 @@
-"""Immutable value types for the chat feature.
+"""Chat-specific value types.
 
-Pure data — no I/O, no behaviour beyond serialization. These are the typed
-hand-offs between the store, runner, job and service layers (SRP: the only
-reason to change them is the wire/persistence schema).
+The generic event/turn vocabulary now lives in
+:mod:`agent_me.claude_agent.models` (shared with the Slack bridge and the brief)
+and is re-exported here so existing ``from .models import EventKind`` /
+``make_event`` / ``TurnResult`` imports keep working unchanged. Only
+:class:`SessionMeta` (the chat's persisted ``meta.json`` shape) is chat-specific.
 """
+
 from __future__ import annotations
 
-import time
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 
+from agent_me.claude_agent.models import EventKind, TurnResult, make_event, now_ms
 
-def now_ms() -> int:
-    """Millisecond wall-clock, matching the dashboard's ``now_ms`` convention."""
-    return int(time.time() * 1000)
-
-
-class EventKind(StrEnum):
-    """Every event the chat stream can carry (1:1 with the Claude CLI taxonomy)."""
-
-    SNAPSHOT = "snapshot"      # first frame on (re)subscribe: current session status
-    USER = "user"             # the user's message text
-    INIT = "init"             # CLI system/init: carries the resumable session id
-    TEXT = "text"             # assistant text block
-    THINKING = "thinking"     # assistant extended-thinking block
-    TOOL_USE = "tool_use"     # assistant requested a tool
-    TOOL_RESULT = "tool_result"  # result of a tool call
-    RESULT = "result"         # terminal CLI result for the turn
-    TURN_END = "turn_end"     # turn finished (client closes EventSource here)
-    ERROR = "error"           # spawn/parse failure
-    TIMEOUT = "timeout"       # no events for the keepalive window; stream stays open
-
-
-def make_event(kind: EventKind, **fields: object) -> dict:
-    """Build a wire/persistence event record: ``{"kind", "t", **fields}``.
-
-    Events travel as plain dicts to match the dashboard's existing SSE
-    convention (``{"event": ..., "data": json.dumps(evt)}``), while
-    :class:`EventKind` keeps the vocabulary typed and centralised.
-    """
-    return {"kind": kind.value, "t": now_ms(), **fields}
-
-
-@dataclass(frozen=True, slots=True)
-class TurnResult:
-    """Outcome of running one turn through the Claude CLI."""
-
-    session_id: str | None
-    result: str = ""
-    is_error: bool = False
-    exit_code: int = -1
-    stderr: str = ""
+__all__ = ["EventKind", "SessionMeta", "TurnResult", "make_event", "now_ms"]
 
 
 @dataclass(slots=True)

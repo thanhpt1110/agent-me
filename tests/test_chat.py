@@ -5,13 +5,12 @@ exercising the SOLID seam (DIP). HTTP tests drive the real Starlette app.
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
 from agent_me.dashboard.chat.config import ChatConfig
-from agent_me.dashboard.chat.models import TurnResult, make_event, EventKind
+from agent_me.dashboard.chat.models import EventKind, TurnResult, make_event
 from agent_me.dashboard.chat.service import ChatService
 from agent_me.dashboard.chat.store import DiskSessionStore
 
@@ -158,7 +157,7 @@ def test_http_routes_and_chat_page() -> None:
 
     r = client.get("/chat")
     assert r.status_code == 200
-    assert 'x-data="chat(' in r.text and "/api/sse/chat/" in r.text
+    assert "x-data='chat(" in r.text and "/api/sse/chat/" in r.text
 
     r = client.post("/api/chat/sessions", json={"title": "t", "cwd": "/tmp"})
     assert r.status_code == 201

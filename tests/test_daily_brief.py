@@ -223,10 +223,10 @@ def test_outlook_prompt_requires_recent_list_before_empty() -> None:
 
     assert "Start with a plain recent message list" in prompt
     assert "Never return an empty list until" in prompt
-    assert "Do NOT use Outlook search tools" in prompt
-    assert "filter argument omitted" in prompt
+    assert "maas-outlook MCP read tools" in prompt
+    assert "Do not pass KQL/OData filter expressions" in prompt
     spec = next(s for s in daily_brief.SOURCES if s.id == "outlook")
-    assert spec.fetcher is daily_brief.outlook_fetcher
+    assert spec.fetcher is daily_brief.claude_fetcher
 
 
 def test_parse_calendar_preserves_meeting_context() -> None:

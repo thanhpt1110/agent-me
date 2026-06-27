@@ -208,6 +208,30 @@ def test_static_css_includes_auto_sfa_light_theme(client: TestClient) -> None:
     assert "color: #94a3b8" in r.text
 
 
+def test_chat_code_block_light_theme_is_legible(client: TestClient) -> None:
+    # The inline-code rule must use `:not(pre)` so it can't leak its light
+    # background onto block code (`<pre><code>`), which kept light text and
+    # rendered light-on-light in the light theme. Plus explicit light-theme
+    # block-code colors. Regression guard.
+    css = client.get("/static/app.css").text
+    assert ".prose-chat :not(pre) > code" in css
+    assert ":not(.chat-code) > code" not in css
+    assert "html.theme-light .chat-code code { color: #1f2328; }" in css
+    assert "html.theme-light .chat-code pre { background: #f6f8fa; }" in css
+    assert "#0d1117" not in css  # old illegible light-theme block background is gone
+
+
+def test_chat_copy_button_uses_delegated_handler(client: TestClient, with_token: str) -> None:
+    # Inline onclick + navigator.clipboard fails silently over plain http
+    # (non-secure context). The copy path must be a delegated handler with an
+    # execCommand fallback instead. Regression guard.
+    html = client.get("/chat", headers=_auth(with_token)).text
+    assert 'class="chat-copy">Copy</button>' in html
+    assert "onclick" not in html
+    assert ".chat-copy" in html and "copyCode(btn)" in html
+    assert "copyText(text)" in html and 'document.execCommand("copy")' in html
+
+
 def test_source_page_unknown_source_404(client: TestClient, with_token: str) -> None:
     r = client.get("/source/madeup", headers=_auth(with_token))
     assert r.status_code == 404

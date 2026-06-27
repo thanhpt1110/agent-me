@@ -48,6 +48,33 @@ When the user mentions a new idea casually mid-task ("oh, also we should…", "I
 - User-facing chat may be Vietnamese when that is the user's language, but all repo-facing content must be English: code comments, docs, discussion logs, STATE updates, tests, and commit messages. When recording Vietnamese user prompts, summarize them in English instead of preserving raw Vietnamese unless exact wording is required.
 - **NVIDIA org policy** disables `--permission-mode bypassPermissions` for `claude` CLI. Use `--dangerously-skip-permissions` (different code path, not blocked) or per-tool `--allowedTools` whitelists when running headless flows.
 
+## Code style (repo-wide, enforced)
+
+Keep the codebase and the agent context **clean and undiluted**. Self-explanatory names and short, linear steps over comments.
+
+- **No redundant comments.** Don't add comments that restate what the code already says. Let clear names and structure carry the meaning.
+- **Comment only the non-obvious "why"** — a surprising constraint, a workaround, a subtle ordering — and keep it to one short line.
+- **Docstrings:** one line where one line suffices. No multi-paragraph essays in code; put rationale in `design/` or `discussions/`, not in source.
+- **Explicit names** for functions, variables, and steps so the flow reads top-to-bottom without narration.
+- Applies to all new and edited code. When you touch a file, leave it at least as clean as you found it; avoid large comment-only churn that would collide with other in-flight work.
+
+## Research before you implement (enforced)
+
+On every non-trivial prompt, **build context before writing code — don't implement from assumptions.** The user can prompt normally; deep research first is the default, not something they must ask for.
+
+- **Fan out subagents in parallel** to gather context: map the relevant codebase (files, call sites, conventions) with `Explore`/`general-purpose` agents or a `Workflow`; pull task-relevant info from MCP servers (Jira/GitLab/Glean/Confluence/NVBugs…); do web/docs research when the task touches an API, library, or best practice you're not 100% sure of.
+- **Synthesize the findings, then implement.** Prefer reusing existing patterns you found over inventing new ones.
+- After implementing, **test the real behavior** (next section). Research → implement → test is the standard loop for every change here.
+
+## Testing is part of "done" (enforced)
+
+After implementing or changing a feature, **test its actual behavior** before claiming it works — not just that the code compiles or an API returns 200.
+
+- **Run the real path a user takes.** For HTTP/UI, drive the browser (Alpine init, the click, the result), not only `curl` the endpoint — a 200 from `curl` can still be a dead UI (e.g. a broken `x-data` attribute that kills Alpine). For the dashboard chat use `uv run python scripts/verify_chat_ui.py`; for CLIs run the command; for the agent run a real turn.
+- **Confirm every behavior you touched**, including the failure/edge paths (gate locked vs unlocked, empty input, resume, cancel).
+- Always run `uv run ruff check` and `uv run python -m pytest -q` green, and add a regression test for any bug you fix.
+- Only then report it as working, and say exactly how you verified it.
+
 ## Tooling: Python + uv
 
 Project is **Python 3.12+** with [uv](https://docs.astral.sh/uv/) for dependency management. Setup any new clone with:
@@ -89,13 +116,23 @@ agent-me/
 ├── discussions/         ← session logs + ideas.md
 ├── scripts/             ← shell scripts (bootstrap.sh, etc.)
 └── src/agent_me/
-    ├── slack_bridge/    ← Python Slack bridge (entry: `uv run agent-me-bridge`)
+    ├── claude_agent/    ← shared `claude` CLI engine (runner/models) used by chat, bridge, brief
+    ├── slack_bridge/    ← Python Slack bridge (entry: `uv run agent-me-bridge`); claude_agent.py adapter
     ├── dashboard/       ← Starlette web dashboard (entry: `uv run agent-me-dashboard`)
-    │   └── chat/        ← native Chat feature (SOLID: models/config/store/runner/jobs/service)
-    └── scripts/         ← Python CLI helpers (reauth_mcps.py, etc.)
+    │   └── chat/        ← native Chat feature (config/store/jobs/service; runner/models re-export claude_agent)
+    └── scripts/         ← Python CLI helpers (daily_brief.py, reauth_mcps.py, etc.)
 ```
 
-> **Note (big-update branch):** the dashboard now serves a native **Chat** page
-> (`/chat`, nav entry) that spawns persistent `claude` CLI sessions over SSE. The
-> DEV deployment runs the dashboard on **:8787** (`DEPLOY_ENV=dev`, direct access)
-> via `deploy/agent-me-dashboard-dev.service`; production stays on the A100 (:8765).
+> **Note (big-update branch):** the interactive agent backend is **claude** (was
+> codex). One shared engine `src/agent_me/claude_agent/` spawns the `claude` CLI
+> (`-p --output-format stream-json --dangerously-skip-permissions`, `--session-id`/
+> `--resume`) and is reused by three surfaces:
+> - **`/chat`** (dashboard) — persistent sessions over SSE; gated by the operator
+>   passcode (`DASHBOARD_OPERATOR_ACTION_CODE`) via a cookie unlock, plus a floating
+>   Chat button + mobile-responsive layout. DEV runs on **:8787** (`DEPLOY_ENV=dev`)
+>   via `deploy/agent-me-dashboard-dev.service`; production stays on the A100 (:8765).
+> - **Slack bridge** — DMs run claude in the `~/agent-me` workspace (terminal-like),
+>   per-thread sessions, live progress, final summary in-thread. `AGENT_BACKEND=codex`
+>   restores the legacy path.
+> - **Brief** — calendar/outlook/slack fan-out via claude + `maas-*` MCP read tools;
+>   Teams and the Slack/email mirror stay on codex (no Claude write/Teams connector).

@@ -21,11 +21,15 @@ Three sources, three follow strategies:
    "user-facing" interaction; bridge can keep emitting any event it
    wants.
 
-3. **Codex session trace** — `~/.codex/sessions/YYYY/MM/DD/*<sid>.jsonl`.
-   Codex writes these JSONL files line-by-line, but a reader that polls
-   between two write syscalls can see a half-written line. We accumulate
-   bytes and only emit on `\n` boundaries, holding the trailing partial
-   in a buffer until the next poll.
+3. **Claude session trace** — `~/.claude/projects/<project>/*<sid>.jsonl`.
+   The Claude CLI writes one per-project transcript per session as JSONL,
+   line-by-line, but a reader that polls between two write syscalls can
+   see a half-written line. We accumulate bytes and only emit on `\n`
+   boundaries, holding the trailing partial in a buffer until the next
+   poll. Each line is a rich event (``type`` of system/user/assistant/
+   result, with ``message.content`` blocks); we flatten it into a compact
+   one-line trace record so the UI can render it without knowing the
+   Claude schema.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import time
 from collections.abc import AsyncIterator
@@ -50,40 +55,42 @@ log = structlog.get_logger("dashboard.log_sources")
 # tab. Everything outside this set (e.g. periodic heartbeat, internal
 # wiring, brief refresh plumbing) is suppressed. Keep this in sync with
 # the bridge's `log.info(...)` callsites; new buttons → add the event.
-SLACK_INTERACTION_EVENTS: frozenset[str] = frozenset({
-    # Inbound message handling
-    "message_received",
-    "query_handled",
-    "query_failed",
-    "plain_handled",
-    "plain_failed",
-    "slash_handled",
-    "slash_failed",
-    "native_slash",
-    "native_slash_failed",
-    # Buttons (interactive components)
-    "button_brief_refresh",
-    "button_brief_reauth",
-    "button_morning_reauth",
-    "button_morning_brief_now",
-    "button_menu_brief_day",
-    "button_menu_brief_week",
-    "button_menu_brief_month",
-    "button_menu_mcp_status",
-    "button_menu_help",
-    # Failure / soft-reject paths worth surfacing
-    "message_rejected_user",
-    "auto_discovered_operator",
-    "post_thinking_failed",
-    "error_update_failed",
-    "reply_in_thread_no_channel",
-    # Phase 2b approval-gate events (added 2026-05-10 alongside the
-    # PreToolUse hook + Slack approve/reject buttons).
-    "approval_posted",
-    "approval_resolved",
-    "approval_auto_allowed",
-    "approval_auto_thread_on",
-})
+SLACK_INTERACTION_EVENTS: frozenset[str] = frozenset(
+    {
+        # Inbound message handling
+        "message_received",
+        "query_handled",
+        "query_failed",
+        "plain_handled",
+        "plain_failed",
+        "slash_handled",
+        "slash_failed",
+        "native_slash",
+        "native_slash_failed",
+        # Buttons (interactive components)
+        "button_brief_refresh",
+        "button_brief_reauth",
+        "button_morning_reauth",
+        "button_morning_brief_now",
+        "button_menu_brief_day",
+        "button_menu_brief_week",
+        "button_menu_brief_month",
+        "button_menu_mcp_status",
+        "button_menu_help",
+        # Failure / soft-reject paths worth surfacing
+        "message_rejected_user",
+        "auto_discovered_operator",
+        "post_thinking_failed",
+        "error_update_failed",
+        "reply_in_thread_no_channel",
+        # Phase 2b approval-gate events (added 2026-05-10 alongside the
+        # PreToolUse hook + Slack approve/reject buttons).
+        "approval_posted",
+        "approval_resolved",
+        "approval_auto_allowed",
+        "approval_auto_thread_on",
+    }
+)
 
 
 # ── 1. Watcher: journalctl --user -u <unit> ─────────────────────────────
@@ -109,9 +116,12 @@ async def tail_journal_unit(
     cmd = [
         "journalctl",
         "--user",
-        "-u", unit,
-        "-n", str(from_lines),
-        "-o", "short-iso",
+        "-u",
+        unit,
+        "-n",
+        str(from_lines),
+        "-o",
+        "short-iso",
         "--no-hostname",
     ]
     if follow:
@@ -126,8 +136,10 @@ async def tail_journal_unit(
     except FileNotFoundError:
         yield {
             "source": "watcher",
-            "line": {"event": "journalctl_unavailable",
-                     "note": "journalctl binary not found on PATH"},
+            "line": {
+                "event": "journalctl_unavailable",
+                "note": "journalctl binary not found on PATH",
+            },
             "ts": int(time.time() * 1000),
             "replay": False,
         }
@@ -201,22 +213,23 @@ async def tail_bridge_slack_filtered(
         yield {**evt, "source": "slack"}
 
 
-# ── 3. Codex session trace: ~/.codex/sessions/.../*<sid>.jsonl ─────────
+# ── 3. Claude session trace: ~/.claude/projects/<project>/*<sid>.jsonl ──
 
 
-CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
-# Backwards-compatible test/monkeypatch alias. Older docs/tests called this
-# CLAUDE_PROJECTS_DIR; the resolver now treats it as the generic session root.
-CLAUDE_PROJECTS_DIR = CODEX_SESSIONS_DIR
+def _claude_projects_dir() -> Path:
+    env = os.environ.get("CLAUDE_PROJECTS_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".claude" / "projects"
+
+
+CLAUDE_PROJECTS_DIR = _claude_projects_dir()
 
 
 def _sanitize_path(path: Path) -> str:
-    """Legacy helper retained for tests that scaffold nested session dirs."""
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 def resolve_session_jsonl_path(session_id: str) -> Path | None:
-    """Find a Codex session JSONL whose filename contains `session_id`."""
+    """Find a Claude session JSONL whose filename contains `session_id`."""
     sessions_dir = CLAUDE_PROJECTS_DIR
     if not sessions_dir.exists():
         return None
@@ -235,10 +248,10 @@ async def tail_session_jsonl(
     follow: bool = True,
     poll_interval_s: float = 0.5,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Tail a Codex session JSONL with partial-line safety.
+    """Tail a Claude session JSONL with partial-line safety.
 
-    Codex writes each turn as JSON objects terminated by `\\n`. Between
-    two write syscalls the file may end mid-line; we
+    The Claude CLI writes each event as a JSON object terminated by
+    `\\n`. Between two write syscalls the file may end mid-line; we
     accumulate bytes in a buffer and only emit when we've seen a
     complete `\\n`-terminated chunk. This prevents `JSONDecodeError`
     every time we poll while a turn is being written.
@@ -251,8 +264,11 @@ async def tail_session_jsonl(
     if path is None:
         yield {
             "source": "session",
-            "line": {"event": "missing", "session_id": session_id,
-                     "note": "no jsonl under ~/.codex/sessions/.../"},
+            "line": {
+                "event": "missing",
+                "session_id": session_id,
+                "note": "no jsonl under ~/.claude/projects/.../",
+            },
             "ts": int(time.time() * 1000),
             "replay": False,
         }
@@ -304,8 +320,8 @@ async def tail_session_jsonl(
         except OSError:
             continue
         if cur_size < offset:
-            # Truncation/rotation — Codex doesn't normally rotate
-            # session jsonls, but a manual `>` redirect would do this.
+            # Truncation/rotation — the Claude CLI doesn't normally
+            # rotate session jsonls, but a manual `>` redirect would.
             offset = 0
             pending = b""
         if cur_size == offset:

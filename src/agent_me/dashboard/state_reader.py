@@ -39,8 +39,6 @@ from typing import Any
 
 import structlog
 
-from agent_me.mcp_tokens import codex_mcp_token_env
-
 log = structlog.get_logger("dashboard.state")
 
 # ── Layout (mirrors bridge / brief; keep these in lockstep) ──────────────
@@ -100,8 +98,9 @@ def _ro_connect() -> sqlite3.Connection:
         log.warning("state_db_missing", path=str(DB_PATH))
         return sqlite3.connect(":memory:")
     uri = f"file:{DB_PATH}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, check_same_thread=False,
-                           isolation_level=None, timeout=1.5)
+    conn = sqlite3.connect(
+        uri, uri=True, check_same_thread=False, isolation_level=None, timeout=1.5
+    )
     conn.row_factory = sqlite3.Row
     with contextlib.suppress(sqlite3.Error):
         conn.execute("PRAGMA busy_timeout = 1500")
@@ -129,6 +128,7 @@ class BriefSnapshot:
     brief subprocess) so templates can iterate without us having to
     keep a parallel dataclass in sync with `BriefItem`.
     """
+
     source: str
     label: str
     icon: str
@@ -172,26 +172,20 @@ class StateReader:
 
             stats = BridgeStats()
             try:
-                stats.threads_total = (
-                    conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-                )
+                stats.threads_total = conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
                 stats.threads_active_24h = conn.execute(
                     "SELECT COUNT(*) FROM threads WHERE last_active_at >= ?",
                     (cutoff_24h,),
                 ).fetchone()[0]
-                stats.sessions_total = (
-                    conn.execute("SELECT COUNT(*) FROM claude_sessions").fetchone()[0]
-                )
+                stats.sessions_total = conn.execute(
+                    "SELECT COUNT(*) FROM claude_sessions"
+                ).fetchone()[0]
                 stats.pending_approvals = conn.execute(
                     "SELECT COUNT(*) FROM pending_approvals WHERE status='pending'"
                 ).fetchone()[0]
-                row = conn.execute(
-                    "SELECT MAX(last_active_at) FROM threads"
-                ).fetchone()
+                row = conn.execute("SELECT MAX(last_active_at) FROM threads").fetchone()
                 stats.last_thread_active_at = row[0] if row and row[0] else None
-                row = conn.execute(
-                    "SELECT MAX(last_used_at) FROM claude_sessions"
-                ).fetchone()
+                row = conn.execute("SELECT MAX(last_used_at) FROM claude_sessions").fetchone()
                 stats.last_session_used_at = row[0] if row and row[0] else None
             except sqlite3.Error as exc:
                 # Schema drift / fresh DB / table missing / DB busy —
@@ -378,8 +372,12 @@ class StateReader:
             except OSError:
                 lines = []
             for raw in lines:
-                yield {"source": label, "line": _try_parse_json(raw),
-                       "ts": int(time.time() * 1000), "replay": True}
+                yield {
+                    "source": label,
+                    "line": _try_parse_json(raw),
+                    "ts": int(time.time() * 1000),
+                    "replay": True,
+                }
 
         # Live tail. Track (size, inode) per path so we can detect
         # rotation even when the new file has grown past the old size
@@ -412,15 +410,24 @@ class StateReader:
                     continue
                 positions[path] = (cur_size, cur_inode)
                 if rotated:
-                    yield {"source": label,
-                           "line": {"event": "log_rotated",
-                                    "note": f"{path.name} rotated; resuming from offset 0"},
-                           "ts": int(time.time() * 1000), "replay": False}
+                    yield {
+                        "source": label,
+                        "line": {
+                            "event": "log_rotated",
+                            "note": f"{path.name} rotated; resuming from offset 0",
+                        },
+                        "ts": int(time.time() * 1000),
+                        "replay": False,
+                    }
                 for raw in data.decode(errors="replace").splitlines():
                     if not raw.strip():
                         continue
-                    yield {"source": label, "line": _try_parse_json(raw),
-                           "ts": int(time.time() * 1000), "replay": False}
+                    yield {
+                        "source": label,
+                        "line": _try_parse_json(raw),
+                        "ts": int(time.time() * 1000),
+                        "replay": False,
+                    }
 
 
 def _safe_stat(path: Path) -> tuple[int, int]:
@@ -454,24 +461,50 @@ def _scrape_brief_log_for_source(source: str) -> list[dict[str, Any]]:
     return []
 
 
-# ── MCP health (synchronous shell-out to `codex mcp list`) ──────────────
+# ── MCP health: parse `claude mcp list` ─────────────────────────────────
+# Claude prints heavy ✔/✘ glyphs; accept light ✓/✗ too. `! Connected …` = degraded.
 
 
 _MCP_LINE_RE = re.compile(
-    r"^(?P<name>maas-[a-z0-9_-]+):\s+.*?-\s+(?P<state>✓\s+Connected|!\s+Needs\s+authentication|✗\s+Failed.*)$"
+    r"^(?P<name>maas-[a-z0-9_-]+):\s+.*?-\s+(?P<state>"
+    r"[✔✓]\s+Connected"
+    r"|!\s+Connected.*"
+    r"|!\s+Needs\s+authentication"
+    r"|[✘✗]\s+Failed.*"
+    r"|Failed\s+to\s+connect.*"
+    r")$"
 )
 
 
-def resolve_codex_bin() -> str:
-    if env := os.environ.get("CODEX_BIN"):
+def resolve_claude_bin() -> str:
+    if env := os.environ.get("CLAUDE_BIN"):
         p = Path(env).expanduser()
         if p.exists():
             return str(p)
-    local_bin = Path.home() / ".local" / "bin"
-    aug_path = f"{local_bin}:/usr/local/bin:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
-    if found := shutil.which("codex", path=aug_path):
+    fallback_dirs = [
+        Path.home() / ".local" / "bin",
+        Path("/usr/local/bin"),
+        Path("/opt/homebrew/bin"),
+        *sorted((Path.home() / ".nvm" / "versions" / "node").glob("*/bin")),
+    ]
+    aug_path = os.pathsep.join([os.environ.get("PATH", ""), *(str(p) for p in fallback_dirs)])
+    if found := shutil.which("claude", path=aug_path):
         return found
-    return "codex"
+    return "claude"
+
+
+def _classify_mcp_state(state: str) -> tuple[bool, bool]:
+    """Map a `claude mcp list` state fragment to (connected, needs_auth)."""
+    s = state.strip()
+    if s.startswith(("✔", "✓")):
+        return True, False
+    if s.startswith("!"):
+        rest = s[1:].strip().lower()
+        if rest.startswith("connected"):
+            return True, False
+        if "needs authentication" in rest:
+            return False, True
+    return False, False
 
 
 def parse_mcp_list_output(output: str) -> list[McpStatus]:
@@ -486,45 +519,52 @@ def parse_mcp_list_output(output: str) -> list[McpStatus]:
             continue
         seen.add(name)
 
-        old = _MCP_LINE_RE.search(stripped)
-        if old:
-            state = old.group("state")
-            servers.append(McpStatus(
-                name=old.group("name"),
-                connected=state.startswith("✓"),
-                needs_auth=state.startswith("!"),
-                raw_line=stripped,
-            ))
+        m = _MCP_LINE_RE.search(stripped)
+        if m:
+            connected, needs_auth = _classify_mcp_state(m.group("state"))
+            servers.append(
+                McpStatus(
+                    name=m.group("name"),
+                    connected=connected,
+                    needs_auth=needs_auth,
+                    raw_line=stripped,
+                )
+            )
             continue
 
+        # Fallback heuristic for table/non-standard formats.
         lowered = stripped.lower()
         needs_auth = "needs authentication" in lowered
-        connected = (
-            not needs_auth
-            and (
-                "bearer token" in lowered
-                or "✓ connected" in lowered
-                or (" enabled " in f" {lowered} " and "unsupported" in lowered)
+        connected = not needs_auth and (
+            "bearer token" in lowered
+            or "✔ connected" in lowered
+            or "✓ connected" in lowered
+            or (" enabled " in f" {lowered} " and "unsupported" in lowered)
+        )
+        servers.append(
+            McpStatus(
+                name=name,
+                connected=connected,
+                needs_auth=needs_auth,
+                raw_line=stripped,
             )
         )
-        servers.append(McpStatus(
-            name=name,
-            connected=connected,
-            needs_auth=needs_auth,
-            raw_line=stripped,
-        ))
     return servers
 
 
 async def check_mcp_health(timeout_s: float = 15.0) -> tuple[list[McpStatus], int]:
-    """Run `codex mcp list` and parse it. Returns (servers, checked_at_ms).
+    """Run `claude mcp list` and parse it. Returns (servers, checked_at_ms).
 
-    Cached at the call site; this function is the raw probe.
+    Cached at the call site; this function is the raw probe. Claude
+    self-authenticates from ~/.claude/.credentials.json, so no token env
+    injection is needed — we run with the plain process environment.
     """
-    codex_bin = resolve_codex_bin()
+    claude_bin = resolve_claude_bin()
     proc = await asyncio.create_subprocess_exec(
-        codex_bin, "mcp", "list",
-        env={**os.environ, **codex_mcp_token_env()},
+        claude_bin,
+        "mcp",
+        "list",
+        env=os.environ.copy(),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,

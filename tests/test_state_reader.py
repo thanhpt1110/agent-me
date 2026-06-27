@@ -70,8 +70,16 @@ def test_brief_snapshot_reads_cache_and_marks_fresh(temp_state_dir: Path) -> Non
 
     payload = {
         "source": "gitlab",
-        "items": [{"item_id": "!42", "title": "review me", "url": "https://x/42",
-                   "group": "repo-a", "icon": "🦊", "source": "gitlab"}],
+        "items": [
+            {
+                "item_id": "!42",
+                "title": "review me",
+                "url": "https://x/42",
+                "group": "repo-a",
+                "icon": "🦊",
+                "source": "gitlab",
+            }
+        ],
         "error": None,
         "fetched_at": int(time.time() * 1000) - 60_000,  # 1 min ago
         "seconds": 12,
@@ -88,7 +96,9 @@ def test_brief_snapshot_marks_stale_after_24h(temp_state_dir: Path) -> None:
     from agent_me.dashboard.state_reader import StateReader
 
     payload = {
-        "source": "jira", "items": [], "error": None,
+        "source": "jira",
+        "items": [],
+        "error": None,
         "fetched_at": int(time.time() * 1000) - (25 * 60 * 60 * 1000),
         "seconds": 0,
     }
@@ -117,12 +127,24 @@ def test_recent_brief_runs_parses_fan_out_done_entries(temp_state_dir: Path) -> 
     log_lines = [
         json.dumps({"event": "brief_starting", "level": "info"}),
         json.dumps({"event": "subagent_done", "source": "jira"}),
-        json.dumps({"event": "fan_out_done", "total_items": 42,
-                    "total_seconds": 39, "err_count": 0,
-                    "timestamp": "2026-05-10T06:00:00"}),
-        json.dumps({"event": "fan_out_done", "total_items": 18,
-                    "total_seconds": 27, "err_count": 1,
-                    "timestamp": "2026-05-11T06:00:00"}),
+        json.dumps(
+            {
+                "event": "fan_out_done",
+                "total_items": 42,
+                "total_seconds": 39,
+                "err_count": 0,
+                "timestamp": "2026-05-10T06:00:00",
+            }
+        ),
+        json.dumps(
+            {
+                "event": "fan_out_done",
+                "total_items": 18,
+                "total_seconds": 27,
+                "err_count": 1,
+                "timestamp": "2026-05-11T06:00:00",
+            }
+        ),
         "not-json-noise-line",
     ]
     state_reader.BRIEF_LOG.write_text("\n".join(log_lines) + "\n")
@@ -140,8 +162,14 @@ def test_all_snapshots_returns_all_sources(temp_state_dir: Path) -> None:
     snaps = StateReader.all_snapshots()
     assert len(snaps) == len(SOURCES) == 8
     assert [s.source for s in snaps] == [
-        "nvbugs", "gitlab", "github", "calendar",
-        "outlook", "jira", "teams", "slack",
+        "nvbugs",
+        "gitlab",
+        "github",
+        "calendar",
+        "outlook",
+        "jira",
+        "teams",
+        "slack",
     ]
 
 
@@ -163,15 +191,41 @@ maas-playwright       npx -y @playwright/mcp@latest                         -   
     ]
 
 
-def test_parse_mcp_list_output_supports_legacy_lines() -> None:
+def test_parse_mcp_list_output_supports_claude_lines() -> None:
     from agent_me.dashboard.state_reader import parse_mcp_list_output
 
+    # `claude mcp list` format: heavy glyphs ✔/✘ and `name: url (HTTP) - state`.
     servers = parse_mcp_list_output(
-        "maas-jira: https://example/mcp - ✓ Connected\n"
-        "maas-gitlab: https://example/mcp - ! Needs authentication\n"
+        "maas-jira: https://nvaihub.nvidia.com/maas/jira/mcp/ (HTTP) - ✔ Connected\n"
+        "maas-gitlab: https://nvaihub.nvidia.com/maas/gitlab/mcp/ (HTTP) - ! Needs authentication\n"
+        "maas-nvbugs: https://nvaihub.nvidia.com/maas/nvbugs/mcp/ (HTTP) - ! Connected · tools fetch failed\n"
+        "maas-slack: https://maas.prd.astra.nvidia.com/maas/slack/mcp (HTTP) - ✘ Failed to connect\n"
+        # non-maas servers are excluded from the roll-up
+        "agent-me: http://agent-me.nvidia.com/mcp/ (HTTP) - ✘ Failed to connect\n"
     )
 
     assert [(s.name, s.connected, s.needs_auth) for s in servers] == [
         ("maas-jira", True, False),
         ("maas-gitlab", False, True),
+        # degraded `! Connected · ...` is connected, NOT needs_auth
+        ("maas-nvbugs", True, False),
+        ("maas-slack", False, False),
+    ]
+    # the degraded detail is preserved verbatim in raw_line
+    degraded = next(s for s in servers if s.name == "maas-nvbugs")
+    assert "tools fetch failed" in degraded.raw_line
+
+
+def test_parse_mcp_list_output_accepts_light_glyphs() -> None:
+    """Older/codex-style light glyphs (✓/✗) still parse for back-compat."""
+    from agent_me.dashboard.state_reader import parse_mcp_list_output
+
+    servers = parse_mcp_list_output(
+        "maas-jira: https://example/mcp - ✓ Connected\n"
+        "maas-gitlab: https://example/mcp - ✗ Failed\n"
+    )
+
+    assert [(s.name, s.connected, s.needs_auth) for s in servers] == [
+        ("maas-jira", True, False),
+        ("maas-gitlab", False, False),
     ]

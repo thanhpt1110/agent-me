@@ -30,6 +30,7 @@ __all__ = [
 
 # ── Data shapes ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class PendingItem:
     item_id: str
@@ -55,6 +56,7 @@ class PendingGroup:
 
 
 # ── Mock content ─────────────────────────────────────────────────────────
+
 
 def _jira_group() -> PendingGroup:
     items = [
@@ -417,7 +419,7 @@ def _sessions_group() -> PendingGroup:
     ]
     return PendingGroup(
         group_id="sessions",
-        label="Codex sessions",
+        label="Claude sessions",
         icon="🧠",
         pending_count=len(items),
         home_url="/logs",
@@ -426,6 +428,7 @@ def _sessions_group() -> PendingGroup:
 
 
 # ── Public API ───────────────────────────────────────────────────────────
+
 
 def get_pending_groups() -> list[PendingGroup]:
     """Return the full list of platform groups with mock pending items.
@@ -448,7 +451,4 @@ def get_pending_groups() -> list[PendingGroup]:
 
 def pending_groups_dicts() -> list[dict[str, Any]]:
     """Same as get_pending_groups() but returns dicts (for Jinja/Alpine)."""
-    return [
-        {**asdict(g), "items": [asdict(i) for i in g.items]}
-        for g in get_pending_groups()
-    ]
+    return [{**asdict(g), "items": [asdict(i) for i in g.items]} for g in get_pending_groups()]
