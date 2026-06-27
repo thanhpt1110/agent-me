@@ -86,7 +86,15 @@ dropped every later update for short/bursty turns. Changes:_
   the final write so a pending flush can't overwrite the answer. Legacy codex
   state dict got `started`/`activity` so the shared renderer stays correct._
 
-_Verified: `uv run ruff check` clean; `uv run python -m pytest -q` 245 passed
+_An adversarial review workflow then caught a **real high-severity race** in the
+first cut: `_flush_after` cleared `flush_task` before its `await _send`, so
+`aclose()` could miss a flush parked mid-`chat.update` and let a stale progress
+frame overwrite the final reply. Fixed — the flush task stays cancellable through
+the send (cleared in `finally`) and `_send` re-checks `closed`; regression test
+`test_aclose_cancels_flush_parked_in_send` fails on the old ordering, passes on
+the fix._
+
+_Verified: `uv run ruff check` clean; `uv run python -m pytest -q` 246 passed
 (new `tests/test_slack_bridge_progress.py` + extended `test_slack_bridge_claude.py`);
 simulated the full pipeline (throttle + heartbeat + aclose) and a **real `claude`
 CLI turn** through `spawn_claude` — a 0-tool "PONG" turn now renders

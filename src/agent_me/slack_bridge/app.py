@@ -2348,8 +2348,11 @@ def make_slack_progress_callback(
     }
 
     async def _send(text: str) -> None:
-        if text == st["last_text"]:
-            return  # nothing changed since the last update; skip the API call
+        # Re-check closed here: aclose() may have fired after this send was
+        # decided but before it ran, and the network round-trip below must not
+        # land after the final reply.
+        if st["closed"] or text == st["last_text"]:
+            return
         st["last_text"] = text
         try:
             await client.chat_update(channel=channel, ts=placeholder_ts, text=text)
@@ -2357,16 +2360,25 @@ def make_slack_progress_callback(
             log.warning("progress_update_failed", err=str(exc))
 
     async def _flush_after(delay: float) -> None:
-        with contextlib.suppress(asyncio.CancelledError):
+        # Keep this task registered in st["flush_task"] through the _send call
+        # (cleared only in the finally) so aclose() can always cancel an
+        # in-flight flush — clearing it before the send opened a race where a
+        # stale frame overwrote the final reply.
+        try:
             await asyncio.sleep(delay)
             async with lock:
-                st["flush_task"] = None
                 if st["closed"] or st["pending_text"] is None:
                     return
                 text = st["pending_text"]
                 st["pending_text"] = None
                 st["last_sent"] = time.monotonic()
             await _send(text)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            async with lock:
+                if st["flush_task"] is asyncio.current_task():
+                    st["flush_task"] = None
 
     async def progress_cb(state: dict[str, Any]) -> None:
         if state.get("final_text") is not None or state.get("is_error"):

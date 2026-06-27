@@ -87,6 +87,26 @@ Two compounding bugs in the Slack progress path (claude backend, the default):
   `⠹ thinking… · ⏱ 2s · 💬 PONG` → `⏱ 3s` — animating spinner, advancing clock,
   real narration. Old code would have shown only `0/0 tool calls done`.
 
+## Adversarial review fix (same session)
+
+A focused review workflow (3 lenses × verify) found one **real high-severity
+race** in the first cut of `make_slack_progress_callback`, deterministically
+reproduced: `_flush_after` cleared `st["flush_task"] = None` *inside* the lock
+but ran `await _send()` *outside* it. If `aclose()` fired while a flush was
+parked mid-`chat.update`, it saw `flush_task is None`, cancelled nothing, and the
+stale progress frame's update landed **after** the final reply — overwriting the
+answer with a spinner line. (A low-sev sibling finding was the same root cause.)
+
+Fix: keep the flush task registered in `st["flush_task"]` *through* the send
+(cleared only in a `finally`, and only if still the current task) so `aclose()`
+can always cancel an in-flight flush; and re-check `st["closed"]` at the top of
+`_send` as defense-in-depth. Regression test
+`test_aclose_cancels_flush_parked_in_send` gates the flush inside `chat.update`,
+runs `aclose()`, then posts a final reply and asserts the stale frame never
+lands last — it **fails on the old ordering, passes on the fix** (verified by
+reintroducing the bug). The other 6 raw findings were rejected as false
+positives on verification.
+
 ## Follow-ups
 
 - Optional: stream partial assistant text token-by-token (engine emits per

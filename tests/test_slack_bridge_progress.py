@@ -135,6 +135,41 @@ async def test_progress_callback_aclose_cancels_pending_and_stops(monkeypatch, t
     assert len(client.updates) == 1
 
 
+async def test_aclose_cancels_flush_parked_in_send(monkeypatch, tmp_path) -> None:
+    # Regression: the trailing flush is parked mid-`chat.update` (network in
+    # flight) when aclose() runs. aclose() must cancel it so the stale progress
+    # frame never lands AFTER the final reply.
+    app = _load_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "PROGRESS_UPDATE_MIN_INTERVAL_S", 0.02)
+
+    class GatedClient:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.gate = asyncio.Event()
+            self.park = False
+
+        async def chat_update(self, *, channel, ts, text) -> None:
+            if self.park and not text.startswith("FINAL"):
+                await self.gate.wait()  # simulate a slow in-flight send
+            self.sent.append(text)
+
+    client = GatedClient()
+    cb = app.make_slack_progress_callback(client, "C1", "1.0")
+
+    await cb(_activity_state("💭 frame-A"))   # window open -> sent immediately
+    client.park = True
+    await cb(_activity_state("💭 frame-B"))   # coalesced -> schedules a flush
+    await asyncio.sleep(0.05)                 # flush fires and parks inside _send
+
+    await cb.aclose()                         # must cancel the parked flush
+    await client.chat_update(channel="C1", ts="1.0", text="FINAL the answer")
+    client.gate.set()                         # release; the cancelled flush must not send
+    await asyncio.sleep(0.05)
+
+    assert "💭 frame-B" not in "".join(client.sent)
+    assert client.sent[-1].startswith("FINAL")
+
+
 async def test_progress_callback_ignores_final_state(monkeypatch, tmp_path) -> None:
     app = _load_app(monkeypatch, tmp_path)
     client = _CaptureClient()
