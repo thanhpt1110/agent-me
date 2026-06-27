@@ -126,6 +126,7 @@ class ChatService:
                 prompt=text, cwd=meta.cwd, session_id=meta.claude_session_id,
                 resume=meta.claude_started, model=meta.model or self._config.model,
                 add_dirs=self._config.add_dirs, on_event=on_event,
+                append_system_prompt=self._config.append_system_prompt,
             )
             if result.is_error:
                 last = next((ln for ln in reversed((result.stderr or "").splitlines()) if ln.strip()), "")

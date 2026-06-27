@@ -1283,6 +1283,8 @@ async def page_chat(request: Request):
         "sessions_json": sessions, "default_cwd": default_cwd,
         "chat_enabled": CHAT_SERVICE is not None,
         "chat_locked": locked,
+        "chat_host": os.uname().nodename,
+        "chat_branch": _git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "?",
     })
 
 

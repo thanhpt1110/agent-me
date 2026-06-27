@@ -54,6 +54,7 @@ class ClaudeRunner(Protocol):
         model: str | None,
         add_dirs: tuple[str, ...],
         on_event: OnEvent,
+        append_system_prompt: str | None = ...,
     ) -> TurnResult: ...
 
 

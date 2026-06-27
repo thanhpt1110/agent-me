@@ -24,8 +24,10 @@ class FakeClaudeRunner:
         self._result_kwargs = result_kwargs
         self.calls: list[dict] = []
 
-    async def run_turn(self, *, prompt, cwd, session_id, resume, model, add_dirs, on_event) -> TurnResult:
-        self.calls.append({"prompt": prompt, "resume": resume, "session_id": session_id, "cwd": cwd})
+    async def run_turn(self, *, prompt, cwd, session_id, resume, model, add_dirs, on_event,
+                       append_system_prompt=None, **_kw) -> TurnResult:
+        self.calls.append({"prompt": prompt, "resume": resume, "session_id": session_id, "cwd": cwd,
+                           "append_system_prompt": append_system_prompt})
         for ev in self._events:
             on_event(dict(ev))
         return TurnResult(
@@ -150,6 +152,30 @@ def test_http_malformed_json_returns_400() -> None:
 
 
 # ── HTTP (real app, auth disabled when no DASHBOARD_TOKEN) ────────────────────
+
+async def test_operating_context_passed_to_runner(tmp_path: Path) -> None:
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path),
+                     keepalive_s=0.2, append_system_prompt="OP-CTX")
+    store = DiskSessionStore(cfg.data_dir)
+    runner = FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")])
+    svc = ChatService(store, runner, cfg)
+    meta = svc.create_session(title=None, cwd=None, model=None)
+    await svc.start_turn(meta.id, "do work")
+    await _drain(svc, meta.id)
+    assert runner.calls[0]["append_system_prompt"] == "OP-CTX"
+
+
+def test_from_env_operating_context_default(monkeypatch) -> None:
+    for k in ("CHAT_MODEL", "CHAT_APPEND_SYSTEM_PROMPT", "CHAT_DEFAULT_CWD"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = ChatConfig.from_env("/home/thaphan/agent-me")
+    assert cfg.model == "claude-opus-4-8"
+    ctx = cfg.append_system_prompt or ""
+    assert "big-update" in ctx and "GitLab" in ctx and "gh" in ctx
+    # explicit empty value disables it
+    monkeypatch.setenv("CHAT_APPEND_SYSTEM_PROMPT", "")
+    assert ChatConfig.from_env("/x").append_system_prompt is None
+
 
 def test_http_routes_and_chat_page() -> None:
     from agent_me.dashboard import app as dash

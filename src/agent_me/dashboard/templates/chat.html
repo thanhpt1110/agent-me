@@ -2,7 +2,7 @@
 {% block title %}Chat · agent-me{% endblock %}
 
 {% block content %}
-<div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }})' x-init="init()"
+<div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_branch | tojson }})' x-init="init()"
      class="relative grid grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]" style="height: calc(100dvh - 9rem);">
 
   <!-- ── Access gate (operator passcode) ──────────────────────────────── -->
@@ -56,6 +56,8 @@
                   :class="s.busy ? 'bg-accent-400 animate-pulse' : 'bg-ink-600'"
                   :title="s.busy ? 'agent running' : 'idle'"></span>
             <span class="min-w-0 flex-1 truncate" x-text="s.title || 'New chat'"></span>
+            <span x-show="s.busy" x-cloak
+                  class="shrink-0 rounded bg-accent-400/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent-400">run</span>
             <span @click.stop="deleteSession(s.id)" role="button" tabindex="0" aria-label="Delete chat"
                   @keydown.enter.stop="deleteSession(s.id)"
                   class="opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-danger">✕</span>
@@ -74,13 +76,19 @@
         <button type="button" @click="sidebarOpen = true" aria-label="Open chats"
                 class="lg:hidden shrink-0 rounded border border-ink-700 px-2 py-1 text-slate-300 hover:border-accent-400">☰</button>
         <div class="min-w-0">
-          <div class="truncate text-sm font-semibold text-slate-100" x-text="currentTitle()"></div>
+          <div class="flex items-center gap-2">
+            <span class="truncate text-sm font-semibold text-slate-100" x-text="currentTitle()"></span>
+            <span class="shrink-0 rounded border border-accent-400/40 bg-accent-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-400"
+                  :title="'Working directory: ' + currentCwd()"
+                  x-text="branch + ' @ ' + host"></span>
+          </div>
           <div class="truncate font-mono text-[11px] text-slate-500" x-text="currentCwd()"></div>
         </div>
       </div>
       <div class="flex items-center gap-3">
-        <span x-show="busy" x-cloak class="flex items-center gap-1.5 text-xs text-accent-400">
-          <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400"></span> agent working…
+        <span x-show="runningCount() > 0" x-cloak class="flex items-center gap-1.5 text-xs text-accent-400">
+          <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400"></span>
+          <span x-text="runningCount() > 1 ? (runningCount() + ' sessions running') : (busy ? 'this session running…' : 'another session running')"></span>
         </span>
         <button type="button" x-show="busy" x-cloak @click="cancel()"
                 class="rounded border border-ink-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-danger hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
@@ -216,11 +224,14 @@
 
 {% block scripts %}
 <script>
-function chat(initialSessions, defaultCwd, locked) {
+function chat(initialSessions, defaultCwd, locked, host, branch) {
   return {
     sessions: initialSessions || [],
     defaultCwd: defaultCwd || "",
     locked: !!locked,
+    host: host || "host",
+    branch: branch || "?",
+    pollTimer: null,
     sidebarOpen: false,
     unlockCode: "",
     unlockError: "",
@@ -241,7 +252,12 @@ function chat(initialSessions, defaultCwd, locked) {
     ],
 
     init() {
-      window.addEventListener("beforeunload", () => this.closeStream());
+      window.addEventListener("beforeunload", () => { this.closeStream(); this.stopPolling(); });
+      // Keep every session's run-state live even while viewing another one: poll
+      // the lightweight session list while the tab is visible.
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) this.stopPolling(); else if (!this.locked) this.startPolling();
+      });
       // Delegated: copy buttons live inside x-html, so Alpine @click can't bind them.
       this.$refs.scroll?.addEventListener("click", (e) => {
         const btn = e.target.closest(".chat-copy");
@@ -255,7 +271,16 @@ function chat(initialSessions, defaultCwd, locked) {
     },
     boot() {
       if (this.sessions.length) this.selectSession(this.sessions[0].id);
+      this.startPolling();
     },
+
+    // ---- live session run-state (so the sidebar dots are accurate across sessions) ----
+    startPolling() {
+      if (this.pollTimer || this.locked) return;
+      this.pollTimer = setInterval(() => { if (!document.hidden) this.refreshSessions(); }, 4000);
+    },
+    stopPolling() { if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; } },
+    runningCount() { return this.sessions.filter(s => s.busy).length; },
 
     // ---- access gate ----
     async unlock() {
@@ -277,7 +302,7 @@ function chat(initialSessions, defaultCwd, locked) {
         this.unlockBusy = false;
       }
     },
-    relock() { this.locked = true; this.closeStream(); this.busy = false; },
+    relock() { this.locked = true; this.closeStream(); this.stopPolling(); this.busy = false; },
 
     // ---- session list ----
     async refreshSessions() {

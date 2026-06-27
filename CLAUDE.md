@@ -10,8 +10,13 @@ A 24/7 always-on autonomous agent framework, inspired by NVIDIA's Personal Assis
 
 - **Runtime host:** cloud host instance (CPU)
 - **Interface:** Slack DM / channel
-- **Config persistence:** Personal GitHub, private repo
-- **Default model:** Claude Opus 4.7 (1M context) — always pick best/thinking-best, no cost limit
+- **Config persistence / working remote:** GitLab `origin` →
+  `gitlab-master.nvidia.com/vrdc-swqa/swqa-2e2-workflow/agent-me`. Daily work lives on
+  branch **`big-update`**, pushed to GitLab on every commit (a `.git/hooks/post-commit`
+  hook auto-pushes). The `github` remote (`github.com/thanhpt1110/agent-me`) is a
+  **public mirror only** — never push there from automated flows. **`gh` is not
+  installed on this host; use plain `git`.**
+- **Default model:** Claude Opus 4.8 — always pick best/thinking-best, no cost limit
 
 ## How to start any session here
 

@@ -104,6 +104,48 @@ CLI turn** through `spawn_claude` — a 0-tool "PONG" turn now renders
 `src/agent_me/slack_bridge/CLAUDE.md`; discussion:
 [`discussions/2026-06-27-slack-live-progress.md`](discussions/2026-06-27-slack-live-progress.md)._
 
+_Addendum 2026-06-27 (GitLab remote + chat context + chat perf) by Claude (branch
+`big-update`) — **Fixed the DEV `/chat` "doesn't understand context / no gh / works on
+main" confusion and optimised chat performance.** Root cause was the git remote, not the
+chat: `origin` pointed at GitHub (no `gh`, no creds on this host), and `big-update` had
+never been pushed, so the chat agent's `git push` failed and its `origin/main` mentions
+read like "working on main". The chat itself already ran correctly in
+`/home/thaphan/agent-me` on `big-update` with Opus 4.8._
+
+- **Git → GitLab** (this CPU host `agent-me.nvidia.com`, **not** the A100): `origin`
+  now → `gitlab-master.nvidia.com/vrdc-swqa/swqa-2e2-workflow/agent-me` (matches the
+  sibling `agent-me-qa-handsfree` repo); GitHub kept as `github` (public mirror).
+  Identity `Thanh Phan <thaphan@nvidia.com>`, credential store uses the write-scoped
+  PAT, `big-update` pushed + tracking `origin/big-update`. **`.git/hooks/post-commit`
+  auto-pushes `big-update` to GitLab on every commit** (background, skips rebase/merge;
+  `GIT_AUTO_PUSH=0` opts out; logs to `data/auto-push.log`). `gh` is not installed here.
+- **Chat operating context** (`dashboard/chat/config.py`): `CHAT_APPEND_SYSTEM_PROMPT`
+  injects host/repo/`big-update`/origin=GitLab/push-after-commit/no-`gh` into every turn
+  (env-overridable; empty disables). `CHAT_MODEL` now defaults to `claude-opus-4-8`.
+  Passed through `ChatService` → runner.
+- **Chat performance**: replaced the Tailwind **Play CDN** (in-browser JIT that re-ran a
+  MutationObserver scan on every DOM change → slow load + lag while streaming) with a
+  compiled static stylesheet `static/tailwind.css` (build: `scripts/tailwind/build.sh`,
+  `npx tailwindcss@3` — no `node_modules` committed). Vendored Alpine to
+  `static/alpine.min.js` (pinned 3.15.12) so a 24/7 service doesn't depend on unpkg.
+- **Session clarity** (`chat.html` + `app.py`): header badge shows `big-update @ agent-me`
+  (+ cwd tooltip); sidebar shows a `RUN` pill for busy sessions; a 4s visible-tab poll
+  keeps every session's run-dot live even while viewing another; header shows
+  "another session running" / "N sessions running".
+
+Next: deploy the Slack live-progress fix to wherever the bot actually runs (no bridge runs
+on this host — the bot the operator tested is elsewhere on pre-fix code; see task below).
+Blockers: real in-browser click-test still can't run here (chromium GUI libs absent, no
+passwordless sudo) — operator can verify in their own browser.
+
+Verified: `uv run ruff check` clean; `uv run python -m pytest -q` **248 passed** (incl. new
+`test_chat.py` operating-context tests); compiled CSS contains every used class + Preflight;
+DEV dashboard restarted healthy on :8787, serves `tailwind.css`/`alpine.min.js`, no CDN refs;
+**a real `/chat` turn** (unlock → create → message → SSE) ran in `cwd=/home/thaphan/agent-me`,
+model `claude-opus-4-8`, and correctly reported host/branch=`big-update`/origin=GitLab;
+`node --check` on the chat JS passed; `big-update` pushed to GitLab and the auto-push hook
+verified. Discussion: [`discussions/2026-06-27-gitlab-remote-and-chat-perf.md`](discussions/2026-06-27-gitlab-remote-and-chat-perf.md)._
+
 ## Phase
 
 **Phase 2a + brief fan-out + Slack session persistence live + Phase 4
@@ -239,7 +281,7 @@ Auto SFA MCP endpoint at `/mcp/`. Current live services:
 |---|---|
 | Runtime host | cloud host CPU instance (24/7) — Phase 3 |
 | Primary interface | Personal Slack workspace (Socket Mode bridge) |
-| Config repo | Personal GitHub, **public template** (`thanhpt1110/agent-me`) |
+| Config repo | **Working remote = GitLab `origin`** `gitlab-master.nvidia.com/vrdc-swqa/swqa-2e2-workflow/agent-me` (branch `big-update`, auto-pushed per commit). GitHub `github` = public mirror (`thanhpt1110/agent-me`). `gh` not installed on host. |
 | Default model | Codex via `codex exec` for reads/chat and `codex debug app-server` for permissioned connector/MCP writes (`CODEX_MODEL`, default `gpt-5.5`) |
 | MCP backend | **Codex app/MCP tools**; PA/Claude runtime hybrid retired |
 | Git identity | User requested primary commits as `Thanh Phan <thaphan@nvidia.com>` with `Co-authored-by: Codex <codex@openai.com>` when Codex contributes |

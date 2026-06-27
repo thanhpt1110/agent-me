@@ -82,62 +82,11 @@
     })();
   </script>
 
-  <!-- Tailwind via CDN keeps the draft zero-build. Switch to compiled
-       Tailwind once the layout settles. -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    // Official NVIDIA brand palette (black + green) sourced from
-    // api.nth.nvidia.com colormap.css. `ink.*` and `accent.*` are kept as
-    // aliases so every existing template re-themes without per-file edits.
-    tailwind.config = {
-      darkMode: "class",
-      theme: {
-        extend: {
-          colors: {
-            nvgreen: {
-              100: "#cfff40",
-              200: "#a5de15",
-              300: "#76b900",
-              500: "#549a00",
-              700: "#3f8500",
-              900: "#265600",
-            },
-            nvgray: {
-              50:  "#eeeeee",
-              100: "#cccccc",
-              200: "#a7a7a7",
-              300: "#898989",
-              500: "#4b4b4b",
-              700: "#313131",
-              800: "#222222",
-              900: "#1a1a1a",
-              950: "#0a0a0a",
-            },
-            ink: {
-              950: "#000000",
-              900: "#0a0a0a",
-              800: "#1a1a1a",
-              700: "#313131",
-              600: "#4b4b4b",
-            },
-            accent: {
-              400: "#76b900",
-              500: "#549a00",
-              600: "#3f8500",
-            },
-          },
-          fontFamily: {
-            // NVIDIA Sans is the brand UI font (not licensed for self-hosting,
-            // so we don't @font-face it). Falls back to Inter — NVIDIA's own
-            // open design-system default — then the system stack.
-            sans: ["NVIDIA Sans", "Inter", "ui-sans-serif", "system-ui",
-                   "-apple-system", "Segoe UI", "Roboto", "Helvetica", "Arial", "sans-serif"],
-            mono: ["JetBrains Mono", "ui-monospace", "monospace"],
-          },
-        },
-      },
-    };
-  </script>
+  <!-- Compiled Tailwind (NVIDIA palette baked in). Replaced the Play CDN, which
+       compiled in-browser and re-ran a MutationObserver scan on every DOM change
+       — slow initial load + lag while streaming chat. Regenerate after changing
+       template class names: scripts/tailwind/build.sh -->
+  <link rel="stylesheet" href="/static/tailwind.css" />
 
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="icon" type="image/svg+xml" href="/static/agent-me-avatar.svg" />
@@ -215,7 +164,9 @@
 
   {% block scripts %}{% endblock %}
   <!-- Alpine.js for sprinkled reactivity (SSE wiring, refresh state).
-       Load after page scripts so x-data factories exist before Alpine starts. -->
-  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+       Load after page scripts so x-data factories exist before Alpine starts.
+       Self-hosted + pinned (static/alpine.version.txt) — no external runtime
+       dependency / redirect; a 24/7 service must not depend on unpkg being up. -->
+  <script defer src="/static/alpine.min.js"></script>
 </body>
 </html>
