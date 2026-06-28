@@ -170,6 +170,13 @@ _Addendum 2026-06-28 (later) by Claude (branch `big-update`) — **Chat folder p
 
 Verified: `uv run ruff check` clean; `uv run python -m pytest -q` **290 passed** (+ folder-options/cwd-validation/nav-sources tests; the `auto_sfa` timing test still flakes, passes on retry); DEV dashboard restarted on :8787 — `/chat` now renders 8 Sources links + the folder `<select>`, `GET /api/chat/folders` returns the repo + sibling repos, the keybind handler/note are gone; `node --check` on the chat JS passes; Slack `HELP/version` render "Claude". Discussion: [`discussions/2026-06-28-session-sync-and-chat-ux.md`](discussions/2026-06-28-session-sync-and-chat-ux.md)._
 
+_Addendum 2026-06-28 (folder-picker visible + A100 .env) by Claude — **Follow-ups.**_
+
+- _**Folder picker was invisible.** It was gated `x-show="!currentId"`, but the page auto-selects the first session on load, so `currentId` is always set → the picker never showed. Now it's a **persistent header control**: folder icon + `<select>` + an inline `+ New` button (pick a folder → New spawns the agent there). It only sets the cwd for the NEXT new chat; an active chat's folder stays fixed and is shown read-only in the title meta. Verified live on :8787 (picker served, not gated)._
+- _**A100 .env over SSH — blocked (no creds).** `ipp1-2252.ipp1a1.colossus.nvidia.com:22` is reachable from this box, but key/agent auth is refused (`Permission denied (publickey,password)`) and no SSH password is available here (no key, no `~/.ssh/config`, no vault). `sshpass` is installed but needs the password, which the operator did not provide — so main's `.env` could not be read. Per the operator's "if it doesn't work I'll handle it later", left for them to paste the real Slack tokens (or provide the A100 password/host)._
+
+Verified: `uv run ruff check` clean; `uv run python -m pytest -q` **291 passed** (auto_sfa timing test passes on retry); DEV dashboard on :8787 serves the always-visible folder picker; `node --check` passes._
+
 ## Phase
 
 **Phase 2a + brief fan-out + Slack session persistence live + Phase 4

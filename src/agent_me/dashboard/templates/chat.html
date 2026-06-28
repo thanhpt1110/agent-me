@@ -124,15 +124,23 @@
                 class="rounded border border-ink-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-danger hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
           ■ Stop
         </button>
-        <!-- folder picker: cwd to spawn the agent in for a NEW chat (locked once a
-             session starts — an active chat's folder can't change). -->
-        <select x-show="!currentId" x-cloak x-model="selectedFolder"
-                title="Folder to spawn the agent in for a new chat"
-                class="max-w-[11rem] truncate rounded border border-ink-700 bg-ink-800 px-2 py-1 text-xs text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
-          <template x-for="f in folders" :key="f">
-            <option :value="f" x-text="folderName(f)" :title="f"></option>
-          </template>
-        </select>
+        <!-- New-chat folder picker: pick a folder, then "+ New" spawns the agent
+             there. An existing chat's folder can't change (shown in the title meta);
+             this control only sets the cwd for the NEXT new chat. -->
+        <div class="flex items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5"
+             title="Folder for a new chat — pick a folder, then + New">
+          <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
+          <select x-model="selectedFolder"
+                  class="max-w-[10rem] truncate bg-transparent py-1 text-xs text-slate-300 focus:outline-none">
+            <template x-for="f in folders" :key="f">
+              <option :value="f" x-text="folderName(f)" :title="f" class="bg-ink-900 text-slate-200"></option>
+            </template>
+          </select>
+          <button type="button" @click="newSession()"
+                  class="rounded-r bg-accent-400 px-2 py-1 text-[11px] font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
+            + New
+          </button>
+        </div>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
                 title="Open a host terminal"
                 class="rounded border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100"
