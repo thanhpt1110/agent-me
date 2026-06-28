@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from .commands import discover_commands
 from .config import ChatConfig
@@ -88,9 +89,43 @@ class ChatService:
         return sorted(dicts + extra, key=lambda d: d.get("last_activity", 0), reverse=True)
 
     def create_session(self, *, title: str | None, cwd: str | None, model: str | None) -> SessionMeta:
+        chosen = (cwd or "").strip() or self._config.default_cwd
+        if not Path(chosen).expanduser().is_dir():  # never spawn into a missing dir
+            chosen = self._config.default_cwd
         return self._store.create(
-            title=title, cwd=(cwd or self._config.default_cwd), model=(model or self._config.model),
+            title=title, cwd=str(Path(chosen).expanduser()), model=(model or self._config.model),
         )
+
+    def folder_options(self) -> dict:
+        """Candidate working directories for a new chat: the repo, configured
+        add-dirs, $HOME, and sibling git repos under $HOME. The agent always
+        spawns (the runner passes ``--dangerously-skip-permissions``, which skips
+        the CLI's workspace-trust dialog), so any existing dir is safe to offer."""
+        out: list[str] = []
+
+        def add(p: str | None) -> None:
+            if not p:
+                return
+            try:
+                rp = str(Path(p).expanduser())
+            except (OSError, RuntimeError):
+                return
+            if rp not in out and Path(rp).is_dir():
+                out.append(rp)
+
+        add(self._config.default_cwd)
+        for d in self._config.add_dirs:
+            add(d)
+        home = Path.home()
+        add(str(home))
+        try:
+            for child in sorted(home.iterdir()):
+                if child.is_dir() and not child.name.startswith(".") and (child / ".git").is_dir():
+                    add(str(child))
+        except OSError:
+            pass
+        default = str(Path(self._config.default_cwd).expanduser()) if self._config.default_cwd else str(home)
+        return {"folders": out[:50], "default": default}
 
     def get_session(self, sid: str) -> dict | None:
         meta = self._store.get_meta(sid)

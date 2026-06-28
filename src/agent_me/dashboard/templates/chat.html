@@ -107,7 +107,12 @@
                   :title="'Working directory: ' + currentCwd()"
                   x-text="branch + ' @ ' + host"></span>
           </div>
-          <div class="truncate font-mono text-[11px] text-slate-500" x-text="currentCwd()"></div>
+          <div class="flex items-center gap-1.5 font-mono text-[11px] text-slate-500">
+            <span x-show="currentMeta()" x-cloak class="shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                  :class="originClass({origin: currentOrigin()})" x-text="currentOrigin()"></span>
+            <span class="truncate" :title="currentCwd()" x-text="folderName(currentCwd())"></span>
+            <span x-show="currentMeta()" x-cloak class="shrink-0" x-text="'· ' + relTime(currentMeta() && currentMeta().last_activity)"></span>
+          </div>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -119,8 +124,17 @@
                 class="rounded border border-ink-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-danger hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
           ■ Stop
         </button>
+        <!-- folder picker: cwd to spawn the agent in for a NEW chat (locked once a
+             session starts — an active chat's folder can't change). -->
+        <select x-show="!currentId" x-cloak x-model="selectedFolder"
+                title="Folder to spawn the agent in for a new chat"
+                class="max-w-[11rem] truncate rounded border border-ink-700 bg-ink-800 px-2 py-1 text-xs text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
+          <template x-for="f in folders" :key="f">
+            <option :value="f" x-text="folderName(f)" :title="f"></option>
+          </template>
+        </select>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
-                title="Open a host terminal (Ctrl+` — Cmd+` may be reserved by macOS)"
+                title="Open a host terminal"
                 class="rounded border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100"
                 :class="termOpen ? 'border-accent-400 text-accent-400' : 'border-ink-700 text-slate-300 hover:border-accent-400 hover:text-accent-400'">
           ⌁ Terminal
@@ -296,7 +310,7 @@
       </div>
       <div id="composer-hint" class="mt-1 px-1 text-[11px] text-slate-600">
         Type <span class="font-mono text-slate-500">/</span> for commands · Enter to send · Shift+Enter for a new line ·
-        <span class="font-mono text-slate-500">Ctrl+`</span> for a terminal · send while working to queue · turns run server-side and survive disconnects
+        send while working to queue · turns run server-side and survive disconnects
       </div>
     </form>
 
@@ -344,6 +358,8 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
   return {
     sessions: initialSessions || [],
     defaultCwd: defaultCwd || "",
+    folders: [],                       // candidate spawn folders for a new chat
+    selectedFolder: defaultCwd || "",  // chosen folder for the NEXT new chat
     locked: !!locked,
     host: host || "host",
     branch: branch || "?",
@@ -407,19 +423,6 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) this.stopPolling(); else if (!this.locked) this.startPolling();
       });
-      // Toggle the host terminal. Ctrl+` / Ctrl+~ works on every platform (the
-      // IDE convention). Cmd+` / Cmd+~ is also accepted, but macOS reserves those
-      // for window-cycling and usually swallows them before the page — so Ctrl+`
-      // is the reliable shortcut on a Mac. `e.code` covers non-US layouts.
-      window.addEventListener("keydown", (e) => {
-        if (e.altKey) return;
-        const backtick = e.key === "`" || e.key === "~" || e.code === "Backquote";
-        if (!backtick) return;
-        if (!((e.ctrlKey && !e.metaKey) || (e.metaKey && !e.ctrlKey))) return;
-        if (!this.terminalEnabled || this.locked) return;
-        e.preventDefault();
-        this.toggleTerminal();
-      });
       // Delegated: copy buttons live inside x-html, so Alpine @click can't bind them.
       this.$refs.scroll?.addEventListener("click", (e) => {
         const btn = e.target.closest(".chat-copy");
@@ -439,7 +442,27 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       if (this.sessions.length) this.selectSession(this.sessions[0].id);
       this.startPolling();
       this.loadCommands();
+      this.loadFolders();
     },
+
+    async loadFolders() {
+      try {
+        const r = await fetch("/api/chat/folders");
+        if (r.status === 403) { this.relock(); return; }
+        if (!r.ok) return;
+        const d = await r.json();
+        this.folders = d.folders || [];
+        if (!this.selectedFolder || !this.folders.includes(this.selectedFolder)) {
+          this.selectedFolder = d.default || this.defaultCwd;
+        }
+      } catch (e) { /* keep defaults */ }
+    },
+    folderName(path) {
+      if (!path) return "";
+      const parts = String(path).replace(/\/+$/, "").split("/");
+      return parts[parts.length - 1] || path;
+    },
+    currentOrigin() { const m = this.currentMeta(); return (m && m.origin) || "web"; },
 
     // ---- live session run-state (so the sidebar dots are accurate across sessions) ----
     startPolling() {
@@ -519,7 +542,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     async newSession() {
       const r = await fetch("/api/chat/sessions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: this.defaultCwd }),
+        body: JSON.stringify({ cwd: this.selectedFolder || this.defaultCwd }),
       });
       if (r.status === 403) { this.relock(); return; }
       const meta = await r.json();

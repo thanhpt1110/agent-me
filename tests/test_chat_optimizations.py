@@ -179,6 +179,18 @@ def test_http_rename_and_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.patch(f"/api/chat/sessions/{sid}", json={"title": "   "}).status_code == 400
     assert client.patch("/api/chat/sessions/nope", json={"title": "x"}).status_code == 404
 
+
+def test_chat_page_nav_sources_and_folder_picker(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DASHBOARD_OPERATOR_ACTION_CODE", raising=False)
+    from agent_me.dashboard import app as dash
+    # `sources` is a template global so every page (incl. /chat) renders the nav
+    # Sources dropdown — it used to be empty on /chat (regression guard).
+    assert "sources" in dash.TEMPLATES.env.globals
+    client = TestClient(dash.app)
+    assert 'href="/source/' in client.get("/chat").text
+    folders = client.get("/api/chat/folders")
+    assert folders.status_code == 200 and folders.json()["folders"]
+
     cmds = client.get("/api/chat/commands")
     assert cmds.status_code == 200
     assert any(c["source"] == "builtin" for c in cmds.json()["commands"])

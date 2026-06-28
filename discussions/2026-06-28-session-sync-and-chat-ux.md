@@ -82,3 +82,31 @@ series of operator requests over one session (summarised in English).
 - DEV dashboard restarted on :8787; served `/chat` + `app.css` contain all new symbols.
 - `node --check` on the chat JS passes; `x-data` stays single-quoted (guard intact).
 - Real in-browser click-test still pending host chromium GUI libs (operator can verify).
+
+## Round 2 (later same day): folder picker, nav fix, terminal-shortcut removal, Codex→Claude
+
+More operator requests:
+
+- **.env**: reuse main's .env for big-update but with agent=claude. Finding: `AGENT_BACKEND=claude`
+  is already set, and `configs/.env` is gitignored (one untracked file shared across branches —
+  nothing branch-specific to copy). The Slack tokens are `REPLACE-ME` placeholders and
+  `SLACK_ALLOWED_USER_ID` is empty (the bridge's `REQUIRED_ENV` check rejects `REPLACE-ME`). The
+  real secrets live only in main's deployment, unreachable from this host — operator must paste
+  them. No bridge runs here, so the dashboard/chat are unaffected.
+- **Sources dropdown empty on /chat**: `partials/nav.html` iterates `sources`, passed per-page;
+  `page_chat` didn't pass it → empty. Fix: `sources` is now a Jinja global, so every page renders it.
+- **Terminal shortcut**: `Ctrl+`/Cmd+`` unreliable (macOS reserves Cmd+`); removed the keydown
+  handler + note + tooltip mention. The ⌁ Terminal button still works (PTY/WS verified earlier).
+- **Codex → Claude (Slack bot)**: added `AGENT_LABEL` (Claude unless `AGENT_BACKEND=codex`) and
+  routed user-facing copy through it (help/version/reset/reauth/mcp/connector-write/menu).
+  `version` now reports the active agent's CLI version. Legacy codex-only paths kept accurate.
+- **Folder picker (new chat)**: `<select>` next to the Terminal button (shown only when no session
+  is active) chooses the spawn cwd; `GET /api/chat/folders` lists repo + `CHAT_ADD_DIRS` + `$HOME` +
+  sibling git repos. `create_session` validates the cwd. The agent always spawns because the runner
+  passes `--dangerously-skip-permissions` (skips the CLI trust dialog — verified `claude -p` runs in
+  a fresh untrusted temp dir). Folder is fixed once a session starts; the title meta line shows
+  origin badge · folder name · relative time.
+
+Verified: ruff clean; 290 passed (auto_sfa flake passes on retry); DEV dashboard on :8787 renders 8
+Sources links + the folder select; `/api/chat/folders` returns repo + siblings; keybind/note gone;
+node --check passes; Slack help/version render "Claude".

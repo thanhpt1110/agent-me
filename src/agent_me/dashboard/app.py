@@ -591,6 +591,9 @@ TEMPLATES.env.filters["age"] = _ms_to_human
 TEMPLATES.env.filters["datetime_label"] = _ms_to_datetime_label
 TEMPLATES.env.globals["dashboard_release_info"] = dashboard_release_info
 TEMPLATES.env.globals["deploy_env"] = DEPLOY_ENV
+# The shared nav (partials/nav.html) iterates `sources`; expose it to every page
+# (incl. /chat, which didn't pass it → the Sources dropdown rendered empty).
+TEMPLATES.env.globals["sources"] = SOURCES
 
 
 # ── Routes: HTML pages ───────────────────────────────────────────────────
@@ -1355,6 +1358,13 @@ async def api_chat_commands(request: Request):
     return JSONResponse({"commands": CHAT_SERVICE.available_commands()})
 
 
+async def api_chat_folders(request: Request):
+    """Candidate folders to spawn a new chat's agent in (folder picker)."""
+    if (blocked := _chat_guard(request)):
+        return blocked
+    return JSONResponse(CHAT_SERVICE.folder_options())
+
+
 async def api_chat_history(request: Request):
     """Older transcript events for scroll-up paging (cursor from the SSE snapshot)."""
     if (blocked := _chat_guard(request)):
@@ -1562,6 +1572,7 @@ def build_app() -> Starlette:
         Route("/api/chat/sessions/{session_id}", api_chat_session,
               methods=["GET", "DELETE", "PATCH"], name="api_chat_session"),
         Route("/api/chat/commands", api_chat_commands, name="api_chat_commands"),
+        Route("/api/chat/folders", api_chat_folders, name="api_chat_folders"),
         Route("/api/chat/sessions/{session_id}/history", api_chat_history,
               name="api_chat_history"),
         Route("/api/chat/sessions/{session_id}/message", api_chat_message,

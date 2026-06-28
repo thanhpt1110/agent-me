@@ -641,6 +641,8 @@ CHAT_CWD.mkdir(parents=True, exist_ok=True)
 # The interactive Slack agent runs claude inside the agent-me workspace, so a
 # Slack prompt behaves like a terminal session: read/edit files, shell, git, MCP.
 AGENT_BACKEND = (os.environ.get("AGENT_BACKEND") or "claude").strip().lower()
+# User-facing name of the active agent (Slack copy follows the real backend).
+AGENT_LABEL = "Codex" if AGENT_BACKEND == "codex" else "Claude"
 CLAUDE_BIN = resolve_cli_bin("CLAUDE_BIN", "claude")
 SLACK_AGENT_CWD = (os.environ.get("SLACK_AGENT_CWD") or str(REPO_DIR)).strip()
 CLAUDE_MODEL = (
@@ -1277,14 +1279,14 @@ HELP_TEXT = "\n".join((
     "• `release sfa tasks` / `auto sfa` — release existing SFA tasks by display name or optional task IDs",
     "• `model free draft` — find latest `Model Free 2.0` email and create a reply-all Outlook draft",
     "• `mcp` / `/mcp` — list MCP server health & auth status",
-    "• `mcp refresh` / `/mcp refresh` — force-refresh MaaS OAuth tokens, rewrite persistent Codex MCP env, and verify",
-    "• `reauth` / `/reauth` — trigger Codex MCP re-auth helper",
-    "• `reset` / `clear` / `new` — start a fresh Codex session for this thread (drops prior context)",
+    "• `mcp refresh` / `/mcp refresh` — force-refresh MaaS OAuth tokens, rewrite persistent MCP env, and verify",
+    "• `reauth` / `/reauth` — trigger the MCP re-auth helper",
+    f"• `reset` / `clear` / `new` — start a fresh {AGENT_LABEL} session for this thread (drops prior context)",
     "• `whoami` / `/whoami` — show your Slack user id",
-    "• `version` / `/version` — bridge + Codex versions and pinned model",
+    f"• `version` / `/version` — bridge + {AGENT_LABEL} versions and pinned model",
     "• `help` / `/help` — this message",
     "",
-    "_Anything else is sent to Codex — context is preserved per Slack thread (reply-in-thread to keep the conversation going; new top-level message = fresh session)._",
+    f"_Anything else is sent to {AGENT_LABEL} — context is preserved per Slack thread (reply-in-thread to keep the conversation going; new top-level message = fresh session)._",
     "_The bridge auto-checks MCP auth health every 6h and DMs you when re-auth is needed._",
     "_Daily morning routine fires at 6am Vietnam time when the bridge is running._",
 ))
@@ -1332,7 +1334,7 @@ async def cmd_mcp(refresh: bool = False) -> str:
                 "refresh metadata."
             )
         refresh_note = (
-            "🔄 *Refreshed Codex MCP env* from "
+            "🔄 *Refreshed MCP env* from "
             f"`{credentials_path()}`.\n"
             f"{refresh_summary}\n"
             f"Wrote `{count}` token export(s) to `{codex_mcp_env_file_path()}` "
@@ -1357,18 +1359,19 @@ async def cmd_mcp(refresh: bool = False) -> str:
         )
     return (
         refresh_note +
-        "`codex mcp list`:\n```\n" + out.strip() + "\n```\n"
-        "_Codex app plugins for Teams/Slack/Outlook/GDrive are enabled separately; "
-        "this list shows extra Codex MCP servers such as MaaS/NVBugs._"
+        "*MCP servers:*\n```\n" + out.strip() + "\n```\n"
+        "_App plugins for Teams/Slack/Outlook/GDrive are enabled separately; "
+        "this list shows extra MCP servers such as MaaS/NVBugs._"
         + token_note
     )
 
 
 async def cmd_version() -> str:
-    ver = (await run_command([CODEX_BIN, "--version"], cwd=str(REPO_DIR))).strip()
+    agent_bin = CODEX_BIN if AGENT_BACKEND == "codex" else CLAUDE_BIN
+    ver = (await run_command([agent_bin, "--version"], cwd=str(REPO_DIR))).strip()
     return (
-        f"*Bridge:* python · *Agent:* Codex · *Model:* `{MODEL}`\n"
-        f"*Codex CLI:* `{ver}`\n"
+        f"*Bridge:* python · *Agent:* {AGENT_LABEL} · *Model:* `{MODEL}`\n"
+        f"*{AGENT_LABEL} CLI:* `{ver}`\n"
         f"*Repo:* `{REPO_DIR}`"
     )
 
@@ -1684,7 +1687,7 @@ async def cmd_outlook_app_server_write(user_request: str) -> str:
 
 
 async def cmd_reset(thread_ts: str | None) -> str:
-    """Drop the Codex session for this thread so the next message
+    """Drop the agent session for this thread so the next message
     starts a fresh conversation. The audit `messages` table is left
     intact — only the session pointer is cleared."""
     if not thread_ts:
@@ -1695,7 +1698,7 @@ async def cmd_reset(thread_ts: str | None) -> str:
     old = await clear_session(thread_ts)
     if not old:
         return (
-            "Info: This thread has no active Codex session yet — your next "
+            f"Info: This thread has no active {AGENT_LABEL} session yet — your next "
             "message starts a new one automatically."
         )
     return (
@@ -1705,7 +1708,7 @@ async def cmd_reset(thread_ts: str | None) -> str:
 
 
 async def cmd_reauth() -> str:
-    """Trigger the Codex MCP reauth helper as a detached background process."""
+    """Trigger the MCP reauth helper as a detached background process."""
     reauth_log = STATE_DIR / "codex-reauth.log"
     with reauth_log.open("ab") as out:
         await asyncio.create_subprocess_exec(
@@ -1717,8 +1720,8 @@ async def cmd_reauth() -> str:
             start_new_session=True,
         )
     return (
-        "🚀 *Codex MCP re-auth helper started* on the bridge host.\n\n"
-        "It will refresh the MaaS token store used by Codex bearer-token MCPs "
+        "🚀 *MCP re-auth helper started* on the bridge host.\n\n"
+        "It will refresh the MaaS token store used by the bearer-token MCPs "
         "and print/open auth URLs where possible. Output is written to "
         f"`{reauth_log}`. When done, run `/mcp refresh` here to persist the "
         "new env exports and verify."
@@ -2686,7 +2689,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
                 client,
                 channel,
                 placeholder_ts,
-                "🔄 routing connector/MCP write through Codex app-server auto-review…",
+                "🔄 routing connector/MCP write through app-server auto-review…",
             )
             result = await cmd_permissioned_app_server_write(cleaned)
             await update_progress(client, channel, placeholder_ts, result)
@@ -3321,7 +3324,7 @@ async def run_morning_routine(client) -> None:
 
     # All MCPs healthy → action menu.
     intro = (
-        "✅ *Codex MCPs connected.*\n\n"
+        "✅ *MCPs connected.*\n\n"
         "What would you like to do?"
     )
     await client.chat_postMessage(

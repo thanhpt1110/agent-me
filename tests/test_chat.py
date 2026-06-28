@@ -249,6 +249,26 @@ async def test_tail_and_scroll_up_paging(tmp_path: Path) -> None:
     assert [e["text"] for e in rebuilt] == [f"m{i}" for i in range(50)]
 
 
+def test_folder_options_lists_default_and_dirs(tmp_path: Path) -> None:
+    sub = tmp_path / "proj"
+    sub.mkdir()
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), add_dirs=(str(sub),))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    opts = svc.folder_options()
+    assert opts["default"] == str(tmp_path)
+    assert str(tmp_path) in opts["folders"] and str(sub) in opts["folders"]
+
+
+def test_create_session_validates_cwd(tmp_path: Path) -> None:
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    # a missing folder falls back to the default (never spawn into a dead cwd)
+    assert svc.create_session(title=None, cwd="/no/such/dir/zzz", model=None).cwd == str(tmp_path)
+    sub = tmp_path / "ok"
+    sub.mkdir()
+    assert svc.create_session(title=None, cwd=str(sub), model=None).cwd == str(sub)
+
+
 class GatedRunner:
     """A runner whose turn blocks on a gate so a turn can be observed mid-flight."""
 
