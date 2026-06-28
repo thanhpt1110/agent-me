@@ -1,0 +1,2 @@
+xterm 5.5.0
+addon-fit 0.10.0

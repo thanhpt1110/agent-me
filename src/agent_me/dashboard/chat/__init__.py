@@ -8,11 +8,23 @@ from __future__ import annotations
 import os
 
 from .config import ChatConfig
+from .mirror import WebSessionMirror, web_session_id_for
 from .runner import ClaudeCliRunner
 from .service import ChatService
 from .store import DiskSessionStore
+from .terminal import TerminalSession, resolve_shell, stream_output
 
-__all__ = ["ChatConfig", "ChatService", "build_chat_service"]
+__all__ = [
+    "ChatConfig",
+    "ChatService",
+    "TerminalSession",
+    "WebSessionMirror",
+    "build_chat_service",
+    "build_session_mirror",
+    "resolve_shell",
+    "stream_output",
+    "web_session_id_for",
+]
 
 
 def build_chat_service(repo_dir: str | os.PathLike[str]) -> ChatService:
@@ -23,3 +35,10 @@ def build_chat_service(repo_dir: str | os.PathLike[str]) -> ChatService:
         runner=ClaudeCliRunner(config),
         config=config,
     )
+
+
+def build_session_mirror(repo_dir: str | os.PathLike[str]) -> WebSessionMirror:
+    """A mirror pointed at the SAME on-disk store the dashboard /chat reads, so
+    another process (the Slack bridge) can surface its turns in the web chat."""
+    config = ChatConfig.from_env(repo_dir)
+    return WebSessionMirror(DiskSessionStore(config.data_dir))

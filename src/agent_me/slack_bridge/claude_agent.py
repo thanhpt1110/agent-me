@@ -119,6 +119,7 @@ async def run_turn_with_progress(
     model: str | None,
     append_system_prompt: str | None = None,
     progress_cb: ProgressCb | None = None,
+    event_tap: Callable[[dict], None] | None = None,
     add_dirs: Sequence[str] = (),
     heartbeat_interval_s: float = 4.0,
 ) -> tuple[TurnResult, dict[str, Any], str]:
@@ -146,11 +147,21 @@ async def run_turn_with_progress(
     if progress_cb is not None and heartbeat_interval_s > 0:
         hb_task = asyncio.ensure_future(heartbeat())
 
+    # The Slack progress handler updates the placeholder; an optional tap also
+    # forwards every raw event to a mirror (so the turn shows up in the web chat).
+    slack_handler = make_event_handler(state, schedule)
+
+    def on_event(evt: dict) -> None:
+        if event_tap is not None:
+            with contextlib.suppress(Exception):  # mirroring must never break the turn
+                event_tap(evt)
+        slack_handler(evt)
+
     try:
         result = await runner.run_turn(
             prompt=prompt, cwd=cwd, session_id=session_id, resume=resume,
             model=model, add_dirs=tuple(add_dirs),
-            on_event=make_event_handler(state, schedule),
+            on_event=on_event,
             append_system_prompt=append_system_prompt,
         )
     finally:

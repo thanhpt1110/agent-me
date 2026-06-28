@@ -12,9 +12,11 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+from .commands import discover_commands
 from .config import ChatConfig
 from .jobs import ChatTurnJob
-from .models import EventKind, SessionMeta, make_event
+from .local_sessions import purge_local_sessions
+from .models import EventKind, SessionMeta, make_event, now_ms
 from .runner import ClaudeRunner
 from .store import SessionStore
 
@@ -39,7 +41,30 @@ class ChatService:
         return self._store.list()
 
     def is_busy(self, sid: str) -> bool:
-        return sid in self._busy
+        # In-process turn (this dashboard) OR an external turn (e.g. Slack)
+        # still mid-flight in another process writing the same store.
+        return sid in self._busy or self._external_busy(sid)
+
+    def _external_busy(self, sid: str) -> bool:
+        """A mirrored (Slack) session is "running" while its last event isn't a
+        ``turn_end`` and it was touched recently — the window bounds a turn that
+        crashed without a terminal event so it doesn't show busy forever."""
+        if sid in self._busy:
+            return False
+        meta = self._store.get_meta(sid)
+        # Only Slack-mirrored sessions are driven by another process; a half-
+        # written web session (e.g. dashboard restart mid-turn) must not be
+        # reported busy here — its in-process job is simply gone.
+        if meta is None or meta.origin != "slack":
+            return False
+        last = self._store.last_event(sid)
+        if not last or last.get("kind") == EventKind.TURN_END.value:
+            return False
+        # Recency from the freshest persisted event ('t'), not meta.last_activity:
+        # a live turn only ever calls append_event, which never bumps last_activity.
+        last_t = last.get("t", meta.last_activity)
+        window_ms = int(self._config.external_busy_window_s * 1000)
+        return (now_ms() - int(last_t)) < window_ms
 
     def session_dicts(self) -> list[dict]:
         return [m.public_dict(busy=self.is_busy(m.id)) for m in self._store.list()]
@@ -55,8 +80,19 @@ class ChatService:
             return None
         return {"meta": meta.public_dict(busy=self.is_busy(sid)), "transcript": self._store.transcript(sid)}
 
+    def available_commands(self) -> list[dict]:
+        return [c.as_dict() for c in discover_commands(self._config.default_cwd)]
+
+    def rename_session(self, sid: str, title: str) -> dict | None:
+        clean = " ".join((title or "").split())[:120]
+        if not clean:
+            return None
+        meta = self._store.update_meta(sid, title=clean)
+        return meta.public_dict(busy=self.is_busy(sid)) if meta else None
+
     def delete_session(self, sid: str) -> bool:
-        if not self._store.exists(sid):
+        meta = self._store.get_meta(sid)
+        if meta is None:
             return False
         task = self._tasks.pop(sid, None)
         if task is not None and not task.done():
@@ -66,6 +102,15 @@ class ChatService:
             job.running = False
         self._busy.discard(sid)
         self._store.remove(sid)
+        # Also delete the CLI's own transcripts so the chat doesn't linger in
+        # `claude --resume` — but only for sessions this dashboard owns. A
+        # mirrored Slack session shares its CLI transcript with the still-live
+        # Slack thread; removing the web copy must not break Slack resume.
+        if meta.origin != "slack":
+            purge_local_sessions(
+                self._config.claude_projects_dir, meta.cwd,
+                [sid, meta.claude_session_id, *meta.claude_session_ids],
+            )
         return True
 
     # -- commands -------------------------------------------------------------
@@ -77,7 +122,10 @@ class ChatService:
             return False, "not_found"
         if not (text or "").strip():
             return False, "empty"
-        if sid in self._busy:
+        # Reject if a turn is already running here OR externally (a mirrored
+        # Slack turn in the bridge process) — else two writers would interleave
+        # events into one transcript and collide on seq.
+        if self.is_busy(sid):
             return False, "busy"
 
         self._busy.add(sid)
@@ -134,8 +182,12 @@ class ChatService:
                     EventKind.ERROR,
                     text=f"claude exited with an error (code {result.exit_code}). {last[:300]}".rstrip()))
             # Pin/refresh the resumable session id even on error so the next turn resumes.
+            new_sid = result.session_id or meta.claude_session_id
+            seen = list(dict.fromkeys(
+                s for s in [*meta.claude_session_ids, meta.claude_session_id, new_sid] if s
+            ))
             self._store.update_meta(
-                sid, claude_session_id=(result.session_id or meta.claude_session_id),
+                sid, claude_session_id=new_sid, claude_session_ids=seen,
                 claude_started=True, turns=meta.turns + 1,
             )
         except asyncio.CancelledError:
@@ -160,10 +212,42 @@ class ChatService:
             yield make_event(EventKind.ERROR, text="session not found")
             return
         job = self._jobs.get(sid)
-        for event in self._store.transcript(sid):   # full history (each has seq)
-            yield event
-        if job is None:                              # idle: tell client to close
-            yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
+        if job is not None:
+            for event in self._store.transcript(sid):    # full history (each has seq)
+                yield event
+            async for event in job.subscribe_events():   # live (buffer overlap deduped by seq)
+                yield event
             return
-        async for event in job.subscribe_events():   # live (buffer overlap deduped by seq)
+        # No in-process job. Read the transcript once (events + byte offset) and
+        # replay it; then either tail an external (Slack) in-flight turn so the
+        # browser streams it live too, or tell the client to close.
+        history, offset = self._store.transcript_since(sid, 0)
+        for event in history:
             yield event
+        if self._external_busy(sid):
+            async for event in self._tail_external(sid, offset):
+                yield event
+        else:
+            yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
+
+    async def _tail_external(self, sid: str, offset: int) -> AsyncIterator[dict]:
+        """Poll the on-disk transcript for events appended by another process
+        (a Slack turn), yielding only the newly-appended tail (by byte offset)
+        until ``turn_end`` or the turn goes quiet past the keepalive window."""
+        poll = max(0.05, self._config.external_tail_poll_s)
+        idle = 0.0
+        while True:
+            await asyncio.sleep(poll)
+            events, offset = self._store.transcript_since(sid, offset)
+            if events:
+                for event in events:
+                    yield event
+                    if event.get("kind") == EventKind.TURN_END.value:
+                        return
+                idle = 0.0
+                continue
+            idle += poll
+            if idle >= self._config.keepalive_s:      # gone quiet → assume done/dead
+                yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
+                return
+            yield make_event(EventKind.TIMEOUT, note="tail-keepalive")

@@ -33,9 +33,10 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from agent_me.auto_sfa import (
     AutoSFAValidationError,
@@ -64,6 +65,7 @@ from agent_me.dashboard.auth import (
     AuthMiddleware,
     auth_required_for_public_bind,
     issue_cookie_value,
+    verify_cookie,
 )
 from agent_me.dashboard.auto_sfa_runner import AutoSFARunner
 from agent_me.dashboard.brief_runner import BriefRunner
@@ -121,7 +123,12 @@ RUNNER = BriefRunner()
 AUTO_SFA_RUNNER = AutoSFARunner()
 
 # Native chat feature (DEV migration target). DEPLOY_ENV drives the global banner.
-from agent_me.dashboard.chat import build_chat_service  # noqa: E402
+from agent_me.dashboard.chat import (  # noqa: E402
+    TerminalSession,
+    build_chat_service,
+    resolve_shell,
+    stream_output,
+)
 
 DEPLOY_ENV = os.environ.get("DEPLOY_ENV", "production").strip().lower()
 try:
@@ -1279,10 +1286,12 @@ async def page_chat(request: Request):
     locked = chat_locked(request)
     sessions = [] if locked else (CHAT_SERVICE.session_dicts() if CHAT_SERVICE else [])
     default_cwd = CHAT_SERVICE.config.default_cwd if CHAT_SERVICE else ""
+    terminal_enabled = bool(CHAT_SERVICE and CHAT_SERVICE.config.terminal_enabled)
     return TEMPLATES.TemplateResponse(request, "chat.html", {
         "sessions_json": sessions, "default_cwd": default_cwd,
         "chat_enabled": CHAT_SERVICE is not None,
         "chat_locked": locked,
+        "chat_terminal_enabled": terminal_enabled,
         "chat_host": os.uname().nodename,
         "chat_branch": _git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "?",
     })
@@ -1325,10 +1334,25 @@ async def api_chat_session(request: Request):
         if not CHAT_SERVICE.delete_session(sid):
             return JSONResponse({"error": "not found"}, status_code=404)
         return JSONResponse({"ok": True})
+    if request.method == "PATCH":
+        body, err = await _chat_json(request)
+        if err:
+            return err
+        meta = CHAT_SERVICE.rename_session(sid, str(body.get("title", "")))
+        if meta is None:
+            status = 404 if CHAT_SERVICE.get_session(sid) is None else 400
+            return JSONResponse({"error": "rename failed"}, status_code=status)
+        return JSONResponse(meta)
     data = CHAT_SERVICE.get_session(sid)
     if data is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(data)
+
+
+async def api_chat_commands(request: Request):
+    if (blocked := _chat_guard(request)):
+        return blocked
+    return JSONResponse({"commands": CHAT_SERVICE.available_commands()})
 
 
 async def api_chat_message(request: Request):
@@ -1363,6 +1387,77 @@ async def sse_chat(request: Request):
             yield {"event": evt.get("kind", "message"),
                    "data": json.dumps(evt, ensure_ascii=False, default=str)}
     return EventSourceResponse(stream())
+
+
+# ── Chat terminal (Ctrl+~): PTY-backed host shell over a WebSocket ───────
+# BaseHTTPMiddleware does not see WebSocket scopes, so auth is enforced here:
+# the operator-passcode gate (same as /chat) plus dashboard-token parity.
+
+def _ws_dashboard_authorized(websocket: WebSocket) -> bool:
+    expected = os.environ.get("DASHBOARD_TOKEN", "").strip()
+    if not expected:  # trust-network / loopback dev — mirrors AuthMiddleware
+        return True
+    cookie = websocket.cookies.get(COOKIE_NAME)
+    if cookie and verify_cookie(cookie):
+        return True
+    auth = websocket.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        return secrets.compare_digest(auth.removeprefix("Bearer ").strip(), expected)
+    return False
+
+
+async def ws_chat_terminal(websocket: WebSocket):
+    svc = CHAT_SERVICE
+    if svc is None or not svc.config.terminal_enabled:
+        await websocket.close(code=1011)
+        return
+    if not _ws_dashboard_authorized(websocket) or chat_locked(websocket):
+        await websocket.close(code=1008)  # unauthorized / chat locked
+        return
+
+    await websocket.accept()
+    cfg = svc.config
+    session = TerminalSession(
+        shell=resolve_shell(cfg.terminal_shell or None),
+        cwd=(cfg.terminal_cwd or cfg.default_cwd),
+    )
+    try:
+        session.start()
+    except Exception:
+        log.exception("chat terminal failed to start")
+        with contextlib.suppress(Exception):
+            await websocket.send_text("\r\n\x1b[31m[failed to start shell]\x1b[0m\r\n")
+            await websocket.close(code=1011)
+        return
+
+    async def _close_when_shell_exits(_task) -> None:
+        with contextlib.suppress(Exception):
+            await websocket.close()
+
+    pump = asyncio.ensure_future(stream_output(session, websocket.send_text))
+    pump.add_done_callback(lambda t: asyncio.ensure_future(_close_when_shell_exits(t)))
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                session.write(raw)
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("type") == "resize":
+                with contextlib.suppress(TypeError, ValueError):
+                    session.resize(int(msg.get("cols", 80)), int(msg.get("rows", 24)))
+            else:
+                session.write(str(msg.get("data", "")))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        log.exception("chat terminal websocket error")
+    finally:
+        pump.cancel()
+        session.close()
 
 
 # ── Healthz / login ─────────────────────────────────────────────────────
@@ -1451,12 +1546,14 @@ def build_app() -> Starlette:
         Route("/api/chat/sessions", api_chat_sessions, methods=["GET", "POST"],
               name="api_chat_sessions"),
         Route("/api/chat/sessions/{session_id}", api_chat_session,
-              methods=["GET", "DELETE"], name="api_chat_session"),
+              methods=["GET", "DELETE", "PATCH"], name="api_chat_session"),
+        Route("/api/chat/commands", api_chat_commands, name="api_chat_commands"),
         Route("/api/chat/sessions/{session_id}/message", api_chat_message,
               methods=["POST"], name="api_chat_message"),
         Route("/api/chat/sessions/{session_id}/cancel", api_chat_cancel,
               methods=["POST"], name="api_chat_cancel"),
         Route("/api/sse/chat/{session_id}", sse_chat, name="sse_chat"),
+        WebSocketRoute("/ws/chat/terminal", ws_chat_terminal, name="ws_chat_terminal"),
         Route("/healthz", healthz, name="healthz"),
         Mount("/mcp", app=auto_sfa_mcp_asgi_app(auto_sfa_mcp), name="auto_sfa_mcp"),
         Mount("/static", app=StaticFiles(directory=str(STATIC_DIR)), name="static"),

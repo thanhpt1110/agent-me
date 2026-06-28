@@ -25,10 +25,13 @@ class SessionMeta:
     cwd: str
     model: str | None = None
     claude_session_id: str | None = None  # the CLI's own id, used for --resume
+    claude_session_ids: list[str] = field(default_factory=list)  # every CLI id seen (resume can fork)
     claude_started: bool = False
     created_at: int = field(default_factory=now_ms)
     last_activity: int = field(default_factory=now_ms)
     turns: int = 0
+    origin: str = "web"               # "web" | "slack" — where the session was opened
+    slack_thread_ts: str | None = None  # Slack thread this session mirrors (origin == "slack")
 
     def public_dict(self, *, busy: bool = False) -> dict:
         """JSON-safe view for API responses (adds the in-memory ``busy`` flag)."""

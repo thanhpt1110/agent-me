@@ -71,4 +71,7 @@ asyncio_mode = "auto"
 addopts = "-q --tb=short"
 filterwarnings = [
     "ignore::DeprecationWarning:starlette.*",
+    # The chat terminal uses pty.fork; the child does only async-signal-safe
+    # syscalls (chdir/execve) so the multi-threaded-forkpty warning is mitigated.
+    "ignore:.*forkpty.*:DeprecationWarning:pty",
 ]

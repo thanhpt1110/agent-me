@@ -8,6 +8,7 @@ prototype's ``sessions.js``.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -24,6 +25,8 @@ class SessionStore(Protocol):
     def exists(self, session_id: str) -> bool: ...
     def append_event(self, session_id: str, event: dict) -> dict: ...
     def transcript(self, session_id: str) -> list[dict]: ...
+    def transcript_since(self, session_id: str, offset: int) -> tuple[list[dict], int]: ...
+    def last_event(self, session_id: str) -> dict | None: ...
     def remove(self, session_id: str) -> None: ...
 
 
@@ -54,6 +57,27 @@ class DiskSessionStore:
         # `--session-id` it and an interrupted first turn is still resumable.
         meta = SessionMeta(id=sid, title=(title or "New chat"), cwd=cwd, model=model,
                            claude_session_id=sid)
+        self._write_meta(meta)
+        self._transcript_path(sid).touch()
+        return meta
+
+    def ensure(self, sid: str, *, title: str | None, cwd: str, model: str | None = None,
+               claude_session_id: str | None = None, origin: str = "web",
+               slack_thread_ts: str | None = None) -> SessionMeta:
+        """Get the session ``sid`` or create it with that exact id (idempotent).
+
+        Used to mirror an externally-driven session (e.g. a Slack thread) into
+        this store under a deterministic id so the dashboard lists/replays it.
+        Unlike :meth:`create`, ``claude_session_id`` is stored verbatim (``None``
+        until the external turn reports the real CLI id).
+        """
+        existing = self.get_meta(sid)
+        if existing is not None:
+            return existing
+        (self._dir / sid).mkdir(parents=True, exist_ok=True)
+        meta = SessionMeta(id=sid, title=(title or "New chat"), cwd=cwd, model=model,
+                           claude_session_id=claude_session_id, origin=origin,
+                           slack_thread_ts=slack_thread_ts)
         self._write_meta(meta)
         self._transcript_path(sid).touch()
         return meta
@@ -105,6 +129,62 @@ class DiskSessionStore:
             except json.JSONDecodeError:
                 continue
         return out
+
+    def transcript_since(self, sid: str, offset: int) -> tuple[list[dict], int]:
+        """Events appended after byte ``offset`` + the new offset.
+
+        Reads only the appended tail (not the whole file), so a live tail of a
+        long transcript stays O(new bytes) per poll. A trailing partial line
+        (mid-write by another process) is left unconsumed for the next read.
+        """
+        path = self._transcript_path(sid)
+        try:
+            with path.open("rb") as fh:
+                fh.seek(offset)
+                data = fh.read()
+        except (FileNotFoundError, OSError):
+            return [], offset
+        nl = data.rfind(b"\n")
+        if nl < 0:
+            return [], offset                       # no complete line yet
+        chunk = data[: nl + 1]                       # whole, newline-terminated lines
+        new_offset = offset + len(chunk)             # exact byte advance
+        out: list[dict] = []
+        for raw in chunk.split(b"\n"):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                out.append(json.loads(raw.decode("utf-8", "replace")))
+            except json.JSONDecodeError:
+                continue
+        return out, new_offset
+
+    def last_event(self, sid: str) -> dict | None:
+        """The last persisted event, read from the file tail (no full parse).
+
+        Cheap enough to call per-session on every list refresh: only the trailing
+        few KB are read so a long transcript doesn't cost O(n) just to learn
+        whether the most recent turn finished.
+        """
+        path = self._transcript_path(sid)
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - 8192))
+                data = fh.read().decode("utf-8", "replace")
+        except (FileNotFoundError, OSError):
+            return None
+        for line in reversed(data.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+        return None
 
     def remove(self, sid: str) -> None:
         import shutil

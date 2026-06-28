@@ -11,28 +11,17 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_me.claude_agent import operating_context as _default_operating_context
+
 # Default model: the operator's standing decision is "always best/thinking-best".
 DEFAULT_CHAT_MODEL = "claude-opus-4-8"
 
 
-def _default_operating_context(repo: Path) -> str:
-    """System-level instructions so a chat turn acts on the real host setup.
-
-    Without this the spawned agent reached for ``gh``/GitHub (the repo's public
-    mirror) and got confused about the branch; the working remote is GitLab.
-    """
-    return (
-        "Operating context for this machine (authoritative):\n"
-        f"- You run on host agent-me.nvidia.com (CPU) in the repo {repo}.\n"
-        "- Always work on the `big-update` branch. Never switch to or commit on `main`.\n"
-        "- The git remote `origin` is GitLab "
-        "(gitlab-master.nvidia.com/vrdc-swqa/swqa-2e2-workflow/agent-me). "
-        "The `github` remote is a public mirror only — do not push there.\n"
-        "- `gh` is NOT installed; never use it. Use plain `git`.\n"
-        "- After you finish a requested change, commit it on `big-update` with a clear "
-        "message; a post-commit hook auto-pushes `big-update` to GitLab, so the user "
-        "sees every commit on the remote.\n"
-    )
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +37,15 @@ class ChatConfig:
     keepalive_s: float = 120.0       # SSE idle keepalive (mirrors the dashboard's 120s)
     event_buffer: int = 300          # replay buffer size for late subscribers
     subscriber_queue_max: int = 512  # per-subscriber backpressure bound
+    claude_projects_dir: Path = Path.home() / ".claude" / "projects"  # CLI session transcripts
+    terminal_enabled: bool = True    # Ctrl+~ host terminal (gated by the operator passcode)
+    terminal_shell: str = ""         # "" → resolve $SHELL / bash at connect time
+    terminal_cwd: str = ""           # "" → default_cwd
+    # Cross-process mirroring (Slack turns written to this same store by another
+    # process): tail the on-disk transcript so an in-flight external turn streams
+    # live, and treat a session as busy while its turn is unfinished and recent.
+    external_tail_poll_s: float = 1.0
+    external_busy_window_s: float = 900.0  # 15 min: bound "busy" for a crashed external turn
 
     @classmethod
     def from_env(cls, repo_dir: str | os.PathLike[str]) -> ChatConfig:
@@ -68,6 +66,7 @@ class ChatConfig:
             turn_timeout_s = float(os.environ.get("CHAT_TURN_TIMEOUT_S") or 0)
         except ValueError:
             turn_timeout_s = 0.0
+        claude_home = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
         return cls(
             data_dir=data_dir,
             default_cwd=default_cwd,
@@ -76,4 +75,8 @@ class ChatConfig:
             claude_bin=claude_bin,
             append_system_prompt=append_system_prompt,
             turn_timeout_s=turn_timeout_s,
+            claude_projects_dir=Path(claude_home) / "projects",
+            terminal_enabled=_env_flag("CHAT_TERMINAL_ENABLED", True),
+            terminal_shell=(os.environ.get("CHAT_TERMINAL_SHELL") or "").strip(),
+            terminal_cwd=(os.environ.get("CHAT_TERMINAL_CWD") or "").strip(),
         )

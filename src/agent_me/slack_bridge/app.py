@@ -66,7 +66,7 @@ from agent_me.auto_sfa import (
     run_update_template,
 )
 from agent_me.auto_sfa_history import record_auto_sfa_run
-from agent_me.claude_agent import ClaudeAgentRunner, RunnerConfig
+from agent_me.claude_agent import ClaudeAgentRunner, RunnerConfig, operating_context
 from agent_me.codex_app_server import (
     codex_app_server_args,
     run_codex_app_server,
@@ -653,6 +653,55 @@ _claude_runner = ClaudeAgentRunner(
     RunnerConfig(claude_bin=CLAUDE_BIN, turn_timeout_s=CLAUDE_TURN_TIMEOUT_S)
 )
 
+# ── Web-chat mirror ────────────────────────────────────────────────────────
+# Surface each interactive Slack turn in the dashboard /chat (same on-disk store
+# the web reads), so a Slack session syncs to the web exactly like a direct
+# chat. Best-effort: a mirror failure must never break a Slack reply. Disable
+# with SLACK_WEB_MIRROR=0.
+def _build_web_mirror():
+    if (os.environ.get("SLACK_WEB_MIRROR") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        from agent_me.dashboard.chat import build_session_mirror
+
+        mirror = build_session_mirror(REPO_DIR)
+        log.info("web_chat_mirror_enabled", cwd=SLACK_AGENT_CWD)
+        return mirror
+    except Exception as exc:  # missing dashboard deps, bad data dir, etc.
+        log.warning("web_chat_mirror_disabled", err=str(exc))
+        return None
+
+
+_web_mirror = _build_web_mirror()
+
+
+def _safe_mirror_end(web_sid: str, *, claude_session_id: str | None = None,
+                     error: str | None = None) -> None:
+    """Close a mirrored web turn; swallow any error (mirroring is best-effort)."""
+    if _web_mirror is None:
+        return
+    try:
+        _web_mirror.end_turn(web_sid, claude_session_id=claude_session_id, error=error)
+    except Exception as exc:
+        log.warning("web_mirror_end_failed", err=str(exc), web_session_id=web_sid)
+
+
+# Serialize agent turns per Slack thread: Bolt dispatches events concurrently, so
+# two fast messages in one thread would otherwise run two `claude --resume` on the
+# same session and interleave into one mirrored web transcript. Keyed by thread_ts
+# so unrelated threads never block each other. Entries are never evicted (a lock
+# must persist to keep serializing the thread's future messages); for a single-user
+# bot that is a handful of tiny objects, cleared on restart.
+_thread_locks: dict[str, asyncio.Lock] = {}
+
+
+def _thread_lock(thread_ts: str) -> asyncio.Lock:
+    lock = _thread_locks.get(thread_ts)
+    if lock is None:
+        lock = asyncio.Lock()
+        _thread_locks[thread_ts] = lock
+    return lock
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def clip(s: str | None, n: int = MAX_LOG_TEXT) -> str | None:
@@ -1128,7 +1177,10 @@ the latest inbound non-self message whose subject contains that exact version.
 
 def build_claude_system_prompt() -> str:
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
-    return CLAUDE_SYSTEM_PROMPT_TEMPLATE.format(today=today, cwd=SLACK_AGENT_CWD)
+    base = CLAUDE_SYSTEM_PROMPT_TEMPLATE.format(today=today, cwd=SLACK_AGENT_CWD)
+    # Same authoritative host/branch context the web /chat injects, so a Slack
+    # turn always works in the agent-me repo on the `big-update` branch.
+    return f"{base}\n{operating_context(SLACK_AGENT_CWD)}"
 
 
 async def spawn_claude(
@@ -1138,6 +1190,7 @@ async def spawn_claude(
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     thread_ts: str | None = None,
     append_system_prompt: str | None = None,
+    event_tap: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[str, str | None]:
     """Run one turn on claude in the workspace; returns (final_text, session_id).
 
@@ -1153,7 +1206,7 @@ async def spawn_claude(
     result, state, final = await run_turn_with_progress(
         runner=_claude_runner, prompt=prompt, cwd=SLACK_AGENT_CWD,
         session_id=session_id, resume=resume, model=CLAUDE_MODEL,
-        append_system_prompt=asp, progress_cb=progress_cb,
+        append_system_prompt=asp, progress_cb=progress_cb, event_tap=event_tap,
         heartbeat_interval_s=PROGRESS_HEARTBEAT_S,
     )
 
@@ -1180,6 +1233,7 @@ async def spawn_agent(
     resume_session_id: str | None = None,
     progress_cb: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     thread_ts: str | None = None,
+    event_tap: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[str, str | None]:
     """Dispatch one interactive turn to the configured backend (claude default)."""
     if AGENT_BACKEND == "codex":
@@ -1189,7 +1243,7 @@ async def spawn_agent(
         )
     return await spawn_claude(
         prompt, resume_session_id=resume_session_id,
-        progress_cb=progress_cb, thread_ts=thread_ts,
+        progress_cb=progress_cb, thread_ts=thread_ts, event_tap=event_tap,
     )
 
 
@@ -2675,6 +2729,27 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
     start = time.time()
     progress_cb = make_slack_progress_callback(client, channel, placeholder_ts)
 
+    # Serialize turns for this thread so two fast messages can't run concurrent
+    # `--resume` runs or interleave into one mirrored web transcript.
+    lock = _thread_lock(thread_ts)
+    await lock.acquire()
+
+    # Mirror this turn into the dashboard /chat so the Slack session syncs to the
+    # web like a direct chat (best-effort; never blocks the Slack reply).
+    web_sid = None
+    event_tap = None
+    mirror_closed = False
+    if _web_mirror is not None:
+        try:
+            web_sid = _web_mirror.begin_turn(
+                key=thread_ts, title=cleaned, cwd=SLACK_AGENT_CWD,
+                user_text=cleaned, model=CLAUDE_MODEL,
+            )
+            event_tap = _web_mirror.tap(web_sid)
+        except Exception as exc:
+            log.warning("web_mirror_begin_failed", err=str(exc), thread_ts=thread_ts)
+            web_sid = None
+
     # Codex needs a per-turn anchor to counter the "tools disconnected"
     # hallucination on resumed sessions; the claude backend carries the same
     # guidance durably in its system prompt, so it gets the raw user text.
@@ -2689,7 +2764,7 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         try:
             answer, new_sid = await spawn_agent(
                 agent_prompt, resume_session_id=existing_sid,
-                progress_cb=progress_cb, thread_ts=thread_ts,
+                progress_cb=progress_cb, thread_ts=thread_ts, event_tap=event_tap,
             )
         except SessionExpired as exc:
             # The on-disk session went away (CLI restarted, project path
@@ -2701,11 +2776,14 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
             await clear_session(thread_ts)
             answer, new_sid = await spawn_agent(
                 agent_prompt, progress_cb=progress_cb,
-                thread_ts=thread_ts,
+                thread_ts=thread_ts, event_tap=event_tap,
             )
 
         if new_sid:
             await upsert_session(thread_ts, new_sid)
+        if web_sid and _web_mirror is not None:
+            _safe_mirror_end(web_sid, claude_session_id=new_sid)
+            mirror_closed = True
 
         await progress_cb.aclose()
         final = answer if answer.strip() else "_(no output)_"
@@ -2718,16 +2796,26 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
                  ms=int((time.time() - start) * 1000),
                  model=MODEL, session_id=new_sid,
                  resumed=existing_sid is not None,
+                 web_session_id=web_sid,
                  prompt=clip(cleaned), response=clip(final))
     except Exception as exc:
         log.error("query_failed", thread_ts=thread_ts, err=str(exc),
                   ms=int((time.time() - start) * 1000), prompt=clip(cleaned))
+        if web_sid and _web_mirror is not None and not mirror_closed:
+            _safe_mirror_end(web_sid, error=str(exc))
+            mirror_closed = True
         try:
             await progress_cb.aclose()
             await update_progress(client, channel, placeholder_ts,
                                   f"⚠️ Error: `{str(exc)[:600]}`")
         except Exception as exc2:
             log.error("error_update_failed", err=str(exc2))
+    finally:
+        # Always close the mirrored turn — even on cancellation (shutdown) — so
+        # the web chat never shows the Slack session stuck "running".
+        if web_sid and _web_mirror is not None and not mirror_closed:
+            _safe_mirror_end(web_sid, error="interrupted")
+        lock.release()
 
 
 @app.event("message")

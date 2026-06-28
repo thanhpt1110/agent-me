@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Chat · agent-me{% endblock %}
 
+{% block head_extra %}
+<link rel="stylesheet" href="/static/xterm.css" />
+{% endblock %}
+
 {% block content %}
-<div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_branch | tojson }})' x-init="init()"
+<div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_branch | tojson }}, {{ chat_terminal_enabled | tojson }})' x-init="init()"
      class="relative grid grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]" style="height: calc(100dvh - 9rem);">
 
   <!-- ── Access gate (operator passcode) ──────────────────────────────── -->
@@ -49,19 +53,35 @@
     <ul class="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
       <template x-for="s in sessions" :key="s.id">
         <li>
-          <button type="button" @click="selectSession(s.id)"
-                  class="group flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-ink-800"
+          <div role="button" tabindex="0" @click="selectSession(s.id)" @keydown.enter="selectSession(s.id)"
+                  class="group flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-ink-800 cursor-pointer"
                   :class="s.id === currentId ? 'bg-ink-800 text-slate-100 ring-1 ring-ink-700' : 'text-slate-300'">
             <span class="inline-block h-2 w-2 shrink-0 rounded-full"
                   :class="s.busy ? 'bg-accent-400 animate-pulse' : 'bg-ink-600'"
                   :title="s.busy ? 'agent running' : 'idle'"></span>
-            <span class="min-w-0 flex-1 truncate" x-text="s.title || 'New chat'"></span>
+            <template x-if="editingId !== s.id">
+              <span class="min-w-0 flex-1 truncate" x-text="s.title || 'New chat'"
+                    @dblclick.stop="startRename(s)" title="Double-click to rename"></span>
+            </template>
+            <template x-if="editingId === s.id">
+              <input x-ref="renameInput" x-model="editTitle" @click.stop
+                     @keydown.enter.stop.prevent="commitRename(s.id)"
+                     @keydown.escape.stop.prevent="cancelRename()"
+                     @blur="commitRename(s.id)"
+                     class="min-w-0 flex-1 rounded border border-ink-600 bg-ink-950 px-1.5 py-0.5 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100" />
+            </template>
+            <span x-show="s.origin === 'slack'" x-cloak
+                  title="Synced from a Slack thread"
+                  class="shrink-0 rounded bg-ink-800 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-400">slack</span>
             <span x-show="s.busy" x-cloak
                   class="shrink-0 rounded bg-accent-400/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent-400">run</span>
-            <span @click.stop="deleteSession(s.id)" role="button" tabindex="0" aria-label="Delete chat"
+            <span x-show="editingId !== s.id" @click.stop="startRename(s)" role="button" tabindex="0" aria-label="Rename chat"
+                  @keydown.enter.stop="startRename(s)"
+                  class="shrink-0 opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-accent-400">✎</span>
+            <span x-show="editingId !== s.id" @click.stop="deleteSession(s.id)" role="button" tabindex="0" aria-label="Delete chat"
                   @keydown.enter.stop="deleteSession(s.id)"
-                  class="opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-danger">✕</span>
-          </button>
+                  class="shrink-0 opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-danger">✕</span>
+          </div>
         </li>
       </template>
       <li x-show="!sessions.length" class="px-2.5 py-6 text-center text-xs text-slate-500">No chats yet.</li>
@@ -69,7 +89,7 @@
   </aside>
 
   <!-- ── Main: transcript + composer ────────────────────────────────── -->
-  <section class="flex min-h-0 flex-col rounded-card border border-ink-700 bg-ink-900">
+  <section class="relative flex min-h-0 flex-col rounded-card border border-ink-700 bg-ink-900">
     <!-- header -->
     <div class="flex h-14 items-center justify-between gap-3 border-b border-ink-700 px-4">
       <div class="flex min-w-0 items-center gap-2">
@@ -94,6 +114,12 @@
                 class="rounded border border-ink-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-danger hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
           ■ Stop
         </button>
+        <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
+                title="Open a host terminal (Ctrl+~)"
+                class="rounded border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100"
+                :class="termOpen ? 'border-accent-400 text-accent-400' : 'border-ink-700 text-slate-300 hover:border-accent-400 hover:text-accent-400'">
+          ⌁ Terminal
+        </button>
         <span class="text-[11px]" :class="connected ? 'text-accent-400' : 'text-slate-500'"
               x-text="connected ? '● live' : '○ idle'"></span>
       </div>
@@ -117,6 +143,14 @@
                       x-text="p"></button>
             </template>
           </div>
+          <!-- UI preview: a real rendered code block so the Copy button + the
+               light/dark theme can be tested without spawning the agent. -->
+          <div class="mt-6 text-left">
+            <div class="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              UI preview — test the Copy button &amp; theme
+            </div>
+            <div class="prose-chat mt-1 text-sm text-slate-200" x-html="md(demoMarkdown())"></div>
+          </div>
         </div>
 
         <div x-show="!currentId" x-cloak class="mx-auto mt-16 max-w-md text-center">
@@ -133,7 +167,7 @@
 
         <!-- messages -->
         <div class="mx-auto max-w-3xl space-y-3">
-          <template x-for="(ev, i) in events" :key="i">
+          <template x-for="ev in events" :key="ev._k">
             <div>
               <!-- user -->
               <template x-if="ev.kind === 'user'">
@@ -204,33 +238,86 @@
     <!-- composer (only when a chat is selected) -->
     <form x-show="currentId" x-cloak @submit.prevent="send()" class="border-t border-ink-700 p-3">
       <div class="flex items-end gap-2">
-        <textarea x-ref="input" x-model="input" rows="1" :disabled="!currentId"
-                  @keydown.enter="onEnter($event)" @input="grow($event)"
-                  aria-describedby="composer-hint"
-                  placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"
-                  class="max-h-48 min-h-[2.5rem] flex-1 resize-none rounded-lg border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:opacity-50"></textarea>
+        <div class="relative flex-1">
+          <!-- slash-command / skill menu (like the Claude Code TUI) -->
+          <div x-show="slashOpen" x-cloak @mousedown.outside="closeSlash()"
+               class="absolute bottom-full left-0 right-0 z-30 mb-2 max-h-72 overflow-y-auto rounded-lg border border-ink-700 bg-ink-900 shadow-2xl">
+            <div class="border-b border-ink-800 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              Commands &amp; skills on this box
+            </div>
+            <template x-for="(c, i) in slashItems" :key="c.name">
+              <button type="button" @mousedown.prevent="pickCommand(c)" @mouseenter="slashIndex = i"
+                      class="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+                      :class="i === slashIndex ? 'bg-ink-800' : 'hover:bg-ink-800/60'">
+                <span class="shrink-0 font-mono text-xs font-semibold text-accent-400" x-text="c.name"></span>
+                <span class="min-w-0 flex-1 truncate text-xs text-slate-400" x-text="c.description"></span>
+                <span class="shrink-0 rounded bg-ink-800 px-1 py-0.5 text-[9px] uppercase tracking-wide text-slate-500" x-text="c.source"></span>
+              </button>
+            </template>
+            <div x-show="!slashItems.length" class="px-3 py-2 text-xs text-slate-500">No matching commands</div>
+          </div>
+          <textarea x-ref="input" x-model="input" rows="1" :disabled="!currentId"
+                    @keydown.enter="onEnter($event)" @input="onComposerInput($event)" @blur="onComposerBlur()"
+                    @keydown.arrow-down="slashNav(1, $event)" @keydown.arrow-up="slashNav(-1, $event)"
+                    @keydown.tab="onTab($event)" @keydown.escape="onEscape($event)"
+                    aria-describedby="composer-hint"
+                    placeholder="Message the agent…  (/ for commands · Enter to send · Shift+Enter for newline)"
+                    class="max-h-48 min-h-[2.5rem] w-full resize-none rounded-lg border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:opacity-50"></textarea>
+        </div>
         <button type="submit" :disabled="!currentId || busy || !input.trim()"
                 class="rounded-lg bg-accent-400 px-4 py-2 text-sm font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:cursor-not-allowed disabled:opacity-50">
           Send
         </button>
       </div>
       <div id="composer-hint" class="mt-1 px-1 text-[11px] text-slate-600">
-        Enter to send · Shift+Enter for a new line · turns run server-side and survive disconnects
+        Type <span class="font-mono text-slate-500">/</span> for commands · Enter to send · Shift+Enter for a new line ·
+        <span class="font-mono text-slate-500">Ctrl+~</span> for a terminal · turns run server-side and survive disconnects
       </div>
     </form>
+
+    <!-- ── Host terminal drawer (Ctrl+~) ──────────────────────────────── -->
+    <div x-show="termOpen" x-cloak :style="{ backgroundColor: termBg() }"
+         class="absolute inset-x-0 bottom-0 z-20 flex h-[45vh] flex-col rounded-b-card border-t-2 border-accent-400/40">
+      <div class="flex h-9 shrink-0 items-center justify-between border-b border-ink-800 px-3">
+        <span class="flex items-center gap-2 font-mono text-xs text-accent-400">
+          <span>⌁ terminal</span>
+          <span class="text-slate-600" x-text="host"></span>
+        </span>
+        <div class="flex items-center gap-3">
+          <span class="text-[10px]" :class="termConnected ? 'text-accent-400' : 'text-slate-500'"
+                x-text="termConnected ? '● connected' : '○ disconnected'"></span>
+          <button type="button" @click="closeTerminal()" aria-label="Close terminal"
+                  class="rounded border border-ink-700 px-2 py-0.5 text-xs text-slate-300 hover:border-danger hover:text-danger">✕</button>
+        </div>
+      </div>
+      <div x-ref="term" class="min-h-0 flex-1 overflow-hidden px-2 py-1"></div>
+    </div>
   </section>
 </div>
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
 <script>
-function chat(initialSessions, defaultCwd, locked, host, branch) {
+// xterm palettes that track the page theme (mirrors app.css light/dark).
+const TERM_DARK = {
+  background: "#000000", foreground: "#d6d6d6", cursor: "#76b900",
+  cursorAccent: "#000000", selectionBackground: "#264f00",
+};
+const TERM_LIGHT = {
+  background: "#f6f8fa", foreground: "#1f2328", cursor: "#1a7f37",
+  cursorAccent: "#f6f8fa", selectionBackground: "#bfe6a0",
+};
+
+function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled) {
   return {
     sessions: initialSessions || [],
     defaultCwd: defaultCwd || "",
     locked: !!locked,
     host: host || "host",
     branch: branch || "?",
+    terminalEnabled: !!terminalEnabled,
     pollTimer: null,
     sidebarOpen: false,
     unlockCode: "",
@@ -239,12 +326,35 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
     currentId: null,
     events: [],
     seenSeq: new Set(),
+    // render batching: coalesce bursty SSE events into one frame (one reactive
+    // render + one scroll) instead of re-rendering the whole transcript per event.
+    _idSeq: 0,
+    _pending: [],
+    _flushScheduled: false,
+    _rafId: null,
     busy: false,
     connected: false,
     input: "",
     atBottom: true,
     _userScrolledAt: 0,
     es: null,
+    // slash-command menu
+    commands: [],
+    slashOpen: false,
+    slashItems: [],
+    slashIndex: 0,
+    // inline rename
+    editingId: null,
+    editTitle: "",
+    // host terminal
+    termOpen: false,
+    termConnected: false,
+    termThemeName: "dark",   // reactive → drives the drawer bg + xterm theme
+    term: null,
+    termFit: null,
+    termWs: null,
+    termResizeHandler: null,
+    _themeHandler: null,
     examplePrompts: [
       "List the files in this repo and summarise the architecture.",
       "Run the test suite and report failures.",
@@ -252,17 +362,29 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
     ],
 
     init() {
-      window.addEventListener("beforeunload", () => { this.closeStream(); this.stopPolling(); });
+      window.addEventListener("beforeunload", () => { this.closeStream(); this.stopPolling(); this.closeTerminal(); });
       // Keep every session's run-state live even while viewing another one: poll
       // the lightweight session list while the tab is visible.
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) this.stopPolling(); else if (!this.locked) this.startPolling();
+      });
+      // Ctrl+~ / Ctrl+` toggles the host terminal (like an IDE integrated terminal).
+      window.addEventListener("keydown", (e) => {
+        if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "`" || e.key === "~")) {
+          if (!this.terminalEnabled || this.locked) return;
+          e.preventDefault();
+          this.toggleTerminal();
+        }
       });
       // Delegated: copy buttons live inside x-html, so Alpine @click can't bind them.
       this.$refs.scroll?.addEventListener("click", (e) => {
         const btn = e.target.closest(".chat-copy");
         if (btn) this.copyCode(btn);
       });
+      // Keep the terminal's colours in step with the page theme toggle.
+      this.syncTermThemeName();
+      this._themeHandler = () => { this.syncTermThemeName(); this.applyTermTheme(); };
+      window.addEventListener("agent-me:theme", this._themeHandler);
       if (this.locked) {
         this.$nextTick(() => document.getElementById("chat-passcode")?.focus());
         return;
@@ -272,6 +394,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
     boot() {
       if (this.sessions.length) this.selectSession(this.sessions[0].id);
       this.startPolling();
+      this.loadCommands();
     },
 
     // ---- live session run-state (so the sidebar dots are accurate across sessions) ----
@@ -302,7 +425,10 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
         this.unlockBusy = false;
       }
     },
-    relock() { this.locked = true; this.closeStream(); this.stopPolling(); this.busy = false; },
+    relock() {
+      this.locked = true; this.closeStream(); this.stopPolling(); this.busy = false;
+      this.closeTerminal(); this.closeSlash(); this.cancelRename();
+    },
 
     // ---- session list ----
     async refreshSessions() {
@@ -331,7 +457,12 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
     async deleteSession(id) {
       if (!confirm("Delete this chat?")) return;
       await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
-      if (this.currentId === id) { this.closeStream(); this.currentId = null; this.events = []; }
+      if (this.currentId === id) {
+        // Tear the batcher down too, else a still-scheduled rAF flush would
+        // re-populate `events` with the deleted chat's queued tail.
+        this.closeStream(); this._cancelFlush(); this._pending = [];
+        this.currentId = null; this.events = []; this.seenSeq = new Set();
+      }
       await this.refreshSessions();
     },
 
@@ -339,6 +470,8 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
       this.sidebarOpen = false;
       this.closeStream();
       this.currentId = id;
+      this._cancelFlush();
+      this._pending = [];
       this.events = [];
       this.seenSeq = new Set();
       this.openStream(id);
@@ -393,8 +526,35 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
     },
 
     push(ev) {
+      // Queue + flush on the next animation frame so a burst of streamed events
+      // (or a whole transcript replay) becomes ONE render + ONE scroll. Frozen
+      // events skip Alpine's deep-reactivity proxy — cheaper for long sessions.
+      ev._k = ++this._idSeq;
+      Object.freeze(ev);
+      this._pending.push(ev);
+      this._scheduleFlush();
+    },
+    _scheduleFlush() {
+      if (this._flushScheduled) return;
+      this._flushScheduled = true;
+      const run = () => this._flushEvents();
+      this._rafId = window.requestAnimationFrame ? requestAnimationFrame(run) : setTimeout(run, 16);
+    },
+    _cancelFlush() {
+      this._flushScheduled = false;
+      if (this._rafId != null) {
+        if (window.cancelAnimationFrame) cancelAnimationFrame(this._rafId); else clearTimeout(this._rafId);
+        this._rafId = null;
+      }
+    },
+    _flushEvents() {
+      this._flushScheduled = false; this._rafId = null;
+      if (!this._pending.length) return;
       const stick = this.atBottom;
-      this.events.push(ev);
+      const batch = this._pending;
+      this._pending = [];
+      // Synchronous pushes coalesce into a single Alpine render pass.
+      for (let i = 0; i < batch.length; i++) this.events.push(batch[i]);
       if (stick) this.$nextTick(() => this.scrollToBottom(false));
     },
 
@@ -420,11 +580,183 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
 
     // ---- composer keyboard ----
     onEnter(e) {
-      if (e.isComposing || e.shiftKey) return;
+      if (e.isComposing) return;
+      if (this.slashOpen && this.slashItems.length) {
+        e.preventDefault(); this.pickCommand(this.slashItems[this.slashIndex]); return;
+      }
+      if (e.shiftKey) return;
       e.preventDefault(); this.send();
     },
     grow(e) { const t = e.target; if (!t) return; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 192) + "px"; },
     useExample(p) { this.input = p; this.$nextTick(() => { this.$refs.input.focus(); this.grow({ target: this.$refs.input }); }); },
+
+    // ---- slash-command / skill menu (mirrors the Claude Code TUI) ----
+    async loadCommands() {
+      try {
+        const r = await fetch("/api/chat/commands");
+        if (r.status === 403) { this.relock(); return; }
+        if (r.ok) this.commands = (await r.json()).commands || [];
+      } catch (e) { /* keep whatever we had */ }
+    },
+    onComposerInput(e) { this.grow(e); this.updateSlash(); },
+    updateSlash() {
+      // Show the menu only while typing a single leading "/token" (no args yet).
+      const m = this.input.match(/^\s*\/(\S*)$/);
+      if (!m) { this.closeSlash(); return; }
+      const q = m[1].toLowerCase();
+      this.slashItems = this.commands.filter(c =>
+        c.name.slice(1).toLowerCase().includes(q) ||
+        (c.description || "").toLowerCase().includes(q)
+      ).slice(0, 50);
+      this.slashOpen = this.slashItems.length > 0;
+      this.slashIndex = 0;
+    },
+    slashNav(dir, e) {
+      if (!this.slashOpen || !this.slashItems.length) return;
+      e.preventDefault();
+      const n = this.slashItems.length;
+      this.slashIndex = (this.slashIndex + dir + n) % n;
+    },
+    onTab(e) {
+      if (!this.slashOpen || !this.slashItems.length) return;
+      e.preventDefault(); this.pickCommand(this.slashItems[this.slashIndex]);
+    },
+    onEscape(e) { if (this.slashOpen) { e.preventDefault(); this.closeSlash(); } },
+    onComposerBlur() { setTimeout(() => this.closeSlash(), 150); },
+    pickCommand(c) {
+      if (!c) return;
+      this.input = c.name + " ";
+      this.closeSlash();
+      this.$nextTick(() => { const t = this.$refs.input; if (t) { t.focus(); this.grow({ target: t }); } });
+    },
+    closeSlash() { this.slashOpen = false; this.slashItems = []; this.slashIndex = 0; },
+
+    // ---- inline rename ----
+    startRename(s) {
+      this.editingId = s.id; this.editTitle = s.title || "";
+      this.$nextTick(() => { const i = this.$refs.renameInput; if (i) { i.focus(); i.select(); } });
+    },
+    cancelRename() { this.editingId = null; this.editTitle = ""; },
+    async commitRename(id) {
+      if (this.editingId !== id) return;  // guard the blur+enter double-fire
+      const title = this.editTitle.trim();
+      this.editingId = null; this.editTitle = "";
+      const s = this.sessions.find(x => x.id === id);
+      if (!title || (s && s.title === title)) return;
+      try {
+        const r = await fetch(`/api/chat/sessions/${id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        if (r.status === 403) { this.relock(); return; }
+        if (r.ok) { const m = await r.json(); if (s) s.title = m.title; await this.refreshSessions(); }
+      } catch (e) { /* leave the old title on failure */ }
+    },
+
+    // ---- host terminal (Ctrl+~) ----
+    toggleTerminal() { if (!this.terminalEnabled || this.locked) return; this.termOpen ? this.closeTerminal() : this.openTerminal(); },
+    openTerminal() {
+      if (!this.terminalEnabled || this.locked) return;
+      this.termOpen = true;
+      this.$nextTick(() => this.initTerminal());
+    },
+    initTerminal() {
+      if (!window.Terminal) { return; }
+      this.syncTermThemeName();
+      if (!this.term) {
+        this.term = new window.Terminal({
+          cursorBlink: true, fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 13,
+          theme: this.termTheme(),
+          scrollback: 5000,
+        });
+        try { this.termFit = new window.FitAddon.FitAddon(); this.term.loadAddon(this.termFit); } catch (e) { this.termFit = null; }
+        this.term.open(this.$refs.term);
+        this.term.onData((d) => { if (this.termWs && this.termWs.readyState === 1) this.termWs.send(JSON.stringify({ type: "stdin", data: d })); });
+        this.attachTermKeys();
+        this.termResizeHandler = () => this.fitTerminal();
+        window.addEventListener("resize", this.termResizeHandler);
+      } else {
+        this.applyTermTheme();
+        this.term.clear();
+      }
+      this.connectTerminalWs();
+      setTimeout(() => { this.fitTerminal(); if (this.term) this.term.focus(); }, 60);
+    },
+
+    // ---- terminal theme (follows the page light/dark toggle, live) ----
+    syncTermThemeName() {
+      const t = window.agentMeTheme && window.agentMeTheme.current && window.agentMeTheme.current();
+      this.termThemeName = t === "light" ? "light" : "dark";
+    },
+    termTheme() { return this.termThemeName === "light" ? TERM_LIGHT : TERM_DARK; },
+    termBg() { return this.termThemeName === "light" ? TERM_LIGHT.background : TERM_DARK.background; },
+    applyTermTheme() {
+      if (!this.term) return;
+      try { this.term.options.theme = this.termTheme(); }
+      catch (e) { try { this.term.setOption("theme", this.termTheme()); } catch (_) {} }
+    },
+
+    // ---- terminal copy/paste shortcuts (work over plain http too) ----
+    attachTermKeys() {
+      if (!this.term || !this.term.attachCustomKeyEventHandler) return;
+      const isMac = /Mac|iP(hone|ad|od)/.test(navigator.platform || "")
+        || (navigator.userAgentData && navigator.userAgentData.platform === "macOS");
+      this.term.attachCustomKeyEventHandler((e) => {
+        if (e.type !== "keydown") return true;
+        const mod = e.ctrlKey || e.metaKey;
+        if (!mod) return true;
+        const k = (e.key || "").toLowerCase();
+        // Copy: Ctrl/Cmd+Shift+C, or the platform copy-modifier + C with a
+        // selection. On macOS that modifier is Cmd, so a bare Ctrl+C (the
+        // interrupt) always falls through as SIGINT even with text selected.
+        const copyMod = isMac ? e.metaKey : e.ctrlKey;
+        if (k === "c" && (e.shiftKey || (copyMod && this.term.hasSelection()))) {
+          const sel = this.term.getSelection();
+          if (sel) {
+            this.copyText(sel);
+            this.term.clearSelection();
+            e.preventDefault();
+            return false;
+          }
+        }
+        // Paste: Ctrl/Cmd+(Shift+)V. On a secure context read the clipboard and
+        // send it to the PTY; on plain http fall through to xterm's native paste.
+        if (k === "v") {
+          if (window.isSecureContext && navigator.clipboard && navigator.clipboard.readText) {
+            e.preventDefault();
+            navigator.clipboard.readText().then((text) => {
+              if (text && this.termWs && this.termWs.readyState === 1) {
+                this.termWs.send(JSON.stringify({ type: "stdin", data: text }));
+              }
+            }).catch(() => {});
+            return false;
+          }
+          return true;
+        }
+        return true;
+      });
+    },
+    connectTerminalWs() {
+      if (this.termWs) { try { this.termWs.close(); } catch (e) {} this.termWs = null; }
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${location.host}/ws/chat/terminal`);
+      this.termWs = ws;
+      ws.onopen = () => { this.termConnected = true; this.$nextTick(() => this.fitTerminal()); };
+      ws.onclose = () => { this.termConnected = false; if (this.term && this.termOpen) this.term.write("\r\n\x1b[90m[disconnected]\x1b[0m\r\n"); };
+      ws.onerror = () => { this.termConnected = false; };
+      ws.onmessage = (e) => { if (this.term) this.term.write(e.data); };
+    },
+    fitTerminal() {
+      if (!this.term || !this.termOpen) return;
+      try { if (this.termFit) this.termFit.fit(); } catch (e) {}
+      if (this.termWs && this.termWs.readyState === 1) {
+        this.termWs.send(JSON.stringify({ type: "resize", cols: this.term.cols, rows: this.term.rows }));
+      }
+    },
+    closeTerminal() {
+      this.termOpen = false; this.termConnected = false;
+      if (this.termWs) { try { this.termWs.close(); } catch (e) {} this.termWs = null; }
+    },
 
     // ---- autoscroll (respect manual scroll-up) ----
     onScroll() {
@@ -478,6 +810,27 @@ function chat(initialSessions, defaultCwd, locked, host, branch) {
         document.body.removeChild(ta);
         return ok;
       } catch (_) { return false; }
+    },
+
+    // ---- sample content to exercise the code-block UI (Copy + theme) ----
+    demoMarkdown() {
+      return [
+        "Here is a **sample code block** so you can test the `Copy` button and the",
+        "light/dark theme without starting a turn. Toggle the theme in the nav ☀/☾.",
+        "",
+        "```python",
+        "def greet(name: str) -> str:",
+        '    return f"Hello, {name}! Welcome to agent-me."',
+        "",
+        'print(greet("Thanh"))',
+        "```",
+        "",
+        "And a shell block:",
+        "",
+        "```bash",
+        "git status && git log --oneline -5",
+        "```",
+      ].join("\n");
     },
 
     // ---- minimal, safe markdown (escape first, then format) ----

@@ -47,6 +47,10 @@
           try { localStorage.setItem(key, next); } catch (_) {}
         }
         updateButtons(next);
+        // Let theme-aware widgets (e.g. the chat xterm terminal) follow along.
+        try {
+          window.dispatchEvent(new CustomEvent("agent-me:theme", { detail: { theme: next } }));
+        } catch (_) {}
       }
 
       function currentTheme() {
@@ -113,6 +117,7 @@
       },
     };
   </script>
+  {% block head_extra %}{% endblock %}
 </head>
 <body class="h-full bg-ink-950 text-slate-200 font-sans antialiased">
   <div class="min-h-full">
