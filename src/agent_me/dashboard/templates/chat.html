@@ -54,33 +54,38 @@
       <template x-for="s in sessions" :key="s.id">
         <li>
           <div role="button" tabindex="0" @click="selectSession(s.id)" @keydown.enter="selectSession(s.id)"
-                  class="group flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-ink-800 cursor-pointer"
+                  class="group flex w-full flex-col gap-0.5 rounded px-2.5 py-1.5 text-left text-sm hover:bg-ink-800 cursor-pointer"
                   :class="s.id === currentId ? 'bg-ink-800 text-slate-100 ring-1 ring-ink-700' : 'text-slate-300'">
-            <span class="inline-block h-2 w-2 shrink-0 rounded-full"
-                  :class="s.busy ? 'bg-accent-400 animate-pulse' : 'bg-ink-600'"
-                  :title="s.busy ? 'agent running' : 'idle'"></span>
-            <template x-if="editingId !== s.id">
-              <span class="min-w-0 flex-1 truncate" x-text="s.title || 'New chat'"
-                    @dblclick.stop="startRename(s)" title="Double-click to rename"></span>
-            </template>
-            <template x-if="editingId === s.id">
-              <input x-ref="renameInput" x-model="editTitle" @click.stop
-                     @keydown.enter.stop.prevent="commitRename(s.id)"
-                     @keydown.escape.stop.prevent="cancelRename()"
-                     @blur="commitRename(s.id)"
-                     class="min-w-0 flex-1 rounded border border-ink-600 bg-ink-950 px-1.5 py-0.5 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100" />
-            </template>
-            <span x-show="s.origin === 'slack'" x-cloak
-                  title="Synced from a Slack thread"
-                  class="shrink-0 rounded bg-ink-800 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-400">slack</span>
-            <span x-show="s.busy" x-cloak
-                  class="shrink-0 rounded bg-accent-400/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-accent-400">run</span>
-            <span x-show="editingId !== s.id" @click.stop="startRename(s)" role="button" tabindex="0" aria-label="Rename chat"
-                  @keydown.enter.stop="startRename(s)"
-                  class="shrink-0 opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-accent-400">✎</span>
-            <span x-show="editingId !== s.id" @click.stop="deleteSession(s.id)" role="button" tabindex="0" aria-label="Delete chat"
-                  @keydown.enter.stop="deleteSession(s.id)"
-                  class="shrink-0 opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-danger">✕</span>
+            <!-- row 1: status icon · title · hover actions -->
+            <div class="flex items-center gap-2">
+              <span x-show="s.busy" x-cloak class="chat-run shrink-0" title="running now"></span>
+              <span x-show="!s.busy" class="inline-block h-2 w-2 shrink-0 rounded-full bg-ink-600" title="idle"></span>
+              <template x-if="editingId !== s.id">
+                <span class="min-w-0 flex-1 truncate" x-text="s.title || 'New chat'"
+                      @dblclick.stop="startRename(s)" title="Double-click to rename"></span>
+              </template>
+              <template x-if="editingId === s.id">
+                <input x-ref="renameInput" x-model="editTitle" @click.stop
+                       @keydown.enter.stop.prevent="commitRename(s.id)"
+                       @keydown.escape.stop.prevent="cancelRename()"
+                       @blur="commitRename(s.id)"
+                       class="min-w-0 flex-1 rounded border border-ink-600 bg-ink-950 px-1.5 py-0.5 text-sm text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100" />
+              </template>
+              <span x-show="editingId !== s.id" @click.stop="startRename(s)" role="button" tabindex="0" aria-label="Rename chat"
+                    @keydown.enter.stop="startRename(s)"
+                    class="shrink-0 opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-accent-400">✎</span>
+              <span x-show="editingId !== s.id" @click.stop="deleteSession(s.id)" role="button" tabindex="0" aria-label="Delete chat"
+                    @keydown.enter.stop="deleteSession(s.id)"
+                    class="shrink-0 opacity-0 transition group-hover:opacity-100 text-slate-500 hover:text-danger">✕</span>
+            </div>
+            <!-- row 2: origin · relative time · running -->
+            <div x-show="editingId !== s.id" class="flex items-center gap-1.5 pl-4 text-[10px] text-slate-500">
+              <span :title="originTitle(s)"
+                    class="shrink-0 rounded px-1 py-0.5 font-semibold uppercase tracking-wide"
+                    :class="originClass(s)" x-text="s.origin || 'web'"></span>
+              <span class="chat-rel truncate" x-text="relTime(s.last_activity)" :title="absTime(s.last_activity)"></span>
+              <span x-show="s.busy" x-cloak class="shrink-0 text-accent-400">· running</span>
+            </div>
           </div>
         </li>
       </template>
@@ -115,7 +120,7 @@
           ■ Stop
         </button>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
-                title="Open a host terminal (Ctrl+~ or Cmd+~)"
+                title="Open a host terminal (Ctrl+` — Cmd+` may be reserved by macOS)"
                 class="rounded border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100"
                 :class="termOpen ? 'border-accent-400 text-accent-400' : 'border-ink-700 text-slate-300 hover:border-accent-400 hover:text-accent-400'">
           ⌁ Terminal
@@ -167,12 +172,21 @@
 
         <!-- messages -->
         <div class="mx-auto max-w-3xl space-y-3">
+          <!-- scroll-up paging: older history loads on demand -->
+          <div x-show="hasMore" x-cloak class="flex justify-center py-1">
+            <button type="button" @click="loadOlder()" :disabled="loadingOlder"
+                    class="rounded-full border border-ink-700 bg-ink-800 px-3 py-1 text-xs text-slate-400 hover:border-accent-400 hover:text-slate-200 disabled:opacity-50"
+                    x-text="loadingOlder ? 'Loading…' : 'Load older messages'"></button>
+          </div>
           <template x-for="ev in events" :key="ev._k">
             <div>
               <!-- user -->
               <template x-if="ev.kind === 'user'">
-                <div class="rounded-lg border border-ink-700 bg-ink-800/60 px-4 py-3">
-                  <div class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">You</div>
+                <div class="rounded-lg border border-ink-700 bg-ink-800/60 px-4 py-3" :class="ev.queued ? 'opacity-70' : ''">
+                  <div class="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <span>You</span>
+                    <span x-show="ev.queued" x-cloak class="rounded bg-ink-800 px-1 py-0.5 text-[9px] text-accent-400" title="Queued — runs after the current turn">queued</span>
+                  </div>
                   <div class="prose-chat text-sm text-slate-100" x-html="ev.html"></div>
                 </div>
               </template>
@@ -241,8 +255,14 @@
     <!-- sr-only announcer (completed messages only) -->
     <div class="sr-only" aria-live="polite" x-ref="announcer"></div>
 
-    <!-- composer (only when a chat is selected) -->
-    <form x-show="currentId" x-cloak @submit.prevent="send()" class="border-t border-ink-700 p-3">
+    <!-- read-only notice: a native session currently open in a terminal elsewhere -->
+    <div x-show="currentId && readOnly()" x-cloak
+         class="border-t border-ink-700 px-3 py-2 text-[11px] text-slate-400">
+      🔒 This session is open in a terminal right now — read-only here. Resuming it from the web would fork it.
+    </div>
+
+    <!-- composer (only when a chat is selected and not read-only) -->
+    <form x-show="currentId && !readOnly()" x-cloak @submit.prevent="send()" class="border-t border-ink-700 p-3">
       <div class="flex items-end gap-2">
         <div class="relative flex-1">
           <!-- slash-command / skill menu (like the Claude Code TUI) -->
@@ -270,14 +290,13 @@
                     placeholder="Message the agent…  (/ for commands · Enter to send · Shift+Enter for newline)"
                     class="max-h-48 min-h-[2.5rem] w-full resize-none rounded-lg border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:opacity-50"></textarea>
         </div>
-        <button type="submit" :disabled="!currentId || busy || !input.trim()"
-                class="rounded-lg bg-accent-400 px-4 py-2 text-sm font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:cursor-not-allowed disabled:opacity-50">
-          Send
-        </button>
+        <button type="submit" :disabled="!currentId || !input.trim() || readOnly()"
+                class="rounded-lg bg-accent-400 px-4 py-2 text-sm font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100 disabled:cursor-not-allowed disabled:opacity-50"
+                x-text="busy ? 'Queue' : 'Send'"></button>
       </div>
       <div id="composer-hint" class="mt-1 px-1 text-[11px] text-slate-600">
         Type <span class="font-mono text-slate-500">/</span> for commands · Enter to send · Shift+Enter for a new line ·
-        <span class="font-mono text-slate-500">Ctrl+~</span> / <span class="font-mono text-slate-500">Cmd+~</span> for a terminal · turns run server-side and survive disconnects
+        <span class="font-mono text-slate-500">Ctrl+`</span> for a terminal · send while working to queue · turns run server-side and survive disconnects
       </div>
     </form>
 
@@ -330,6 +349,8 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     branch: branch || "?",
     terminalEnabled: !!terminalEnabled,
     pollTimer: null,
+    _now: Date.now(),          // reactive clock so relative times re-render as they age
+    _clockTimer: null,
     sidebarOpen: false,
     unlockCode: "",
     unlockError: "",
@@ -337,6 +358,9 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     currentId: null,
     events: [],
     seenSeq: new Set(),
+    historyCursor: 0,     // byte offset where older history ends (scroll-up paging)
+    hasMore: false,
+    loadingOlder: false,
     // render batching: coalesce bursty SSE events into one frame (one reactive
     // render + one scroll) instead of re-rendering the whole transcript per event.
     _idSeq: 0,
@@ -373,20 +397,25 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     ],
 
     init() {
-      window.addEventListener("beforeunload", () => { this.closeStream(); this.stopPolling(); this.closeTerminal(); });
+      this._clockTimer = setInterval(() => { this._now = Date.now(); }, 30000);
+      window.addEventListener("beforeunload", () => {
+        this.closeStream(); this.stopPolling(); this.closeTerminal();
+        if (this._clockTimer) clearInterval(this._clockTimer);
+      });
       // Keep every session's run-state live even while viewing another one: poll
       // the lightweight session list while the tab is visible.
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) this.stopPolling(); else if (!this.locked) this.startPolling();
       });
-      // Toggle the host terminal: Ctrl+`/Ctrl+~ (IDE convention, both platforms)
-      // or Cmd+~ on macOS. Cmd+` is deliberately NOT bound — that's the macOS
-      // window-cycling shortcut.
+      // Toggle the host terminal. Ctrl+` / Ctrl+~ works on every platform (the
+      // IDE convention). Cmd+` / Cmd+~ is also accepted, but macOS reserves those
+      // for window-cycling and usually swallows them before the page — so Ctrl+`
+      // is the reliable shortcut on a Mac. `e.code` covers non-US layouts.
       window.addEventListener("keydown", (e) => {
-        if (e.altKey || (e.key !== "`" && e.key !== "~")) return;
-        const ctrlCombo = e.ctrlKey && !e.metaKey;
-        const cmdTilde = e.metaKey && !e.ctrlKey && e.key === "~";
-        if (!ctrlCombo && !cmdTilde) return;
+        if (e.altKey) return;
+        const backtick = e.key === "`" || e.key === "~" || e.code === "Backquote";
+        if (!backtick) return;
+        if (!((e.ctrlKey && !e.metaKey) || (e.metaKey && !e.ctrlKey))) return;
         if (!this.terminalEnabled || this.locked) return;
         e.preventDefault();
         this.toggleTerminal();
@@ -456,6 +485,36 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     currentMeta() { return this.sessions.find(s => s.id === this.currentId); },
     currentTitle() { const m = this.currentMeta(); return m ? (m.title || "New chat") : "No session"; },
     currentCwd() { const m = this.currentMeta(); return m ? m.cwd : ""; },
+    // A native session open in a terminal/CLI right now is read-only here —
+    // driving it from the web would fork the live CLI session.
+    readOnly() { const m = this.currentMeta(); return !!(m && m.live); },
+    originTitle(s) {
+      if (!s) return "";
+      if (s.origin === "slack") return "Synced from a Slack thread";
+      if (s.origin === "terminal") return "Started in a terminal (claude --resume)";
+      if (s.origin === "web") return "Started here in the web chat";
+      return "A claude session on this box (claude --resume)";
+    },
+    originClass(s) {
+      const o = (s && s.origin) || "web";
+      if (o === "terminal") return "bg-accent-400/10 text-accent-400";
+      if (o === "slack") return "bg-ink-800 text-slate-300";
+      return "bg-ink-800 text-slate-500";
+    },
+    // compact relative age ("now", "5s", "9m", "3h", "2d", "4w", "5mo", "1y").
+    relTime(ms) {
+      if (!ms) return "";
+      const s = Math.max(0, Math.round((this._now - ms) / 1000));
+      if (s < 5) return "now";
+      if (s < 60) return s + "s";
+      const m = Math.floor(s / 60); if (m < 60) return m + "m";
+      const h = Math.floor(m / 60); if (h < 24) return h + "h";
+      const d = Math.floor(h / 24); if (d < 7) return d + "d";
+      const w = Math.floor(d / 7); if (w < 5) return w + "w";
+      const mo = Math.floor(d / 30); if (mo < 12) return mo + "mo";
+      return Math.floor(d / 365) + "y";
+    },
+    absTime(ms) { return ms ? new Date(ms).toLocaleString() : ""; },
 
     async newSession() {
       const r = await fetch("/api/chat/sessions", {
@@ -476,9 +535,14 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
         // Tear the batcher down too, else a still-scheduled rAF flush would
         // re-populate `events` with the deleted chat's queued tail.
         this.closeStream(); this._cancelFlush(); this._pending = [];
-        this.currentId = null; this.events = []; this.seenSeq = new Set();
+        this.currentId = null; this.resetTranscript();
       }
       await this.refreshSessions();
+    },
+
+    resetTranscript() {
+      this.events = []; this.seenSeq = new Set();
+      this.historyCursor = 0; this.hasMore = false; this.loadingOlder = false;
     },
 
     selectSession(id) {
@@ -487,8 +551,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       this.currentId = id;
       this._cancelFlush();
       this._pending = [];
-      this.events = [];
-      this.seenSeq = new Set();
+      this.resetTranscript();
       this.openStream(id);
     },
 
@@ -510,34 +573,66 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
 
     handleEvent(kind, d) {
       if (d.seq != null) { if (this.seenSeq.has(d.seq)) return; this.seenSeq.add(d.seq); }
-      if (this.currentMeta()) this.currentMeta().busy = (kind !== "turn_end" && kind !== "snapshot");
-      switch (kind) {
-        case "snapshot":
-          if (d.status === "idle") { this.busy = false; this.closeStream(); }
-          else this.busy = true;
-          return;
-        case "timeout": return;
-        case "init": return;
-        case "result": return;
-        case "turn_end":
-          this.busy = false; this.closeStream(); this.refreshSessions(); return;
-        case "user":
-          this.busy = true;
-          this.push({ kind: "user", html: this.md(d.text || "") }); return;
-        case "text":
-          this.push({ kind: "text", html: this.md(d.text || "") });
-          this.announce(d.text || ""); return;
-        case "thinking":
-          this.push({ kind: "thinking", html: this.md(d.text || "") }); return;
-        case "tool_use":
-          this.push({ kind: "tool_use", name: d.name || "tool",
-                      summary: this.toolSummary(d.input), detail: this.pretty(d.input) }); return;
-        case "tool_result":
-          this.push({ kind: "tool_result", content: d.content || "", isError: !!d.is_error }); return;
-        case "error":
-          this.busy = false;
-          this.push({ kind: "error", text: d.text || "error" }); return;
+      if (kind === "snapshot") {
+        if (d.cursor != null) { this.historyCursor = d.cursor; this.hasMore = d.cursor > 0; }
+        if (d.status === "idle") { this.busy = false; this.closeStream(); }
+        else if (d.status === "running") { this.busy = true; }
+        return;
       }
+      if (kind === "timeout" || kind === "init" || kind === "result") return;
+      if (kind === "turn_end") {
+        if (d.replay) return;                 // a past turn's end in the replayed history — keep streaming
+        this.busy = false; this.closeStream(); this.refreshSessions(); return;
+      }
+      if (!d.replay) {                         // only LIVE events drive the busy/announce state
+        if (this.currentMeta()) this.currentMeta().busy = true;
+        if (kind === "user") this.busy = true;
+        if (kind === "error") this.busy = false;
+      }
+      const row = this.toRow(kind, d);
+      if (row) { this.push(row); if (kind === "text" && !d.replay) this.announce(d.text || ""); }
+    },
+
+    // Map a raw stream event to the row shape the template renders (shared by the
+    // live stream and scroll-up paging).
+    toRow(kind, d) {
+      switch (kind) {
+        case "user": return { kind: "user", html: this.md(d.text || ""), queued: !!d.queued };
+        case "text": return { kind: "text", html: this.md(d.text || "") };
+        case "thinking": return { kind: "thinking", html: this.md(d.text || "") };
+        case "tool_use": return { kind: "tool_use", name: d.name || "tool",
+                                  summary: this.toolSummary(d.input), detail: this.pretty(d.input) };
+        case "tool_result": return { kind: "tool_result", content: d.content || "", isError: !!d.is_error };
+        case "error": return { kind: "error", text: d.text || "error" };
+        default: return null;
+      }
+    },
+
+    // ---- scroll-up paging (load older messages, ChatGPT-style) ----
+    async loadOlder() {
+      if (!this.currentId || !this.hasMore || this.loadingOlder) return;
+      this.loadingOlder = true;
+      const id = this.currentId, el = this.$refs.scroll, prevH = el ? el.scrollHeight : 0;
+      try {
+        const r = await fetch(`/api/chat/sessions/${id}/history?before=${this.historyCursor}&limit=150`);
+        if (r.status === 403) { this.relock(); return; }
+        if (!r.ok) return;
+        const d = await r.json();
+        if (this.currentId !== id) return;             // switched away mid-fetch
+        this.historyCursor = d.cursor || 0;
+        this.hasMore = (d.cursor || 0) > 0 && (d.events || []).length > 0;
+        const rows = [];
+        for (const ev of (d.events || [])) {
+          if (ev.seq != null) { if (this.seenSeq.has(ev.seq)) continue; this.seenSeq.add(ev.seq); }
+          const row = this.toRow(ev.kind, ev);
+          if (row) { row._k = ++this._idSeq; Object.freeze(row); rows.push(row); }
+        }
+        if (rows.length) {
+          this.events.unshift(...rows);
+          this.$nextTick(() => { if (el) el.scrollTop = el.scrollHeight - prevH; });  // hold position
+        }
+      } catch (e) { /* keep what we have */ }
+      finally { this.loadingOlder = false; }
     },
 
     push(ev) {
@@ -571,8 +666,10 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       // blocking the tab for seconds.
       const chunk = this._pending.splice(0, FLUSH_CHUNK);
       for (let i = 0; i < chunk.length; i++) this.events.push(chunk[i]);
+      // Bound the DOM, but only while following live at the bottom — otherwise a
+      // scroll-up "load older" would be trimmed away the moment it's prepended.
       const over = this.events.length - EVENTS_CAP;
-      if (over > 0) this.events.splice(0, over);  // bound the DOM regardless of length
+      if (stick && over > 0) this.events.splice(0, over);
       if (this._pending.length) this._scheduleFlush();
       if (stick) this.$nextTick(() => this.scrollToBottom(false));
     },
@@ -580,16 +677,44 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     // ---- send / cancel ----
     async send() {
       const text = this.input.trim();
-      if (!text || !this.currentId || this.busy) return;
+      // No busy-gate: sending while a turn runs queues the message (terminal-like).
+      if (!text || !this.currentId || this.readOnly()) return;
+      const id = this.currentId;
+      const wasNative = !!(this.currentMeta() && this.currentMeta().native);
       this.input = ""; this.grow({ target: this.$refs.input });
       this.busy = true;
-      if (!this.es) this.openStream(this.currentId);
-      const r = await fetch(`/api/chat/sessions/${this.currentId}/message`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
+      // POST first so the server-side turn (job) exists BEFORE we open the SSE —
+      // otherwise the stream races to the idle path and the new turn's live
+      // progress is never delivered (the old "doesn't render latest" bug).
+      let r;
+      try {
+        r = await fetch(`/api/chat/sessions/${id}/message`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+      } catch (e) { this.busy = false; return; }
       if (r.status === 403) { this.relock(); return; }
-      if (r.status === 409) { this.busy = false; this.announce("A turn is already running."); }
+      if (r.status === 409) {
+        this.busy = false;
+        const d = await r.json().catch(() => ({}));
+        this.announce(d.error === "live"
+          ? "This session is open in a terminal — read-only here."
+          : "A turn is already running.");
+        await this.refreshSessions();
+        return;
+      }
+      if (!r.ok) { this.busy = false; return; }
+      if (this.currentId !== id) return;        // user switched chats mid-send
+      if (wasNative) {
+        // The terminal session was just adopted (terminal → web): reload from the
+        // web transcript so the seq world is consistent, then follow live.
+        this.closeStream(); this._cancelFlush(); this._pending = [];
+        this.resetTranscript();
+        await this.refreshSessions();
+        this.openStream(id);
+      } else if (!this.es) {
+        this.openStream(id);                    // idle session → reconnect for live
+      }
       this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
     },
     async cancel() {
@@ -783,6 +908,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     onScroll() {
       const el = this.$refs.scroll; if (!el) return;
       this.atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 120;
+      if (el.scrollTop < 80 && this.hasMore && !this.loadingOlder) this.loadOlder();
     },
     userScrolled() { this._userScrolledAt = Date.now(); },
     scrollToBottom(force) {

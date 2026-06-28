@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -38,16 +39,21 @@ def session_files(projects_root: Path, cwd: str, session_ids: Iterable[str]) -> 
 def purge_local_sessions(projects_root: Path, cwd: str, session_ids: Iterable[str]) -> list[str]:
     """Best-effort delete of the CLI transcripts for ``session_ids``.
 
-    Returns the file names actually removed. Never raises — a missing file or
-    a permissions hiccup must not block the web-session delete.
+    Removes each ``<id>.jsonl`` *and* its ``<id>/`` sidecar dir (tool-results,
+    sub-agent/workflow traces) so a deleted chat is fully gone from
+    ``claude --resume``. Returns the file names removed. Never raises — a missing
+    file or a permissions hiccup must not block the web-session delete.
     """
+    project = projects_root / project_dir_name(cwd)
     removed: list[str] = []
-    for path in session_files(projects_root, cwd, session_ids):
+    for sid in dict.fromkeys(sid for sid in session_ids if sid):  # dedup, keep order
+        jsonl = project / f"{sid}.jsonl"
         try:
-            path.unlink()
-            removed.append(path.name)
+            jsonl.unlink()
+            removed.append(jsonl.name)
         except FileNotFoundError:
-            continue
+            pass
         except OSError:
-            continue
+            pass
+        shutil.rmtree(project / sid, ignore_errors=True)
     return removed

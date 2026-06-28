@@ -71,3 +71,38 @@ accent only, **black text on green** buttons, JetBrains Mono code.
 ## Tests
 `tests/test_chat.py` — service logic via `FakeClaudeRunner` (persist+seq, resume,
 busy-lock, validation, stream replay) and HTTP via Starlette `TestClient`.
+
+## Cross-surface session sync + paging (2026-06-28)
+The `claude` CLI writes one `~/.claude/projects/<cwd-slug>/<id>.jsonl` per session for
+**every** surface (web, Slack bridge, interactive terminal) — that dir is what
+`claude --resume` lists. So the surfaces already share storage; the web just needed to
+read it.
+
+- `native_sessions.py::NativeSessionReader` — read-only view of that store:
+  `list_sessions` (cached by mtime+size), `read_events`/`read_events_tail` (jsonl →
+  web events), live/busy from `~/.claude/sessions/*.json` (+ pid-alive check).
+- `ChatService.session_dicts()` merges web-store sessions with native ones (dedup by
+  every CLI id a web session covers); `stream()`/`get_session` replay native sessions
+  read-only; `_adopt_native` imports a terminal session's history once and `--resume`s it
+  when the user continues it from the web. `_delete_native` + `purge_local_sessions`
+  (now also removes the `<id>/` sidecar) make a web delete remove it from `claude --resume`.
+- Env `CHAT_SHOW_NATIVE_SESSIONS` (default on) toggles the merge.
+
+### Efficient transcript I/O (no whole-file reads on hot paths)
+`DiskSessionStore` gained `tail(limit)` and `events_before(cursor, limit)` — byte-offset
+reverse reads, O(limit) not O(file) (tail of a 20k-event/5MB transcript ≈ 1.6 ms vs ≈ 56 ms
+for `transcript()`), plus `last_seq()`/`size()`. `stream()` replays only the tail, emits a
+leading `snapshot` with the paging `cursor`, and tags every replayed event `replay:true`.
+`GET /api/chat/sessions/{id}/history?before=<cursor>&limit=` powers scroll-up paging.
+
+### Follow-up queueing (terminal-like)
+Sending while a turn runs enqueues the message; `_drain` runs the queue on a single job and
+emits one `turn_end` at the end. Queued user bubbles are flagged `queued`.
+
+### Frontend fixes
+`send()` POSTs the message **before** opening the SSE (so the server-side turn exists and the
+stream takes the live path — fixes "old session shows no live progress"); the client ignores
+`turn_end`/busy on `replay` events (a past turn's end must not close the live stream); scroll-up
+"Load older" paging with DOM trim only while following at the bottom; sidebar origin badge +
+ticking relative time + `.chat-run` spinner; `Ctrl+`` terminal toggle (`e.code` fallback; `Cmd+``
+is OS-reserved on macOS); built-ins-first `/` menu (`/context`, `/usage`, …).

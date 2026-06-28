@@ -53,7 +53,7 @@ class WebSessionMirror:
             sid, title=(title or "Slack chat")[:60] or "Slack chat", cwd=cwd,
             model=model, origin="slack", slack_thread_ts=str(key),
         )
-        self._seq.setdefault(sid, len(self._store.transcript(sid)))
+        self._seq.setdefault(sid, self._store.last_seq(sid))
         self._emit(sid, make_event(EventKind.USER, text=user_text))
         return sid
 

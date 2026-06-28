@@ -39,6 +39,7 @@ class ChatConfig:
     subscriber_queue_max: int = 512  # per-subscriber backpressure bound
     replay_max: int = 400            # cap transcript replay sent on (re)connect (0 = all)
     claude_projects_dir: Path = Path.home() / ".claude" / "projects"  # CLI session transcripts
+    show_native_sessions: bool = True  # list terminal/CLI sessions (what `claude --resume` shows)
     terminal_enabled: bool = True    # Ctrl+~ host terminal (gated by the operator passcode)
     terminal_shell: str = ""         # "" → resolve $SHELL / bash at connect time
     terminal_cwd: str = ""           # "" → default_cwd
@@ -77,6 +78,7 @@ class ChatConfig:
             append_system_prompt=append_system_prompt,
             turn_timeout_s=turn_timeout_s,
             claude_projects_dir=Path(claude_home) / "projects",
+            show_native_sessions=_env_flag("CHAT_SHOW_NATIVE_SESSIONS", True),
             terminal_enabled=_env_flag("CHAT_TERMINAL_ENABLED", True),
             terminal_shell=(os.environ.get("CHAT_TERMINAL_SHELL") or "").strip(),
             terminal_cwd=(os.environ.get("CHAT_TERMINAL_CWD") or "").strip(),

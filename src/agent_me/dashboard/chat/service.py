@@ -17,6 +17,7 @@ from .config import ChatConfig
 from .jobs import ChatTurnJob
 from .local_sessions import purge_local_sessions
 from .models import EventKind, SessionMeta, make_event, now_ms
+from .native_sessions import NativeSessionReader
 from .runner import ClaudeRunner
 from .store import SessionStore
 
@@ -24,13 +25,16 @@ log = logging.getLogger("agent_me.dashboard.chat")
 
 
 class ChatService:
-    def __init__(self, store: SessionStore, runner: ClaudeRunner, config: ChatConfig) -> None:
+    def __init__(self, store: SessionStore, runner: ClaudeRunner, config: ChatConfig,
+                 native: NativeSessionReader | None = None) -> None:
         self._store = store
         self._runner = runner
         self._config = config
+        self._native = native
         self._jobs: dict[str, ChatTurnJob] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._busy: set[str] = set()
+        self._queues: dict[str, list[str]] = {}  # follow-ups typed while a turn runs
 
     @property
     def config(self) -> ChatConfig:
@@ -67,7 +71,21 @@ class ChatService:
         return (now_ms() - int(last_t)) < window_ms
 
     def session_dicts(self) -> list[dict]:
-        return [m.public_dict(busy=self.is_busy(m.id)) for m in self._store.list()]
+        """Web-store sessions merged with the native CLI sessions (the ones
+        ``claude --resume`` lists), so terminal- and headless-born chats show up
+        too. Dedup by every CLI id a web session already covers."""
+        web = self._store.list()
+        dicts = [m.public_dict(busy=self.is_busy(m.id)) for m in web]
+        if self._native is None:
+            return dicts
+        represented = {
+            s for m in web for s in (m.id, m.claude_session_id, *m.claude_session_ids) if s
+        }
+        extra = [
+            n.public_dict() for n in self._native.list_sessions(self._config.default_cwd)
+            if n.id not in represented
+        ]
+        return sorted(dicts + extra, key=lambda d: d.get("last_activity", 0), reverse=True)
 
     def create_session(self, *, title: str | None, cwd: str | None, model: str | None) -> SessionMeta:
         return self._store.create(
@@ -76,9 +94,15 @@ class ChatService:
 
     def get_session(self, sid: str) -> dict | None:
         meta = self._store.get_meta(sid)
-        if meta is None:
-            return None
-        return {"meta": meta.public_dict(busy=self.is_busy(sid)), "transcript": self._store.transcript(sid)}
+        if meta is not None:
+            return {"meta": meta.public_dict(busy=self.is_busy(sid)),
+                    "transcript": self._store.transcript(sid)}
+        if self._native is not None:
+            n = self._native.find(self._config.default_cwd, sid)
+            if n is not None:
+                events = self._native.read_events_tail(self._config.default_cwd, sid, self._config.replay_max or 0) or []
+                return {"meta": n.public_dict(), "transcript": events}
+        return None
 
     def available_commands(self) -> list[dict]:
         return [c.as_dict() for c in discover_commands(self._config.default_cwd)]
@@ -93,7 +117,7 @@ class ChatService:
     def delete_session(self, sid: str) -> bool:
         meta = self._store.get_meta(sid)
         if meta is None:
-            return False
+            return self._delete_native(sid)
         task = self._tasks.pop(sid, None)
         if task is not None and not task.done():
             task.cancel()  # stops the claude subprocess (runner terminates the group)
@@ -113,35 +137,80 @@ class ChatService:
             )
         return True
 
+    def _delete_native(self, sid: str) -> bool:
+        """Delete a native (terminal/CLI) session that was never adopted into the
+        web store: remove its CLI transcript so it's gone from ``claude --resume``
+        too. A session open elsewhere is left alone (don't yank a live file)."""
+        if self._native is None:
+            return False
+        n = self._native.find(self._config.default_cwd, sid)
+        if n is None or n.live:
+            return False
+        purge_local_sessions(self._config.claude_projects_dir, self._config.default_cwd, [sid])
+        self._native.forget(sid)
+        return True
+
     # -- commands -------------------------------------------------------------
     async def start_turn(self, sid: str, text: str) -> tuple[bool, str | None]:
-        """Launch a server-owned turn. Returns ``(ok, error_code)``;
-        error_code is ``not_found`` | ``empty`` | ``busy``."""
+        """Accept a user message. Returns ``(ok, error_code)``; error_code is
+        ``not_found`` | ``empty`` | ``busy`` | ``live``.
+
+        Terminal-like: if a turn is already running **in this process**, the
+        message is queued (shown immediately) and runs after the current one —
+        the user isn't blocked. Only an *external* (Slack) in-flight turn rejects,
+        since this process can't safely interleave into another writer's stream."""
         meta = self._store.get_meta(sid)
         if meta is None:
-            return False, "not_found"
-        if not (text or "").strip():
+            meta, err = self._adopt_native(sid)
+            if meta is None:
+                return False, err
+        text = (text or "").strip()
+        if not text:
             return False, "empty"
-        # Reject if a turn is already running here OR externally (a mirrored
-        # Slack turn in the bridge process) — else two writers would interleave
-        # events into one transcript and collide on seq.
-        if self.is_busy(sid):
+
+        job = self._jobs.get(sid)
+        if job is not None:                       # an in-process turn is running → queue
+            self._queues.setdefault(sid, []).append(text)
+            self._emit(sid, job, make_event(EventKind.USER, text=text, queued=True))
+            return True, None
+        if self._external_busy(sid):              # a Slack turn owns the stream elsewhere
             return False, "busy"
 
         self._busy.add(sid)
         job = ChatTurnJob(
-            sid, start_seq=len(self._store.transcript(sid)),  # session-global seq
+            sid, start_seq=self._store.last_seq(sid),  # session-global seq (cheap tail read)
             buffer=self._config.event_buffer,
             queue_max=self._config.subscriber_queue_max, keepalive_s=self._config.keepalive_s,
         )
         self._jobs[sid] = job
-
+        self._queues[sid] = [text]
         self._emit(sid, job, make_event(EventKind.USER, text=text))
         if (not meta.title or meta.title == "New chat") and meta.turns == 0:
             self._store.update_meta(sid, title=(" ".join(text.split())[:60] or "Chat"))
 
-        self._tasks[sid] = asyncio.ensure_future(self._run_turn(sid, text, job))
+        self._tasks[sid] = asyncio.ensure_future(self._drain(sid, job))
         return True, None
+
+    def _adopt_native(self, sid: str) -> tuple[SessionMeta | None, str | None]:
+        """Bring a native (terminal/CLI) session into the web store so it can be
+        continued from the browser. Imports the native transcript verbatim — same
+        seq numbering the read-only replay used — so the first web turn ``--resume``s
+        the real CLI session and the history dedups across the adopt boundary. A
+        session open elsewhere stays read-only (resuming a live session forks it)."""
+        if self._native is None:
+            return None, "not_found"
+        n = self._native.find(self._config.default_cwd, sid)
+        if n is None:
+            return None, "not_found"
+        if n.live:
+            return None, "live"
+        events = self._native.read_events(self._config.default_cwd, sid, cap=0) or []
+        self._store.ensure(sid, title=n.title, cwd=n.cwd, model=self._config.model,
+                           claude_session_id=sid, origin="terminal")
+        for event in events:
+            self._store.append_event(sid, event)
+        meta = self._store.update_meta(sid, claude_started=True, turns=n.turns)
+        return meta, None
 
     async def cancel_turn(self, sid: str) -> bool:
         """Request cancellation of the in-flight turn (Stop generating)."""
@@ -160,16 +229,38 @@ class ChatService:
         job.emit(event)
         return event
 
-    async def _run_turn(self, sid: str, text: str, job: ChatTurnJob) -> None:
-        meta = self._store.get_meta(sid)
+    async def _drain(self, sid: str, job: ChatTurnJob) -> None:
+        """Run the queued messages one after another on a single job, emitting
+        exactly one ``turn_end`` when the queue empties. The client keeps one open
+        stream across follow-ups; cancelling stops the run and drops the queue."""
         try:
-            if meta is None:
-                self._emit(sid, job, make_event(EventKind.ERROR, text="Session metadata is missing; aborting turn."))
-                return
+            while True:
+                queue = self._queues.get(sid)
+                if not queue:
+                    break
+                await self._run_agent(sid, queue.pop(0), job)
+        except asyncio.CancelledError:
+            self._emit(sid, job, make_event(EventKind.ERROR, text="Turn cancelled by user."))
+            raise
+        finally:
+            self._busy.discard(sid)
+            self._tasks.pop(sid, None)
+            self._queues.pop(sid, None)
+            self._emit(sid, job, make_event(EventKind.TURN_END))
+            job.running = False
+            self._jobs.pop(sid, None)
 
-            def on_event(evt: dict) -> None:
-                self._emit(sid, job, evt)
+    async def _run_agent(self, sid: str, text: str, job: ChatTurnJob) -> None:
+        """One agent invocation on ``job`` (the drain owns busy/turn_end)."""
+        meta = self._store.get_meta(sid)
+        if meta is None:
+            self._emit(sid, job, make_event(EventKind.ERROR, text="Session metadata is missing; aborting turn."))
+            return
 
+        def on_event(evt: dict) -> None:
+            self._emit(sid, job, evt)
+
+        try:
             result = await self._runner.run_turn(
                 prompt=text, cwd=meta.cwd, session_id=meta.claude_session_id,
                 resume=meta.claude_started, model=meta.model or self._config.model,
@@ -191,56 +282,61 @@ class ChatService:
                 claude_started=True, turns=meta.turns + 1,
             )
         except asyncio.CancelledError:
-            self._emit(sid, job, make_event(EventKind.ERROR, text="Turn cancelled by user."))
             raise
         except Exception as exc:
             log.exception("chat turn failed for %s", sid)
             self._emit(sid, job, make_event(EventKind.ERROR, text=f"Turn failed: {exc}"))
-        finally:
-            self._busy.discard(sid)
-            self._tasks.pop(sid, None)
-            self._emit(sid, job, make_event(EventKind.TURN_END))
-            job.running = False
-            self._jobs.pop(sid, None)
 
     # -- streaming ------------------------------------------------------------
     async def stream(self, sid: str) -> AsyncIterator[dict]:
-        """Single source of truth for a (re)connecting client: full persisted
-        history first, then live events. Both carry ``seq`` so the client
-        dedups the overlap and survives auto-reconnect."""
+        """Replay only the recent tail (O(limit), not O(file)) then live events.
+        A leading ``snapshot`` carries the paging ``cursor`` (scroll-up loads
+        older); every event carries ``seq`` so the client dedups + survives
+        reconnect."""
         if not self._store.exists(sid):
-            yield make_event(EventKind.ERROR, text="session not found")
+            async for event in self._stream_native(sid):
+                yield event
             return
-        cap = self._config.replay_max
+        cap = self._config.replay_max or 0
         job = self._jobs.get(sid)
+        events, cursor = self._store.tail(sid, cap)
+        yield make_event(EventKind.SNAPSHOT, status=("running" if job else "open"), cursor=cursor)
+        for event in events:
+            yield {**event, "replay": True}    # history: a past turn_end must NOT close the live stream
         if job is not None:
-            transcript = self._store.transcript(sid)     # full history (each has seq)
-            for event in self._tail_cap(transcript, cap):
-                yield event
-            async for event in job.subscribe_events():   # live (buffer overlap deduped by seq)
+            async for event in job.subscribe_events():   # live (overlap deduped by seq)
                 yield event
             return
-        # No in-process job. Read the transcript once (events + byte offset) and
-        # replay it; then either tail an external (Slack) in-flight turn so the
-        # browser streams it live too, or tell the client to close.
-        history, offset = self._store.transcript_since(sid, 0)
-        for event in self._tail_cap(history, cap):
-            yield event
-        if self._external_busy(sid):
-            async for event in self._tail_external(sid, offset):
+        if self._external_busy(sid):                     # an in-flight Slack turn
+            async for event in self._tail_external(sid, self._store.size(sid)):
                 yield event
         else:
             yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
 
-    @staticmethod
-    def _tail_cap(events: list[dict], cap: int) -> list[dict]:
-        """The last ``cap`` events (or all of them when ``cap`` is 0/unset).
+    def history_before(self, sid: str, cursor: int, limit: int) -> dict:
+        """Older events for scroll-up paging. Web sessions page by byte offset;
+        native (terminal) previews only show their tail, so they have no older."""
+        if self._store.exists(sid):
+            events, next_cursor = self._store.events_before(sid, cursor, limit)
+            return {"events": events, "cursor": next_cursor}
+        return {"events": [], "cursor": 0}
 
-        Bounds the transcript replayed to a (re)connecting client so opening a
-        very long session can't ship — or make the browser render — thousands of
-        rows at once. The full transcript stays on disk; ``seq`` is preserved so
-        client dedup still works."""
-        return events[-cap:] if cap and len(events) > cap else events
+    async def _stream_native(self, sid: str) -> AsyncIterator[dict]:
+        """Replay a native (terminal/CLI) session read-only: the recent tail of the
+        conversation as ``claude --resume`` has it on disk, then an idle snapshot.
+        A live external turn isn't captured here (no stdout) — the session-list
+        poll keeps the sidebar dot fresh; continuing it from the web adopts it."""
+        events = (
+            self._native.read_events_tail(self._config.default_cwd, sid, self._config.replay_max or 0)
+            if self._native is not None else None
+        )
+        if events is None:
+            yield make_event(EventKind.ERROR, text="session not found")
+            return
+        yield make_event(EventKind.SNAPSHOT, status="open", cursor=0)
+        for event in events:
+            yield {**event, "replay": True}
+        yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
 
     async def _tail_external(self, sid: str, offset: int) -> AsyncIterator[dict]:
         """Poll the on-disk transcript for events appended by another process

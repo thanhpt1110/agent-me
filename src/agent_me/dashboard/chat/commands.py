@@ -15,18 +15,28 @@ from pathlib import Path
 
 _DESC_MAX = 200
 
-# Built-ins worth surfacing in the menu (recognisable Claude Code commands).
+# Claude Code's built-in slash commands worth surfacing in the menu so the web
+# composer mirrors the TUI. Order here is the menu order (built-ins shown first).
 _BUILTINS: tuple[tuple[str, str], ...] = (
-    ("/clear", "Clear the conversation and start fresh."),
-    ("/compact", "Summarise the conversation to free up context."),
-    ("/help", "Show available commands and usage."),
-    ("/model", "Show or switch the active model."),
+    ("/context", "Visualise the current context-window usage."),
+    ("/usage", "Show plan usage and rate-limit status."),
     ("/cost", "Show token usage and cost for this session."),
+    ("/compact", "Summarise the conversation to free up context."),
+    ("/clear", "Clear the conversation and start fresh."),
+    ("/model", "Show or switch the active model."),
+    ("/agents", "List/manage the available subagents."),
+    ("/mcp", "Show MCP server status."),
+    ("/memory", "Edit the project/user memory files."),
     ("/review", "Review the current changes for bugs and cleanups."),
     ("/init", "Generate or refresh CLAUDE.md for this repo."),
-    ("/memory", "Edit the project/user memory files."),
-    ("/agents", "List the available subagents."),
-    ("/mcp", "Show MCP server status."),
+    ("/resume", "Resume a previous session."),
+    ("/status", "Show account, model, and connection status."),
+    ("/config", "View or change settings."),
+    ("/permissions", "View or edit tool-permission rules."),
+    ("/hooks", "Configure hooks for tool events."),
+    ("/export", "Export the conversation to a file or clipboard."),
+    ("/doctor", "Diagnose the Claude Code install/setup."),
+    ("/help", "Show available commands and usage."),
 )
 
 
@@ -116,4 +126,13 @@ def discover_commands(repo_dir: str | os.PathLike[str], claude_home: Path | None
     deduped: dict[str, SlashCommand] = {}
     for cmd in found:
         deduped.setdefault(cmd.name, cmd)
-    return sorted(deduped.values(), key=lambda c: (c.source != "command", c.source != "skill", c.name))
+
+    # Built-ins first (in their curated order — recognisable from the TUI), then
+    # project/user commands, then skills, each alphabetical.
+    builtin_order = {name: i for i, (name, _) in enumerate(_BUILTINS)}
+    group = {"builtin": 0, "command": 1, "skill": 2}
+
+    def sort_key(c: SlashCommand) -> tuple:
+        return (group.get(c.source, 3), builtin_order.get(c.name, 0), c.name)
+
+    return sorted(deduped.values(), key=sort_key)

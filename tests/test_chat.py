@@ -5,6 +5,7 @@ exercising the SOLID seam (DIP). HTTP tests drive the real Starlette app.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -82,14 +83,25 @@ async def test_turn_persists_streams_and_resumes(tmp_path: Path) -> None:
     assert store.get_meta(meta.id).turns == 2
 
 
-async def test_busy_lock_rejects_concurrent_turn(tmp_path: Path) -> None:
-    svc, _, _ = _service(tmp_path)
+async def test_followups_queue_while_busy(tmp_path: Path) -> None:
+    """Terminal-like: a 2nd message sent while a turn runs is queued (not rejected)
+    and runs after the first, under a single turn_end."""
+    svc, store, runner = _service(tmp_path)
     meta = svc.create_session(title=None, cwd=None, model=None)
     ok1, _ = await svc.start_turn(meta.id, "first")
-    ok2, err2 = await svc.start_turn(meta.id, "second")  # before the task drains
+    ok2, err2 = await svc.start_turn(meta.id, "second")  # while the first turn runs
     assert ok1 is True
-    assert ok2 is False and err2 == "busy"
+    assert ok2 is True and err2 is None
     await _drain(svc, meta.id)
+
+    transcript = store.transcript(meta.id)
+    assert [e["text"] for e in transcript if e["kind"] == "user"] == ["first", "second"]
+    assert sum(1 for e in transcript if e["kind"] == "turn_end") == 1
+    assert store.get_meta(meta.id).turns == 2
+    assert len(runner.calls) == 2 and runner.calls[1]["resume"] is True
+    # the queued follow-up is flagged so the UI can mark it pending
+    queued = [e for e in transcript if e["kind"] == "user" and e.get("queued")]
+    assert [e["text"] for e in queued] == ["second"]
 
 
 async def test_validation_errors(tmp_path: Path) -> None:
@@ -213,3 +225,75 @@ async def test_stream_caps_replayed_history(tmp_path: Path) -> None:
     texts = [e for e in got if e.get("kind") == EventKind.TEXT.value]
     assert [t["text"] for t in texts] == ["m15", "m16", "m17", "m18", "m19"]  # last 5 only
     assert got[-1]["kind"] == EventKind.SNAPSHOT.value  # idle, then close
+    assert got[0]["kind"] == EventKind.SNAPSHOT.value and got[0].get("cursor", 0) > 0  # paging cursor
+
+
+async def test_tail_and_scroll_up_paging(tmp_path: Path) -> None:
+    store = DiskSessionStore(tmp_path / "cs")
+    meta = store.create(title="x", cwd=str(tmp_path), model=None)
+    for i in range(50):
+        store.append_event(meta.id, make_event(EventKind.TEXT, text=f"m{i}", seq=i + 1))
+
+    assert store.last_seq(meta.id) == 50
+    tail, cursor = store.tail(meta.id, 10)
+    assert [e["text"] for e in tail] == [f"m{i}" for i in range(40, 50)] and cursor > 0
+    older, cursor2 = store.events_before(meta.id, cursor, 10)
+    assert [e["text"] for e in older] == [f"m{i}" for i in range(30, 40)] and 0 < cursor2 < cursor
+
+    # paging from the tail back to the start reconstructs the full transcript, in
+    # order, with no gaps or duplicates.
+    rebuilt, cur = list(tail), cursor
+    while cur > 0:
+        chunk, cur = store.events_before(meta.id, cur, 7)
+        rebuilt = chunk + rebuilt
+    assert [e["text"] for e in rebuilt] == [f"m{i}" for i in range(50)]
+
+
+class GatedRunner:
+    """A runner whose turn blocks on a gate so a turn can be observed mid-flight."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.calls: list[str] = []
+
+    async def run_turn(self, *, prompt, cwd, session_id, resume, model, add_dirs, on_event,
+                       append_system_prompt=None, **_kw) -> TurnResult:
+        self.calls.append(prompt)
+        on_event(make_event(EventKind.TEXT, text=f"live:{prompt}"))
+        await self.gate.wait()
+        return TurnResult(session_id=session_id, result="ok", is_error=False, exit_code=0)
+
+
+async def test_send_on_old_session_streams_live_after_history(tmp_path: Path) -> None:
+    """The reported bug: opening an old session and prompting again must stream the
+    new turn. The replayed historical turn_end is tagged ``replay`` so the client
+    doesn't mistake it for the live turn's end and close the stream."""
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    runner = GatedRunner()
+    svc = ChatService(store, runner, cfg)
+    meta = svc.create_session(title=None, cwd=None, model=None)
+
+    runner.gate.set()
+    await svc.start_turn(meta.id, "first")
+    await _drain(svc, meta.id)
+    runner.gate.clear()
+    await svc.start_turn(meta.id, "second")            # a NEW turn now runs on the old session
+
+    out: list[dict] = []
+
+    async def reader() -> None:
+        async for ev in svc.stream(meta.id):           # mirrors the browser's SSE handling
+            out.append(ev)
+            if ev["kind"] == "turn_end" and not ev.get("replay"):
+                break
+
+    task = asyncio.ensure_future(reader())
+    await asyncio.sleep(0.02)
+    runner.gate.set()
+    await asyncio.wait_for(task, timeout=3)
+
+    assert any(e["kind"] == "turn_end" and e.get("replay") for e in out)   # old turn_end tagged
+    live = [e["text"] for e in out if e["kind"] == "text" and not e.get("replay")]
+    assert any("second" in x for x in live)            # new prompt's live progress streamed
+    assert out[-1]["kind"] == "turn_end" and not out[-1].get("replay")     # ends on the live turn

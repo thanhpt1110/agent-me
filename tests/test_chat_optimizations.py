@@ -96,12 +96,20 @@ def test_discover_commands(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / ".claude").mkdir(parents=True)
 
-    cmds = {c.name: c for c in discover_commands(repo, claude_home=home)}
+    ordered = discover_commands(repo, claude_home=home)
+    cmds = {c.name: c for c in ordered}
     assert cmds["/my-skill"].source == "skill" and cmds["/my-skill"].description == "Does a thing."
     assert cmds["/deploy"].source == "command" and cmds["/deploy"].description == "Deploy it."
     assert "/git:commit" in cmds  # nested dir → namespaced command
     assert cmds["/git:commit"].description == "Just commit."  # no frontmatter → first line
-    assert cmds["/clear"].source == "builtin"
+    # the recognisable TUI built-ins are surfaced, in a curated order, before skills
+    assert cmds["/context"].source == "builtin" and cmds["/usage"].source == "builtin"
+    assert ordered[0].name == "/context"  # built-ins lead the menu
+    builtins = [c.name for c in ordered if c.source == "builtin"]
+    assert builtins[:2] == ["/context", "/usage"]
+    last_builtin = max(i for i, c in enumerate(ordered) if c.source == "builtin")
+    first_skill = min(i for i, c in enumerate(ordered) if c.source == "skill")
+    assert last_builtin < first_skill  # built-ins before skills
 
 
 # ── host terminal ────────────────────────────────────────────────────────────

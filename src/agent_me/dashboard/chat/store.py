@@ -19,6 +19,9 @@ from .models import SessionMeta, now_ms
 @runtime_checkable
 class SessionStore(Protocol):
     def create(self, *, title: str | None, cwd: str, model: str | None) -> SessionMeta: ...
+    def ensure(self, session_id: str, *, title: str | None, cwd: str, model: str | None = ...,
+               claude_session_id: str | None = ..., origin: str = ...,
+               slack_thread_ts: str | None = ...) -> SessionMeta: ...
     def get_meta(self, session_id: str) -> SessionMeta | None: ...
     def update_meta(self, session_id: str, **patch: object) -> SessionMeta | None: ...
     def list(self) -> list[SessionMeta]: ...
@@ -26,7 +29,11 @@ class SessionStore(Protocol):
     def append_event(self, session_id: str, event: dict) -> dict: ...
     def transcript(self, session_id: str) -> list[dict]: ...
     def transcript_since(self, session_id: str, offset: int) -> tuple[list[dict], int]: ...
+    def tail(self, session_id: str, limit: int) -> tuple[list[dict], int]: ...
+    def events_before(self, session_id: str, cursor: int, limit: int) -> tuple[list[dict], int]: ...
     def last_event(self, session_id: str) -> dict | None: ...
+    def last_seq(self, session_id: str) -> int: ...
+    def size(self, session_id: str) -> int: ...
     def remove(self, session_id: str) -> None: ...
 
 
@@ -159,6 +166,91 @@ class DiskSessionStore:
             except json.JSONDecodeError:
                 continue
         return out, new_offset
+
+    def size(self, sid: str) -> int:
+        try:
+            return self._transcript_path(sid).stat().st_size
+        except OSError:
+            return 0
+
+    def last_seq(self, sid: str) -> int:
+        """The highest persisted seq (== event count) — read from the file tail,
+        not the whole file, so seeding a new turn's seq is O(1) on a long session."""
+        ev = self.last_event(sid)
+        try:
+            return int(ev.get("seq", 0)) if ev else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def tail(self, sid: str, limit: int) -> tuple[list[dict], int]:
+        """The last ``limit`` events + a cursor (byte offset where the *older*
+        history ends; 0 = none). Reads only the file tail, so opening a long
+        session is O(limit), not O(file). ``limit<=0`` → all events, cursor 0."""
+        size = self.size(sid)
+        if size == 0:
+            return [], 0
+        if limit <= 0:
+            return self.transcript(sid), 0
+        lines, start = self._read_back(self._transcript_path(sid), size, limit)
+        return self._parse_lines(lines), start
+
+    def events_before(self, sid: str, cursor: int, limit: int) -> tuple[list[dict], int]:
+        """``limit`` events ending just before byte ``cursor`` + the next cursor
+        (0 at the start of history) — powers scroll-up paging."""
+        if cursor <= 0 or limit <= 0:
+            return [], 0
+        lines, start = self._read_back(self._transcript_path(sid), cursor, limit)
+        return self._parse_lines(lines), start
+
+    @staticmethod
+    def _parse_lines(lines: list[bytes]) -> list[dict]:
+        out: list[dict] = []
+        for raw in lines:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                out.append(json.loads(raw.decode("utf-8", "replace")))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    @staticmethod
+    def _read_back(path: Path, end: int, limit: int) -> tuple[list[bytes], int]:
+        """Read backwards from byte ``end`` and return the last ``limit`` complete
+        lines (forward order) + the byte offset where the first of them starts.
+
+        ``end`` is always a line boundary for paging (a prior cursor), or the file
+        size for the first tail; an unterminated trailing line just fails to parse
+        and is dropped by ``_parse_lines``."""
+        block = 65536
+        pos = end
+        data = b""
+        try:
+            with path.open("rb") as fh:
+                while pos > 0 and data.count(b"\n") <= limit:
+                    step = min(block, pos)
+                    pos -= step
+                    fh.seek(pos)
+                    data = fh.read(step) + data
+        except OSError:
+            return [], 0
+        segments = data.split(b"\n")
+        drop_leading_partial = pos > 0  # we cut mid-line: the first segment is incomplete
+        kept: list[tuple[bytes, int]] = []
+        cur = pos
+        last = len(segments) - 1
+        for i, seg in enumerate(segments):
+            seg_start = cur
+            cur += len(seg) + (0 if i == last else 1)  # +1 for the consumed '\n'
+            if i == 0 and drop_leading_partial:
+                continue
+            if seg.strip():
+                kept.append((seg, seg_start))
+        window = kept[-limit:] if limit and len(kept) > limit else kept
+        if not window:
+            return [], 0
+        return [seg for seg, _ in window], window[0][1]
 
     def last_event(self, sid: str) -> dict | None:
         """The last persisted event, read from the file tail (no full parse).

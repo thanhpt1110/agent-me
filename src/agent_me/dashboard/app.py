@@ -1355,6 +1355,20 @@ async def api_chat_commands(request: Request):
     return JSONResponse({"commands": CHAT_SERVICE.available_commands()})
 
 
+async def api_chat_history(request: Request):
+    """Older transcript events for scroll-up paging (cursor from the SSE snapshot)."""
+    if (blocked := _chat_guard(request)):
+        return blocked
+    sid = request.path_params["session_id"]
+    try:
+        cursor = int(request.query_params.get("before", "0"))
+        limit = int(request.query_params.get("limit", "100"))
+    except ValueError:
+        return JSONResponse({"error": "invalid cursor/limit"}, status_code=400)
+    limit = max(1, min(limit, 500))
+    return JSONResponse(CHAT_SERVICE.history_before(sid, cursor, limit))
+
+
 async def api_chat_message(request: Request):
     if (blocked := _chat_guard(request)):
         return blocked
@@ -1365,7 +1379,7 @@ async def api_chat_message(request: Request):
     ok, err = await CHAT_SERVICE.start_turn(sid, str(body.get("text", "")))
     if ok:
         return JSONResponse({"ok": True}, status_code=202)
-    status = {"not_found": 404, "empty": 400, "busy": 409}.get(err, 400)
+    status = {"not_found": 404, "empty": 400, "busy": 409, "live": 409}.get(err, 400)
     return JSONResponse({"error": err}, status_code=status)
 
 
@@ -1548,6 +1562,8 @@ def build_app() -> Starlette:
         Route("/api/chat/sessions/{session_id}", api_chat_session,
               methods=["GET", "DELETE", "PATCH"], name="api_chat_session"),
         Route("/api/chat/commands", api_chat_commands, name="api_chat_commands"),
+        Route("/api/chat/sessions/{session_id}/history", api_chat_history,
+              name="api_chat_history"),
         Route("/api/chat/sessions/{session_id}/message", api_chat_message,
               methods=["POST"], name="api_chat_message"),
         Route("/api/chat/sessions/{session_id}/cancel", api_chat_cancel,
