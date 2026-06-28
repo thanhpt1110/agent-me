@@ -40,7 +40,7 @@ Every time you implement, change, or remove a feature here, you **must** also up
 4. **`configs/.env.example`** — document any new env var, with a comment.
 5. **`CLAUDE.md`** (this file) — update the Folder map / conventions when they change.
 
-This holds on **every branch, including `big-update`**. A code change with no `STATE.md` update is **not finished**. A project **Stop hook** (`scripts/check-docs-updated.sh`, wired in `.claude/settings.json`) nudges you at end-of-turn when code changed but `STATE.md` didn't — treat that as a checklist, not noise.
+This holds on **every branch, including `big-update`**. A code change with no `STATE.md` update is **not finished**. A project **Stop hook** (`.claude/hooks/check-docs.sh`, wired in `.claude/settings.json`) nudges you at end-of-turn when code changed but `STATE.md` didn't — treat that as a checklist, not noise. It is **session-scoped**: a `SessionStart` hook (`.claude/hooks/capture-docs-baseline.sh`) snapshots the working tree's dirty files at session start, and the Stop hook diffs against that baseline, so it fires **only for files THIS session changed** — pre-existing uncommitted work, and turns that only do MCP/read-only work, never trigger it. Both share `.claude/hooks/_docs-snapshot.sh`.
 
 ## Auto-capture ideas (user's standing request)
 
