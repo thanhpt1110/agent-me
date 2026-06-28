@@ -37,6 +37,7 @@ class ChatConfig:
     keepalive_s: float = 120.0       # SSE idle keepalive (mirrors the dashboard's 120s)
     event_buffer: int = 300          # replay buffer size for late subscribers
     subscriber_queue_max: int = 512  # per-subscriber backpressure bound
+    replay_max: int = 400            # cap transcript replay sent on (re)connect (0 = all)
     claude_projects_dir: Path = Path.home() / ".claude" / "projects"  # CLI session transcripts
     terminal_enabled: bool = True    # Ctrl+~ host terminal (gated by the operator passcode)
     terminal_shell: str = ""         # "" → resolve $SHELL / bash at connect time

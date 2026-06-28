@@ -964,6 +964,15 @@ _Addendum 2026-06-28 (chat perf + terminal theme/clipboard + Slack→web sync) b
 
 Verified: `uv run ruff check` clean on all changed files; `uv run python -m pytest -q` (all pass, incl. new `tests/test_chat_mirror.py` — mirror write path, `event_tap`, external busy + live tail, Slack-delete keeps CLI transcript); `node --check` on the `chat.html` script. Browser click-through still needs the dev host (no passwordless sudo for `playwright install-deps` here). Users must hard-refresh (Ctrl+Shift+R). Discussion: [`discussions/2026-06-28-chat-perf-terminal-theme-slack-sync.md`](discussions/2026-06-28-chat-perf-terminal-theme-slack-sync.md).
 
+_Addendum 2026-06-28 (chat stability round 2 — load freeze, test pollution, terminal Cmd+~) by Claude (branch `big-update`) — **Fixed the web chat freezing on long sessions + phantom "after rename" chats.**_
+
+- **Root cause of the freeze**: real sessions had 221 / 379 events (mostly tool calls — 287 collapsed `<details>` with full `<pre>` bodies in one). Backend replay is 4 ms; the freeze was 100% client-side, and round-1's rAF batching made it worse by flushing all ~380 heavy rows in one synchronous render. Fix (`templates/chat.html`): the batcher now renders **≤40 rows per animation frame** (`FLUSH_CHUNK`, reschedules until `_pending` drains) and keeps **≤400 rows in the DOM** (`EVENTS_CAP`, splices the front); tool_use/tool_result `<pre>` bodies are **lazy** — `<details x-data="{o:false}" @toggle="o=$el.open">` + `<template x-if="o">`, so a collapsed tool row is just its summary line. This fixes both the load-freeze and the new-prompt lag.
+- **Server replay cap** (`chat/service.py` `_tail_cap` + `config.replay_max=400`): `stream()` replays only the last 400 events on (re)connect (job path and idle path); full transcript stays on disk, `seq` preserved so client dedup is unaffected. The external-tail offset still starts at true EOF.
+- **Phantom "after rename" chats**: the HTTP chat tests created sessions in the **real** `data/chat-sessions/` (the dashboard builds `CHAT_SERVICE` from env at import). `tests/conftest.py` now sets `CHAT_DATA_DIR` to a throwaway temp dir before importing the app, so the suite never touches real chat data (verified: a full run leaves the real dir untouched).
+- **Terminal**: `Cmd+~` now opens the terminal (macOS) alongside `Ctrl+`/`Ctrl+~`; `Cmd+`` is deliberately left to the OS window-cycler. `applyTermTheme` now calls `term.refresh()` so an already-open terminal recolours immediately on theme toggle.
+
+Verified: `uv run ruff check` clean; `uv run python -m pytest -q` green (new `test_stream_caps_replayed_history`); `node --check` on the chat script; two adversarial review passes (the second flagged the `Cmd+`` window-cycle hijack, now fixed). **Operational note**: restart the dashboard service and hard-refresh (Ctrl/Cmd+Shift+R) — a stale service/browser explains "terminal theme still doesn't change". Discussion: [`discussions/2026-06-28-chat-perf-terminal-theme-slack-sync.md`](discussions/2026-06-28-chat-perf-terminal-theme-slack-sync.md).
+
 ## Open questions / parking lot
 
 - Memory architecture: keep auto-memory file-based or externalize to

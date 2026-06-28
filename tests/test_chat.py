@@ -196,3 +196,20 @@ def test_http_routes_and_chat_page() -> None:
     assert client.post(f"/api/chat/sessions/{sid}/message", json={"text": ""}).status_code == 400
     assert client.get("/api/chat/sessions/does-not-exist").status_code == 404
     assert client.request("DELETE", f"/api/chat/sessions/{sid}").status_code == 200
+
+
+# ── transcript replay cap (long sessions must not ship/render thousands of rows) ──
+
+async def test_stream_caps_replayed_history(tmp_path: Path) -> None:
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path),
+                     keepalive_s=0.2, replay_max=5)
+    store = DiskSessionStore(cfg.data_dir)
+    svc = ChatService(store, FakeClaudeRunner([]), cfg)
+    meta = store.create(title="x", cwd=str(tmp_path), model=None)
+    for i in range(20):
+        store.append_event(meta.id, make_event(EventKind.TEXT, text=f"m{i}", seq=i + 1))
+
+    got = [ev async for ev in svc.stream(meta.id)]
+    texts = [e for e in got if e.get("kind") == EventKind.TEXT.value]
+    assert [t["text"] for t in texts] == ["m15", "m16", "m17", "m18", "m19"]  # last 5 only
+    assert got[-1]["kind"] == EventKind.SNAPSHOT.value  # idle, then close

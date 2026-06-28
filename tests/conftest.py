@@ -10,12 +10,25 @@ Covers two cross-cutting concerns:
 
 from __future__ import annotations
 
+import atexit
 import contextlib
+import os
+import shutil
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 
 import pytest
+
+# Point the native-chat store at a throwaway dir BEFORE the dashboard is imported
+# (it builds CHAT_SERVICE at import). Otherwise HTTP chat tests that create/rename
+# sessions write into the real `data/chat-sessions/`, leaving junk like an
+# "after rename" chat in the running dashboard. Set unconditionally — tests must
+# never touch real chat data.
+_CHAT_TEST_DIR = tempfile.mkdtemp(prefix="agent-me-chat-test-")
+os.environ["CHAT_DATA_DIR"] = str(Path(_CHAT_TEST_DIR) / "chat-sessions")
+atexit.register(lambda: shutil.rmtree(_CHAT_TEST_DIR, ignore_errors=True))
 
 # Load configs/.env once now (the dashboard does it at import) so the autouse
 # delenv below reliably strips the operator passcode for every test.

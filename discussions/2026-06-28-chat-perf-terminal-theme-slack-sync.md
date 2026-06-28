@@ -94,3 +94,39 @@ that file for in-flight external turns.
 `uv run ruff check` clean; `uv run python -m pytest -q` all pass incl. new
 `tests/test_chat_mirror.py`; `node --check` on the `chat.html` script block.
 Full headless browser run still needs the dev host (`playwright install-deps`).
+
+---
+
+## Round 2 — chat still unstable (same day)
+
+User reported the web chat was still not stable: new prompts lag/freeze, phantom
+"after rename" chat sessions kept appearing, clicking an old session hung and
+loaded nothing, the terminal still didn't follow the theme, and they wanted
+`Cmd+~` to open the terminal.
+
+Diagnosis (empirical, not guessed):
+- The two real sessions hold 221 and 379 events; 287 of the 379 are tool
+  `<details>` rows carrying full `<pre>` bodies. Draining `ChatService.stream()`
+  for them takes **4 ms** and terminates correctly — so the backend was never the
+  problem. The freeze is entirely client-side, and round-1's rAF batching made it
+  worse: it flushed all ~380 heavy rows in ONE synchronous render → multi-second
+  tab block = "đứng hoàn toàn". Content was always persisted (427 KB on disk);
+  the frozen UI just never showed it ("nothing saved" was perception).
+- "after rename" came from the HTTP chat tests, which write to the real
+  `data/chat-sessions/` because the dashboard builds `CHAT_SERVICE` from env at
+  import. Every `pytest` run (including mine) polluted the live dashboard.
+
+Fixes:
+- **Bounded client rendering** (`chat.html`): `FLUSH_CHUNK=40` rows/frame
+  (reschedule until drained), `EVENTS_CAP=400` (splice the front), and lazy tool
+  bodies (`<details x-data="{o:false}" @toggle> + <template x-if="o">`). DOM is
+  now bounded and never blocks a frame.
+- **Server replay cap** (`service.py` `_tail_cap`, `config.replay_max=400`): only
+  the last 400 events replay on connect; disk keeps everything, `seq` preserved.
+- **Test isolation** (`conftest.py`): `CHAT_DATA_DIR` → temp dir before app import.
+- **Terminal**: `Cmd+~` opens it (leaving `Cmd+`` to the macOS window-cycler — a
+  review finding), and `applyTermTheme` calls `term.refresh()` for an instant
+  recolour.
+
+Two adversarial review passes; the second caught the `Cmd+`` window-cycle hijack,
+now fixed by binding only `Cmd+~` (the `~`/Shift form) for the meta key.

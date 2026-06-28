@@ -211,9 +211,11 @@ class ChatService:
         if not self._store.exists(sid):
             yield make_event(EventKind.ERROR, text="session not found")
             return
+        cap = self._config.replay_max
         job = self._jobs.get(sid)
         if job is not None:
-            for event in self._store.transcript(sid):    # full history (each has seq)
+            transcript = self._store.transcript(sid)     # full history (each has seq)
+            for event in self._tail_cap(transcript, cap):
                 yield event
             async for event in job.subscribe_events():   # live (buffer overlap deduped by seq)
                 yield event
@@ -222,13 +224,23 @@ class ChatService:
         # replay it; then either tail an external (Slack) in-flight turn so the
         # browser streams it live too, or tell the client to close.
         history, offset = self._store.transcript_since(sid, 0)
-        for event in history:
+        for event in self._tail_cap(history, cap):
             yield event
         if self._external_busy(sid):
             async for event in self._tail_external(sid, offset):
                 yield event
         else:
             yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
+
+    @staticmethod
+    def _tail_cap(events: list[dict], cap: int) -> list[dict]:
+        """The last ``cap`` events (or all of them when ``cap`` is 0/unset).
+
+        Bounds the transcript replayed to a (re)connecting client so opening a
+        very long session can't ship — or make the browser render — thousands of
+        rows at once. The full transcript stays on disk; ``seq`` is preserved so
+        client dedup still works."""
+        return events[-cap:] if cap and len(events) > cap else events
 
     async def _tail_external(self, sid: str, offset: int) -> AsyncIterator[dict]:
         """Poll the on-disk transcript for events appended by another process

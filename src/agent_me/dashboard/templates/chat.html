@@ -115,7 +115,7 @@
           ■ Stop
         </button>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
-                title="Open a host terminal (Ctrl+~)"
+                title="Open a host terminal (Ctrl+~ or Cmd+~)"
                 class="rounded border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100"
                 :class="termOpen ? 'border-accent-400 text-accent-400' : 'border-ink-700 text-slate-300 hover:border-accent-400 hover:text-accent-400'">
           ⌁ Terminal
@@ -192,24 +192,30 @@
                   <div class="prose-chat border-t border-ink-800 px-3 py-2 text-xs italic text-slate-400" x-html="ev.html"></div>
                 </details>
               </template>
-              <!-- tool use (collapsed one-liner → args) -->
+              <!-- tool use (collapsed one-liner → args; body rendered only when opened) -->
               <template x-if="ev.kind === 'tool_use'">
-                <details class="rounded border border-ink-800 bg-ink-950/40 font-mono text-xs">
+                <details class="rounded border border-ink-800 bg-ink-950/40 font-mono text-xs"
+                         x-data="{ o: false }" @toggle="o = $el.open">
                   <summary class="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-slate-300">
                     <span class="text-accent-400">⚙</span><span class="font-semibold" x-text="ev.name"></span>
                     <span class="truncate text-slate-500" x-text="ev.summary"></span>
                   </summary>
-                  <pre class="overflow-x-auto border-t border-ink-800 px-3 py-2 text-slate-400 whitespace-pre-wrap" x-text="ev.detail"></pre>
+                  <template x-if="o">
+                    <pre class="overflow-x-auto border-t border-ink-800 px-3 py-2 text-slate-400 whitespace-pre-wrap" x-text="ev.detail"></pre>
+                  </template>
                 </details>
               </template>
-              <!-- tool result (collapsed) -->
+              <!-- tool result (collapsed; body rendered only when opened) -->
               <template x-if="ev.kind === 'tool_result'">
                 <details class="rounded border border-ink-800 bg-ink-950/40 font-mono text-xs"
-                         :class="ev.isError ? 'border-danger/50' : ''">
+                         :class="ev.isError ? 'border-danger/50' : ''"
+                         x-data="{ o: false }" @toggle="o = $el.open">
                   <summary class="cursor-pointer px-3 py-1.5"
                            :class="ev.isError ? 'text-danger' : 'text-slate-500'"
                            x-text="ev.isError ? '⚠ result' : '↳ result'"></summary>
-                  <pre class="max-h-80 overflow-auto border-t border-ink-800 px-3 py-2 text-slate-400 whitespace-pre-wrap" x-text="ev.content"></pre>
+                  <template x-if="o">
+                    <pre class="max-h-80 overflow-auto border-t border-ink-800 px-3 py-2 text-slate-400 whitespace-pre-wrap" x-text="ev.content"></pre>
+                  </template>
                 </details>
               </template>
               <!-- error -->
@@ -271,7 +277,7 @@
       </div>
       <div id="composer-hint" class="mt-1 px-1 text-[11px] text-slate-600">
         Type <span class="font-mono text-slate-500">/</span> for commands · Enter to send · Shift+Enter for a new line ·
-        <span class="font-mono text-slate-500">Ctrl+~</span> for a terminal · turns run server-side and survive disconnects
+        <span class="font-mono text-slate-500">Ctrl+~</span> / <span class="font-mono text-slate-500">Cmd+~</span> for a terminal · turns run server-side and survive disconnects
       </div>
     </form>
 
@@ -309,6 +315,11 @@ const TERM_LIGHT = {
   background: "#f6f8fa", foreground: "#1f2328", cursor: "#1a7f37",
   cursorAccent: "#f6f8fa", selectionBackground: "#bfe6a0",
 };
+// Keep the DOM bounded: a long session (hundreds of tool rows) must never render
+// all at once. Render at most FLUSH_CHUNK rows per animation frame and keep at
+// most EVENTS_CAP rows in the DOM (the full transcript stays server-side).
+const EVENTS_CAP = 400;
+const FLUSH_CHUNK = 40;
 
 function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled) {
   return {
@@ -368,13 +379,17 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) this.stopPolling(); else if (!this.locked) this.startPolling();
       });
-      // Ctrl+~ / Ctrl+` toggles the host terminal (like an IDE integrated terminal).
+      // Toggle the host terminal: Ctrl+`/Ctrl+~ (IDE convention, both platforms)
+      // or Cmd+~ on macOS. Cmd+` is deliberately NOT bound — that's the macOS
+      // window-cycling shortcut.
       window.addEventListener("keydown", (e) => {
-        if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === "`" || e.key === "~")) {
-          if (!this.terminalEnabled || this.locked) return;
-          e.preventDefault();
-          this.toggleTerminal();
-        }
+        if (e.altKey || (e.key !== "`" && e.key !== "~")) return;
+        const ctrlCombo = e.ctrlKey && !e.metaKey;
+        const cmdTilde = e.metaKey && !e.ctrlKey && e.key === "~";
+        if (!ctrlCombo && !cmdTilde) return;
+        if (!this.terminalEnabled || this.locked) return;
+        e.preventDefault();
+        this.toggleTerminal();
       });
       // Delegated: copy buttons live inside x-html, so Alpine @click can't bind them.
       this.$refs.scroll?.addEventListener("click", (e) => {
@@ -551,10 +566,14 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       this._flushScheduled = false; this._rafId = null;
       if (!this._pending.length) return;
       const stick = this.atBottom;
-      const batch = this._pending;
-      this._pending = [];
-      // Synchronous pushes coalesce into a single Alpine render pass.
-      for (let i = 0; i < batch.length; i++) this.events.push(batch[i]);
+      // Append at most FLUSH_CHUNK rows this frame, then reschedule until the
+      // queue drains — a 400-event replay paints progressively instead of
+      // blocking the tab for seconds.
+      const chunk = this._pending.splice(0, FLUSH_CHUNK);
+      for (let i = 0; i < chunk.length; i++) this.events.push(chunk[i]);
+      const over = this.events.length - EVENTS_CAP;
+      if (over > 0) this.events.splice(0, over);  // bound the DOM regardless of length
+      if (this._pending.length) this._scheduleFlush();
       if (stick) this.$nextTick(() => this.scrollToBottom(false));
     },
 
@@ -694,6 +713,8 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       if (!this.term) return;
       try { this.term.options.theme = this.termTheme(); }
       catch (e) { try { this.term.setOption("theme", this.termTheme()); } catch (_) {} }
+      // Force a repaint so an already-open terminal recolours immediately.
+      try { this.term.refresh(0, this.term.rows - 1); } catch (_) {}
     },
 
     // ---- terminal copy/paste shortcuts (work over plain http too) ----
