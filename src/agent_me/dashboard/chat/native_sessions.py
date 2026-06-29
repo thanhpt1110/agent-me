@@ -75,10 +75,10 @@ class NativeSession:
 
     @property
     def origin(self) -> str:
-        # `cli` = an interactive terminal; anything else (sdk-cli, etc.) is a
-        # headless run (Slack bridge / brief). Slack threads already arrive via
-        # the web mirror, so a native-only session is "terminal" or "cli".
-        return "terminal" if self.entrypoint == "cli" else "cli"
+        # Any claude session on this host that wasn't web- or Slack-born is a
+        # "terminal" session — both interactive (`entrypoint=cli`) and headless
+        # runs are surfaced the same way (the cli/terminal split only confused).
+        return "terminal"
 
     def public_dict(self) -> dict:
         return {

@@ -30,6 +30,23 @@
     </form>
   </div>
 
+  <!-- ── Delete-chat confirm (in-app, replaces window.confirm) ──────────── -->
+  <div x-show="confirmDeleteId" x-cloak @keydown.escape.window="confirmDeleteId = null"
+       class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4">
+    <div @click.outside="confirmDeleteId = null"
+         class="w-full max-w-sm rounded-card border border-ink-700 bg-ink-900 p-5 shadow-2xl">
+      <h2 class="text-lg font-semibold text-slate-100">Delete chat?</h2>
+      <p class="mt-2 text-sm text-slate-300">
+        Permanently delete <span class="font-semibold text-slate-100" x-text="'“' + deleteTitle() + '”'"></span>
+        and its claude session. This can't be undone.
+      </p>
+      <div class="mt-5 flex justify-end gap-2">
+        <button type="button" @click="confirmDeleteId = null" class="btn btn-secondary btn-sm">Cancel</button>
+        <button type="button" @click="performDelete()" class="btn btn-danger btn-sm">Delete</button>
+      </div>
+    </div>
+  </div>
+
   <!-- mobile drawer backdrop -->
   <div x-show="sidebarOpen" x-cloak @click="sidebarOpen = false"
        class="fixed inset-0 z-30 bg-black/60 lg:hidden"></div>
@@ -42,9 +59,9 @@
     <div class="flex h-14 items-center justify-between gap-2 border-b border-ink-700 px-3">
       <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Chats</span>
       <div class="flex items-center gap-2">
-        <button type="button" @click="newSession()"
+        <button type="button" @click="newSession()" title="Start a new chat"
                 class="rounded bg-accent-400 px-2.5 py-1 text-xs font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
-          + New
+          + Chat
         </button>
         <button type="button" @click="sidebarOpen = false" aria-label="Close chats"
                 class="lg:hidden rounded border border-ink-700 px-2 py-1 text-xs text-slate-400 hover:border-accent-400">✕</button>
@@ -84,6 +101,7 @@
                     class="shrink-0 rounded px-1 py-0.5 font-semibold uppercase tracking-wide"
                     :class="originClass(s)" x-text="s.origin || 'web'"></span>
               <span class="chat-rel truncate" x-text="relTime(s.last_activity)" :title="absTime(s.last_activity)"></span>
+              <span x-show="ctxPctFor(s) != null" x-cloak class="shrink-0" :title="ctxTitleFor(s)" x-text="'· ctx ' + ctxPctFor(s) + '%'"></span>
               <span x-show="s.busy" x-cloak class="shrink-0 text-accent-400">· running</span>
             </div>
           </div>
@@ -103,17 +121,33 @@
         <div class="min-w-0">
           <div class="flex items-center gap-2">
             <span class="truncate text-sm font-semibold text-slate-100" x-text="currentTitle()"></span>
-            <span class="shrink-0 rounded border border-accent-400/40 bg-accent-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-400"
+            <!-- folder@branch: a static chip once the chat has started… -->
+            <span x-show="currentMeta() && folderLocked()" x-cloak
+                  class="shrink-0 rounded border border-accent-400/40 bg-accent-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-400"
                   :title="'Working directory: ' + currentCwd()"
-                  x-text="branch + ' @ ' + host"></span>
+                  x-text="folderName(currentCwd()) + '@' + branch"></span>
+            <!-- …and a one-time folder picker while it's still new (hidden after the first prompt). -->
+            <span x-show="currentMeta() && !folderLocked()" x-cloak
+                  class="flex shrink-0 items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5 font-mono text-[10px]"
+                  title="Pick this chat's folder — locked once you send the first message">
+              <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
+              <select x-model="selectedFolder" @change="onFolderChange()"
+                      class="max-w-[9rem] truncate bg-transparent py-0.5 text-[10px] text-slate-300 focus:outline-none">
+                <template x-for="f in pickerFolders()" :key="f">
+                  <option :value="f" x-text="folderName(f)" :title="f" class="bg-ink-900 text-slate-200"></option>
+                </template>
+              </select>
+              <span class="pr-1.5 text-accent-400" x-text="'@' + branch"></span>
+            </span>
+            <span x-show="contextPct() != null" x-cloak
+                  class="shrink-0 rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
+                  :title="ctxTitle()" x-text="'ctx ' + contextPct() + '%'"></span>
           </div>
           <div class="flex items-center gap-1.5 font-mono text-[11px] text-slate-500">
             <span x-show="currentMeta()" x-cloak class="shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
                   :class="originClass({origin: currentOrigin()})" x-text="currentOrigin()"></span>
-            <span x-show="folderLocked()" x-cloak class="shrink-0" title="Folder is locked for this chat" aria-hidden="true">🔒</span>
-            <span class="truncate" :title="currentCwd()" x-text="folderName(currentCwd())"></span>
-            <span x-show="currentMeta()" x-cloak class="shrink-0" x-text="'· ' + relTime(currentMeta() && currentMeta().last_activity)"></span>
-            <span x-show="contextPct() != null" x-cloak class="shrink-0" :title="ctxTitle()" x-text="'· ctx ' + contextPct() + '%'"></span>
+            <span x-show="currentMeta()" x-cloak class="truncate" :title="absTime(currentMeta() && currentMeta().last_activity)"
+                  x-text="relTime(currentMeta() && currentMeta().last_activity)"></span>
           </div>
         </div>
       </div>
@@ -122,36 +156,11 @@
           <span class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent-400"></span>
           <span x-text="runningCount() > 1 ? (runningCount() + ' sessions running') : (busy ? 'this session running…' : 'another session running')"></span>
         </span>
-        <button type="button" x-show="busy" x-cloak @click="cancel()"
-                class="rounded border border-ink-700 px-2.5 py-1 text-xs font-medium text-slate-300 hover:border-danger hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
-          ■ Stop
-        </button>
-        <!-- Folder picker: sets the folder a chat spawns in. Editable only while a
-             chat is brand-new (not yet started); once started it's LOCKED (the
-             claude --resume cwd is pinned). "+ New" starts a fresh chat you can
-             re-point before the first message. -->
-        <div class="flex items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5"
-             :class="folderLocked() && 'opacity-60'"
-             :title="folderLocked() ? 'Folder is locked for this started chat — use + New to start elsewhere' : 'Folder for this new chat — pick a folder, then + New'">
-          <svg x-show="!folderLocked()" class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
-          <span x-show="folderLocked()" x-cloak class="shrink-0 text-slate-500" aria-hidden="true">🔒</span>
-          <select x-model="selectedFolder" @change="onFolderChange()" :disabled="folderLocked()"
-                  class="max-w-[10rem] truncate bg-transparent py-1 text-xs text-slate-300 focus:outline-none disabled:cursor-not-allowed">
-            <template x-for="f in pickerFolders()" :key="f">
-              <option :value="f" x-text="folderName(f)" :title="f" class="bg-ink-900 text-slate-200"></option>
-            </template>
-          </select>
-          <button type="button" @click="newSession()"
-                  class="rounded-r bg-accent-400 px-2 py-1 text-[11px] font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
-            + New
-          </button>
-        </div>
+        <button type="button" x-show="busy" x-cloak @click="cancel()" title="Stop" aria-label="Stop"
+                class="btn btn-danger btn-icon btn-sm">■</button>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
-                title="Open a host terminal"
-                class="rounded border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100"
-                :class="termOpen ? 'border-accent-400 text-accent-400' : 'border-ink-700 text-slate-300 hover:border-accent-400 hover:text-accent-400'">
-          ⌁ Terminal
-        </button>
+                title="Open a host terminal" aria-label="Open a host terminal"
+                class="btn btn-icon btn-sm font-mono" :class="termOpen ? 'btn-primary' : 'btn-secondary'">&gt;_</button>
         <span class="text-[11px]" :class="connected ? 'text-accent-400' : 'text-slate-500'"
               x-text="connected ? '● live' : '○ idle'"></span>
       </div>
@@ -193,7 +202,7 @@
             agent-me workspace. Turns keep running even if you close the tab.</p>
           <button type="button" @click="newSession()"
                   class="mt-5 inline-flex items-center gap-2 rounded-lg bg-accent-400 px-4 py-2 text-sm font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
-            + New chat
+            + Start a chat
           </button>
         </div>
 
@@ -411,6 +420,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     // inline rename
     editingId: null,
     editTitle: "",
+    confirmDeleteId: null,   // session id pending the in-app delete confirm
     // host terminal
     termOpen: false,
     termConnected: false,
@@ -554,17 +564,17 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     },
     // Context-window usage of the current chat (null = unknown, e.g. before the
     // first turn or for a terminal session we have no usage for).
-    contextPct() {
-      const m = this.currentMeta();
-      const t = m && m.context_tokens;
+    ctxPctFor(s) {
+      const t = s && s.context_tokens;
       if (!t || !this.contextWindow) return null;
       return Math.min(100, Math.round((t / this.contextWindow) * 100));
     },
-    ctxTitle() {
-      const m = this.currentMeta();
-      const t = (m && m.context_tokens) || 0;
+    ctxTitleFor(s) {
+      const t = (s && s.context_tokens) || 0;
       return `Context used: ${t.toLocaleString()} / ${this.contextWindow.toLocaleString()} tokens`;
     },
+    contextPct() { return this.ctxPctFor(this.currentMeta()); },
+    ctxTitle() { return this.ctxTitleFor(this.currentMeta()); },
     originTitle(s) {
       if (!s) return "";
       if (s.origin === "slack") return "Synced from a Slack thread";
@@ -594,9 +604,11 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
     absTime(ms) { return ms ? new Date(ms).toLocaleString() : ""; },
 
     async newSession() {
+      // New chats default to agent-me; the header picker re-points them until the
+      // first prompt (folder is locked once the session starts).
       const r = await fetch("/api/chat/sessions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: this.selectedFolder || this.defaultCwd }),
+        body: JSON.stringify({ cwd: this.defaultCwd }),
       });
       if (r.status === 403) { this.relock(); return; }
       const meta = await r.json();
@@ -605,8 +617,15 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
     },
 
-    async deleteSession(id) {
-      if (!confirm("Delete this chat?")) return;
+    deleteSession(id) { this.confirmDeleteId = id; },   // open the in-app confirm modal
+    deleteTitle() {
+      const s = this.sessions.find(x => x.id === this.confirmDeleteId);
+      return (s && s.title) || "this chat";
+    },
+    async performDelete() {
+      const id = this.confirmDeleteId;
+      this.confirmDeleteId = null;
+      if (!id) return;
       await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
       if (this.currentId === id) {
         // Tear the batcher down too, else a still-scheduled rAF flush would

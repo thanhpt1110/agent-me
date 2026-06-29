@@ -142,3 +142,21 @@ Web chat turns used to run as children of the dashboard process, so a `systemctl
   it rides `public_dict` to the client, which renders `ctx N%` on the title over
   `config.context_window` (`CHAT_CONTEXT_WINDOW`, default 1,000,000). The client also captures
   `context_tokens` from the live `result` event (previously dropped) so the gauge updates per turn.
+
+## Header/sidebar redesign (2026-06-29)
+- The header badge is `folder@branch` (e.g. `agent-me@big-update`). The folder picker is no
+  longer an always-visible header control: it shows **inline next to the title only while a chat is
+  unstarted** (`x-show="currentMeta() && !folderLocked()"`), and disappears once the first prompt is
+  sent → the started chat just shows the `folder@branch` chip + `ctx N%`. New chats are created from
+  the **sidebar** ("+ Chat") defaulting to `default_cwd` (agent-me); the header picker re-points them
+  via PATCH `{cwd}` until they start. There is no "+ New" / picker on the right anymore.
+- `ctx N%` also shows per session in the **sidebar** (`ctxPctFor(s)`/`ctxTitleFor(s)`; the header's
+  `contextPct()`/`ctxTitle()` delegate to them).
+- **Stop** is an icon-only `.btn-danger.btn-icon`; **Terminal** is a `>_` `.btn-icon` toggling
+  `.btn-primary`/`.btn-secondary` (was the "⌁ Terminal" text button). Buttons use the app.css
+  `.btn*` component classes (the Tailwind `*-danger` utilities aren't in the compiled CSS).
+- **Delete** uses an in-app confirm modal (`confirmDeleteId` → `performDelete()`), reusing the gate
+  modal's styling, instead of `window.confirm`.
+- **Origin badges** collapsed to `web` / `terminal` / `slack`: any native CLI session on the host is
+  now `terminal` (the old `cli` vs `terminal` split — interactive vs headless `entrypoint` — only
+  confused; `NativeSession.origin` returns `"terminal"`).

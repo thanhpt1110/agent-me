@@ -99,3 +99,29 @@ chat config / state_reader all delegate to it. Verified with a real end-to-end
 `claude` turn under a minimal nvm-less PATH (`exit_code=0, result=PATHFIX_OK`) and
 regression tests. Also corrected the `bridge_starting` log (was hardcoded
 `agent="codex"`).
+
+## Header/sidebar UX pass (operator feedback)
+
+Operator asked to clean up the chat chrome and answered the "CLI vs terminal"
+question (the origin badge): the old split was `terminal` (interactive
+`entrypoint=cli`) vs `cli` (headless/SDK). It only confused, so both collapse to
+**`terminal`** now (`NativeSession.origin` returns `"terminal"`).
+
+Changes (`chat.html` + `native_sessions.py`):
+- Header badge → `folder@branch`. Folder picker is no longer a permanent header
+  control: it shows inline by the title **only while a chat is unstarted** and
+  vanishes after the first prompt (then just `folder@branch` + `ctx N%`). New
+  chats start from the sidebar "+ Chat" (default agent-me); the header picker
+  re-points them via PATCH cwd until they start. Removed the "+ New" + right-side
+  picker. ("New" wording dropped: sidebar = "+ Chat", empty state = "+ Start a chat".)
+- `ctx N%` now also renders per session in the sidebar (the operator wasn't
+  seeing it — it was header-only and only after a turn completes).
+- Stop → icon-only `.btn-danger.btn-icon`; Terminal → `>_` `.btn-icon` toggling
+  primary/secondary. Switched to the app.css `.btn*` component classes because the
+  Tailwind `*-danger` utilities aren't in the compiled CSS (so the old
+  `text-danger`/`bg-danger/10` were silently no-ops).
+- Delete confirm is now an in-app modal (`confirmDeleteId`/`performDelete`),
+  reusing the access-gate modal styling, replacing `window.confirm`.
+
+Verified: ruff clean; pytest 302 green; `node --check` on the script; rendered
+`/chat` carries the new chrome and the old bits are gone.
