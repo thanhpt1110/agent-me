@@ -92,9 +92,12 @@ class TurnExecutor:
         new_sid = result.session_id or meta.claude_session_id
         seen = list(dict.fromkeys(
             s for s in [*meta.claude_session_ids, meta.claude_session_id, new_sid] if s))
-        self._store.update_meta(
-            sid, claude_session_id=new_sid, claude_session_ids=seen,
+        updates: dict = dict(
+            claude_session_id=new_sid, claude_session_ids=seen,
             claude_started=True, turns=meta.turns + (0 if signalled else 1))
+        if result.context_tokens:  # a killed/empty turn reports 0 — keep the prior gauge
+            updates["context_tokens"] = result.context_tokens
+        self._store.update_meta(sid, **updates)
 
         if signalled:
             attempts = (self._store.get_meta(sid).pending_attempts or 0) + 1

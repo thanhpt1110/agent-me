@@ -180,6 +180,20 @@ def test_http_rename_and_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.patch("/api/chat/sessions/nope", json={"title": "x"}).status_code == 404
 
 
+def test_http_folder_repoint_unstarted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("DASHBOARD_OPERATOR_ACTION_CODE", raising=False)
+    from agent_me.dashboard import app as dash
+    client = TestClient(dash.app)
+
+    sid = client.post("/api/chat/sessions", json={"cwd": "/tmp"}).json()["id"]
+    # an unstarted chat can be re-pointed to another real dir via the folder picker
+    r = client.patch(f"/api/chat/sessions/{sid}", json={"cwd": str(tmp_path)})
+    assert r.status_code == 200 and r.json()["cwd"] == str(tmp_path)
+    # a non-existent dir is refused
+    assert client.patch(f"/api/chat/sessions/{sid}",
+                        json={"cwd": str(tmp_path / "nope")}).status_code == 409
+
+
 def test_chat_page_nav_sources_and_folder_picker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DASHBOARD_OPERATOR_ACTION_CODE", raising=False)
     from agent_me.dashboard import app as dash

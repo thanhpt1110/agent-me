@@ -35,3 +35,4 @@ class TurnResult:
     is_error: bool = False
     exit_code: int = -1
     stderr: str = ""
+    context_tokens: int = 0  # tokens occupying the model context after this turn

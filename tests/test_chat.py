@@ -37,6 +37,7 @@ class FakeClaudeRunner:
             is_error=self._result_kwargs.get("is_error", False),
             exit_code=self._result_kwargs.get("exit_code", 0),
             stderr=self._result_kwargs.get("stderr", ""),
+            context_tokens=self._result_kwargs.get("context_tokens", 0),
         )
 
 
@@ -95,6 +96,51 @@ async def test_turn_persists_streams_and_resumes(tmp_path: Path) -> None:
     assert runner.calls[-1]["resume"] is True
     assert runner.calls[-1]["session_id"] == "claude-xyz"
     assert store.get_meta(meta.id).turns == 2
+
+
+async def test_context_tokens_tracked_and_exposed(tmp_path: Path) -> None:
+    """A turn's context-window usage is persisted on the meta and surfaced in the
+    API payload so the web can render the % gauge; a 0 (killed turn) never clobbers
+    a prior reading."""
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    runner = FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")], context_tokens=250_000)
+    svc = _wire(store, runner, cfg)
+    meta = svc.create_session(title=None, cwd=None, model=None)
+    await svc.start_turn(meta.id, "hello")
+    await _drain(svc, meta.id)
+
+    assert store.get_meta(meta.id).context_tokens == 250_000
+    payload = next(d for d in svc.session_dicts() if d["id"] == meta.id)
+    assert payload["context_tokens"] == 250_000
+
+    runner._result_kwargs["context_tokens"] = 0   # a killed/empty turn reports 0
+    await svc.start_turn(meta.id, "again")
+    await _drain(svc, meta.id)
+    assert store.get_meta(meta.id).context_tokens == 250_000  # prior reading kept
+
+
+async def test_update_cwd_locked_after_start(tmp_path: Path) -> None:
+    """The folder picker can move a brand-new chat, but the cwd is frozen once the
+    chat has started (its claude --resume cwd is pinned)."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(a), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    svc = _wire(store, FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")]), cfg)
+    meta = svc.create_session(title=None, cwd=str(a), model=None)
+
+    assert svc.folder_locked(store.get_meta(meta.id)) is False
+    out = svc.update_cwd(meta.id, str(b))                 # unstarted → allowed
+    assert out is not None and out["cwd"] == str(b)
+    assert svc.update_cwd(meta.id, str(tmp_path / "missing")) is None  # invalid dir refused
+
+    await svc.start_turn(meta.id, "go")
+    await _drain(svc, meta.id)
+    assert svc.folder_locked(store.get_meta(meta.id)) is True
+    assert svc.update_cwd(meta.id, str(a)) is None        # started → locked
+    assert store.get_meta(meta.id).cwd == str(b)          # unchanged
 
 
 async def test_followups_queue_while_busy(tmp_path: Path) -> None:

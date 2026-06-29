@@ -126,3 +126,19 @@ Web chat turns used to run as children of the dashboard process, so a `systemctl
 - `cancel_turn` SIGTERMs the worker's process group (worker + its claude child) and clears the queue.
 - A session live in a terminal (`_live_elsewhere`, via `~/.claude/sessions` pid-alive) is read-only
   from the web (resuming it would fork the running CLI session).
+
+## Folder lock + context-% gauge (2026-06-29)
+- **Folder lock**: a session's `claude --resume` cwd is pinned at create time, so the header
+  folder picker only ever set the cwd for the *next* new chat. The picker now reflects the
+  **current** chat's cwd (`selectedFolder` follows `selectSession`) and is `:disabled` + 🔒 once
+  the chat has started — `service.folder_locked(meta)` = `claude_started || turns>0 || running ||
+  live`. An unstarted chat can still be re-pointed: the `<select>` `@change` PATCHes `{cwd}` to
+  `/api/chat/sessions/{id}`; `service.update_cwd` validates the dir and **refuses (409)** once
+  locked, and the client reverts. `+ New` always opens a fresh, re-pointable chat.
+- **Context-% gauge**: the CLI `result` event's `usage` is summed (`input + cache_read +
+  cache_creation + output`) by `claude_agent.runner._context_tokens` into the RESULT event's
+  `context_tokens` and `TurnResult.context_tokens`. The worker persists it to
+  `SessionMeta.context_tokens` (a 0 from a killed turn is skipped so the prior reading stays);
+  it rides `public_dict` to the client, which renders `ctx N%` on the title over
+  `config.context_window` (`CHAT_CONTEXT_WINDOW`, default 1,000,000). The client also captures
+  `context_tokens` from the live `result` event (previously dropped) so the gauge updates per turn.

@@ -48,6 +48,7 @@ class ChatConfig:
     # live, and treat a session as busy while its turn is unfinished and recent.
     external_tail_poll_s: float = 1.0
     external_busy_window_s: float = 900.0  # 15 min: bound "busy" for a crashed external turn
+    context_window: int = 1_000_000  # model context size; denominator for the /chat % gauge
 
     @classmethod
     def from_env(cls, repo_dir: str | os.PathLike[str]) -> ChatConfig:
@@ -68,6 +69,10 @@ class ChatConfig:
             turn_timeout_s = float(os.environ.get("CHAT_TURN_TIMEOUT_S") or 0)
         except ValueError:
             turn_timeout_s = 0.0
+        try:
+            context_window = int(os.environ.get("CHAT_CONTEXT_WINDOW") or 1_000_000)
+        except ValueError:
+            context_window = 1_000_000
         claude_home = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
         return cls(
             data_dir=data_dir,
@@ -77,6 +82,7 @@ class ChatConfig:
             claude_bin=claude_bin,
             append_system_prompt=append_system_prompt,
             turn_timeout_s=turn_timeout_s,
+            context_window=context_window,
             claude_projects_dir=Path(claude_home) / "projects",
             show_native_sessions=_env_flag("CHAT_SHOW_NATIVE_SESSIONS", True),
             terminal_enabled=_env_flag("CHAT_TERMINAL_ENABLED", True),

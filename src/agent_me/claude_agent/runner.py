@@ -20,6 +20,16 @@ def _noop(_event: dict) -> None:
     pass
 
 
+def _context_tokens(usage: object) -> int:
+    """Tokens occupying the model context after a turn: prompt (incl. cache) + output.
+    The CLI result's ``usage`` is the source of truth for the /chat % gauge."""
+    if not isinstance(usage, dict):
+        return 0
+    keys = ("input_tokens", "cache_read_input_tokens",
+            "cache_creation_input_tokens", "output_tokens")
+    return sum(int(v) for k in keys if isinstance(v := usage.get(k), int | float))
+
+
 def _signal_process_group(proc: asyncio.subprocess.Process, sig: int) -> None:
     if proc.returncode is not None:
         return
@@ -134,7 +144,7 @@ class ClaudeAgentRunner:
             emit(make_event(EventKind.ERROR, text=f"Failed to launch claude: {exc}"))
             return TurnResult(session_id=session_id, is_error=True, stderr=str(exc))
 
-        state = {"sid": session_id, "result": "", "is_error": False}
+        state = {"sid": session_id, "result": "", "is_error": False, "context_tokens": 0}
 
         async def pump_stdout() -> None:
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -180,6 +190,7 @@ class ClaudeAgentRunner:
         return TurnResult(
             session_id=state["sid"], result=state["result"],
             is_error=bool(state["is_error"] or rc != 0), exit_code=rc, stderr=stderr,
+            context_tokens=int(state.get("context_tokens", 0)),
         )
 
     def _handle_line(self, line: str, state: dict, on_event: OnEvent) -> None:
@@ -206,10 +217,11 @@ class ClaudeAgentRunner:
             elif etype == "result":
                 state["is_error"] = bool(evt.get("is_error")) or evt.get("subtype") != "success"
                 state["result"] = evt.get("result") or ""
+                state["context_tokens"] = _context_tokens(evt.get("usage"))
                 on_event(make_event(
                     EventKind.RESULT, subtype=evt.get("subtype"), result=state["result"],
                     is_error=state["is_error"], cost_usd=evt.get("total_cost_usd"),
-                    duration_ms=evt.get("duration_ms"),
+                    duration_ms=evt.get("duration_ms"), context_tokens=state["context_tokens"],
                 ))
         except Exception:
             return

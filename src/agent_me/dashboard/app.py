@@ -1297,6 +1297,7 @@ async def page_chat(request: Request):
         "chat_terminal_enabled": terminal_enabled,
         "chat_host": os.uname().nodename,
         "chat_branch": _git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "?",
+        "chat_context_window": CHAT_SERVICE.config.context_window if CHAT_SERVICE else 1_000_000,
     })
 
 
@@ -1341,6 +1342,12 @@ async def api_chat_session(request: Request):
         body, err = await _chat_json(request)
         if err:
             return err
+        if "cwd" in body and "title" not in body:   # folder picker: move an unstarted chat
+            meta = CHAT_SERVICE.update_cwd(sid, str(body.get("cwd", "")))
+            if meta is None:
+                status = 404 if CHAT_SERVICE.get_session(sid) is None else 409
+                return JSONResponse({"error": "cwd locked or invalid"}, status_code=status)
+            return JSONResponse(meta)
         meta = CHAT_SERVICE.rename_session(sid, str(body.get("title", "")))
         if meta is None:
             status = 404 if CHAT_SERVICE.get_session(sid) is None else 400

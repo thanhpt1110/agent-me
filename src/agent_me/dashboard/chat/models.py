@@ -30,6 +30,7 @@ class SessionMeta:
     created_at: int = field(default_factory=now_ms)
     last_activity: int = field(default_factory=now_ms)
     turns: int = 0
+    context_tokens: int = 0           # last-known tokens in the CLI context (drives the % gauge)
     origin: str = "web"               # "web" | "slack" — where the session was opened
     slack_thread_ts: str | None = None  # Slack thread this session mirrors (origin == "slack")
     # Durable queue: messages accepted but not yet fully answered. Persisted so a

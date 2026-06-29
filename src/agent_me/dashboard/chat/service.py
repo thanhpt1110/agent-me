@@ -165,6 +165,26 @@ class ChatService:
         meta = self._store.update_meta(sid, title=clean)
         return meta.public_dict(busy=self.is_busy(sid)) if meta else None
 
+    def folder_locked(self, meta: SessionMeta) -> bool:
+        """A session's cwd is fixed once it has started — the CLI ``--resume`` is
+        pinned to that dir, and a running/terminal-held session can't be moved."""
+        return bool(
+            meta.claude_started or meta.turns > 0
+            or self._running(meta.id) or self._live_elsewhere(meta)
+        )
+
+    def update_cwd(self, sid: str, cwd: str) -> dict | None:
+        """Change an UNSTARTED session's working dir (the folder picker). Refused
+        once the session has started so an in-flight chat can't change folder."""
+        meta = self._store.get_meta(sid)
+        if meta is None or self.folder_locked(meta):
+            return None
+        chosen = (cwd or "").strip()
+        if not chosen or not Path(chosen).expanduser().is_dir():
+            return None
+        updated = self._store.update_meta(sid, cwd=str(Path(chosen).expanduser()))
+        return updated.public_dict(busy=self.is_busy(sid)) if updated else None
+
     def delete_session(self, sid: str) -> bool:
         meta = self._store.get_meta(sid)
         if meta is None:
