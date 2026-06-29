@@ -1,6 +1,7 @@
 """Shared ``claude`` CLI agent engine reused by /chat, the Slack bridge, and the brief."""
 from __future__ import annotations
 
+from .cli import resolve_cli_bin
 from .models import EventKind, TurnResult, make_event, now_ms
 from .operating_context import DEFAULT_BRANCH, operating_context
 from .runner import ClaudeAgentRunner, ClaudeRunner, OnEvent, RunnerConfig
@@ -16,4 +17,5 @@ __all__ = [
     "make_event",
     "now_ms",
     "operating_context",
+    "resolve_cli_bin",
 ]

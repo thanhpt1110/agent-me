@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent_me.claude_agent import operating_context as _default_operating_context
+from agent_me.claude_agent import resolve_cli_bin
 
 # Default model: the operator's standing decision is "always best/thinking-best".
 DEFAULT_CHAT_MODEL = "claude-opus-4-8"
@@ -59,7 +60,9 @@ class ChatConfig:
             p.strip() for p in (os.environ.get("CHAT_ADD_DIRS") or str(Path.home())).split(",") if p.strip()
         )
         model = (os.environ.get("CHAT_MODEL") or DEFAULT_CHAT_MODEL).strip() or None
-        claude_bin = (os.environ.get("CHAT_CLAUDE_BIN") or "claude").strip()
+        # Resolve to an absolute path so a detached worker / prod dashboard whose
+        # systemd PATH omits the nvm node bin can still launch claude.
+        claude_bin = resolve_cli_bin("claude", env_var="CHAT_CLAUDE_BIN")
         append_system_prompt = (
             os.environ.get("CHAT_APPEND_SYSTEM_PROMPT")
             if "CHAT_APPEND_SYSTEM_PROMPT" in os.environ

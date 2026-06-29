@@ -81,3 +81,21 @@ Branch `big-update`. Three operator asks (summarised from a Vietnamese chat):
   active model, and cwd (was the last stray "Codex" in the bridge boot log).
 - Reverse if ever needed: A100 `systemctl --user unmask agent-me-bridge` + move
   the unit back; this host `systemctl --user disable --now agent-me-bridge`.
+
+## Post-cutover fix: "Failed to launch claude: [Errno 2]"
+
+After the bridge started here, a DM died with `Failed to launch claude: [Errno 2]
+No such file or directory: 'claude'`. `claude` is npm-installed under nvm
+(`~/.nvm/versions/node/<ver>/bin`), but the systemd `--user` PATH omits that dir
+and the bridge's `resolve_cli_bin` only augmented PATH with ~/.local/bin +
+/usr/local/bin + /opt/homebrew/bin → `which` failed → spawn died. (Web chat was
+fine because the dashboard-dev unit hardcodes the nvm bin on PATH.)
+
+The resolution logic was duplicated in **4 places** (bridge, brief, state_reader
+had the only nvm-aware copy, chat config had none). Consolidated into one shared
+`agent_me.claude_agent.cli.resolve_cli_bin(name, env_var=...)` that globs every
+installed nvm/`n` node version's bin (no version hardcoded); bridge / brief /
+chat config / state_reader all delegate to it. Verified with a real end-to-end
+`claude` turn under a minimal nvm-less PATH (`exit_code=0, result=PATHFIX_OK`) and
+regression tests. Also corrected the `bridge_starting` log (was hardcoded
+`agent="codex"`).

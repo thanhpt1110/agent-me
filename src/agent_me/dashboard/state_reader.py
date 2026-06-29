@@ -29,7 +29,6 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import time
 from collections.abc import AsyncIterator
@@ -38,6 +37,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+
+from agent_me.claude_agent import resolve_cli_bin as _resolve_cli_bin
 
 log = structlog.get_logger("dashboard.state")
 
@@ -477,20 +478,7 @@ _MCP_LINE_RE = re.compile(
 
 
 def resolve_claude_bin() -> str:
-    if env := os.environ.get("CLAUDE_BIN"):
-        p = Path(env).expanduser()
-        if p.exists():
-            return str(p)
-    fallback_dirs = [
-        Path.home() / ".local" / "bin",
-        Path("/usr/local/bin"),
-        Path("/opt/homebrew/bin"),
-        *sorted((Path.home() / ".nvm" / "versions" / "node").glob("*/bin")),
-    ]
-    aug_path = os.pathsep.join([os.environ.get("PATH", ""), *(str(p) for p in fallback_dirs)])
-    if found := shutil.which("claude", path=aug_path):
-        return found
-    return "claude"
+    return _resolve_cli_bin("claude", env_var="CLAUDE_BIN")
 
 
 def _classify_mcp_state(state: str) -> tuple[bool, bool]:

@@ -67,6 +67,7 @@ from agent_me.auto_sfa import (
 )
 from agent_me.auto_sfa_history import record_auto_sfa_run
 from agent_me.claude_agent import ClaudeAgentRunner, RunnerConfig, operating_context
+from agent_me.claude_agent import resolve_cli_bin as _resolve_cli_bin
 from agent_me.codex_app_server import (
     codex_app_server_args,
     run_codex_app_server,
@@ -140,15 +141,9 @@ def resolve_uv_bin() -> str:
 
 
 def resolve_cli_bin(env_var: str, name: str) -> str:
-    if env := os.environ.get(env_var):
-        p = Path(env).expanduser()
-        if p.exists():
-            return str(p)
-    local_bin = Path.home() / ".local" / "bin"
-    aug_path = f"{local_bin}:/usr/local/bin:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
-    if found := shutil.which(name, path=aug_path):
-        return found
-    return name
+    # Delegate to the shared resolver: it also searches nvm/n node bins, so the
+    # systemd --user service (minimal PATH) still finds npm-installed claude/codex.
+    return _resolve_cli_bin(name, env_var=env_var)
 
 
 _UV_BIN = resolve_uv_bin()

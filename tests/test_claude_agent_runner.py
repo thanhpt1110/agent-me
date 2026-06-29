@@ -2,8 +2,38 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import pytest
+
+from agent_me.claude_agent import resolve_cli_bin
 from agent_me.claude_agent.runner import ClaudeAgentRunner, _context_tokens
+
+
+def test_resolve_cli_bin_finds_nvm_bin_without_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A systemd --user service has a minimal PATH that omits nvm node bins; the
+    resolver must still find an npm-installed CLI there (regression: the bridge
+    died with 'Failed to launch claude: [Errno 2]')."""
+    nvm_bin = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
+    nvm_bin.mkdir(parents=True)
+    fake = nvm_bin / "claude"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")          # no nvm on PATH
+    assert resolve_cli_bin("claude") == str(fake)
+    assert resolve_cli_bin("definitely-not-installed") == "definitely-not-installed"  # graceful fallback
+
+
+def test_resolve_cli_bin_env_var_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))  # empty home, no nvm
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    explicit = tmp_path / "my-claude"
+    explicit.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("CHAT_CLAUDE_BIN", str(explicit))
+    assert resolve_cli_bin("claude", env_var="CHAT_CLAUDE_BIN") == str(explicit)
+    monkeypatch.setenv("CHAT_CLAUDE_BIN", str(tmp_path / "missing"))  # nonexistent → ignored
+    assert resolve_cli_bin("claude", env_var="CHAT_CLAUDE_BIN") == "claude"  # bare-name fallback
 
 
 def test_context_tokens_sums_prompt_and_output() -> None:

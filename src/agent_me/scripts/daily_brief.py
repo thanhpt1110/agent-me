@@ -46,7 +46,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -63,6 +62,7 @@ from dotenv import load_dotenv
 from slack_sdk import WebClient
 
 from agent_me.claude_agent import ClaudeAgentRunner, RunnerConfig
+from agent_me.claude_agent import resolve_cli_bin as _resolve_cli_bin
 from agent_me.codex_app_server import run_codex_app_server
 from agent_me.mcp_tokens import codex_mcp_token_env, refresh_expired_mcp_tokens
 
@@ -107,15 +107,9 @@ PERIOD_PRESETS = {
 
 
 def resolve_cli_bin(env_var: str, name: str) -> str:
-    if env := os.environ.get(env_var):
-        p = Path(env).expanduser()
-        if p.exists():
-            return str(p)
-    local_bin = Path.home() / ".local" / "bin"
-    aug_path = f"{local_bin}:/usr/local/bin:/opt/homebrew/bin:{os.environ.get('PATH', '')}"
-    if found := shutil.which(name, path=aug_path):
-        return found
-    return name
+    # Delegate to the shared resolver (also searches nvm/n node bins) so a cron /
+    # systemd run with a minimal PATH still finds npm-installed codex/claude.
+    return _resolve_cli_bin(name, env_var=env_var)
 
 
 CODEX_BIN = resolve_cli_bin("CODEX_BIN", "codex")
