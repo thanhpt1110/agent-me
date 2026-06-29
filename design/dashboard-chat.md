@@ -23,6 +23,9 @@ log: [`discussions/2026-06-26-native-dashboard-chat.md`](../discussions/2026-06-
 - `GET  /chat` — page (`templates/chat.html`)
 - `GET/POST /api/chat/sessions` — list / create
 - `GET/DELETE /api/chat/sessions/{id}` — meta+transcript / delete
+- `PATCH /api/chat/sessions/{id}` — `{title}` rename, `{cwd}` folder picker, `{branch}` branch picker (409 if started/shared/own-tree/invalid)
+- `GET  /api/chat/folders` — candidate spawn folders (folder picker)
+- `GET  /api/chat/branches?cwd=…` — local git branches for a folder (branch picker)
 - `POST /api/chat/sessions/{id}/message` — start a turn (202 / 400 empty / 404 / 409 busy)
 - `POST /api/chat/sessions/{id}/cancel` — Stop generating
 - `GET  /api/sse/chat/{id}` — `EventSourceResponse` stream
@@ -160,3 +163,31 @@ Web chat turns used to run as children of the dashboard process, so a `systemctl
 - **Origin badges** collapsed to `web` / `terminal` / `slack`: any native CLI session on the host is
   now `terminal` (the old `cli` vs `terminal` split — interactive vs headless `entrypoint` — only
   confused; `NativeSession.origin` returns `"terminal"`).
+
+## Content-sized folder chip + per-folder branch picker (2026-06-29)
+The `folder@branch` chip now reflects the **selected folder's real branch**, not a value hardcoded
+at render time, and both picker selects size to their content.
+- **Per-folder branch resolution.** `chat_branch` (rendered once from the dashboard repo's own HEAD —
+  always `big-update`) is gone. `ChatService.branch_options(cwd)` → `{is_git, branches, current}`
+  via git in *that* folder (`symbolic-ref --short HEAD` so an unborn branch shows its real name, not
+  `HEAD`; `for-each-ref … refs/heads` sorted by committerdate, capped at `_MAX_BRANCHES=100`).
+  Served by `GET /api/chat/branches?cwd=…`; the frontend caches results in `branchesByCwd` and reads
+  them via `branchSuffix(cwd)` (chip) / `pickerIsGit()` / `pickerBranches()`. A non-git folder shows
+  just the folder name (no `@`).
+- **Content-sized selects.** The old fixed `max-w-[9rem]` is gone. Both `<select>`s use
+  `:style="selectWidth(text)"` = `clamp(2rem, calc(Nch + 1.15rem), 14rem)` — content-hugging but
+  clamped so a long folder/branch name can't blow out the `h-14` header — plus the `.chip-select`
+  class in `app.css` (`appearance-none` + a custom SVG caret) so width is predictable instead of
+  depending on the browser's native arrow box.
+- **Branch checkout (unstarted only).** Selecting a branch PATCHes `{branch}` →
+  `ChatService.checkout_branch`, which validates the target against the folder's own branch list (so
+  it never reaches `git checkout` as a free-form arg) and runs in the session's cwd. Refused (→ 409)
+  once the chat has started.
+- **Shared/own-tree guard.** A checkout mutates the *whole working tree*, so `_branch_switch_allowed`
+  refuses it when `meta.cwd == default_cwd` (the agent's own `~/agent-me` — keeps it on `big-update`,
+  never flipped under the live dashboard/bridge) or when **another session is pinned to the same
+  folder**. The client mirrors this with `branchReadOnly()` and renders those branches as a read-only
+  `@branch` label instead of a dropdown. The locked chip shows the folder's current HEAD; with this
+  guard, a dedicated folder's HEAD == the branch that session runs on (nothing else flips it).
+- Tests: `tests/test_chat.py::{test_branch_options_and_checkout, test_branch_options_handles_unborn_branch,
+  test_branch_checkout_refused_for_shared_or_own_tree}`.

@@ -1296,7 +1296,6 @@ async def page_chat(request: Request):
         "chat_locked": locked,
         "chat_terminal_enabled": terminal_enabled,
         "chat_host": os.uname().nodename,
-        "chat_branch": _git_output(["rev-parse", "--abbrev-ref", "HEAD"]) or "?",
         "chat_context_window": CHAT_SERVICE.config.context_window if CHAT_SERVICE else 1_000_000,
     })
 
@@ -1348,6 +1347,12 @@ async def api_chat_session(request: Request):
                 status = 404 if CHAT_SERVICE.get_session(sid) is None else 409
                 return JSONResponse({"error": "cwd locked or invalid"}, status_code=status)
             return JSONResponse(meta)
+        if "branch" in body and "title" not in body:   # branch picker: checkout on an unstarted chat
+            info = CHAT_SERVICE.checkout_branch(sid, str(body.get("branch", "")))
+            if info is None:
+                status = 404 if CHAT_SERVICE.get_session(sid) is None else 409
+                return JSONResponse({"error": "branch locked or invalid"}, status_code=status)
+            return JSONResponse(info)
         meta = CHAT_SERVICE.rename_session(sid, str(body.get("title", "")))
         if meta is None:
             status = 404 if CHAT_SERVICE.get_session(sid) is None else 400
@@ -1370,6 +1375,14 @@ async def api_chat_folders(request: Request):
     if (blocked := _chat_guard(request)):
         return blocked
     return JSONResponse(CHAT_SERVICE.folder_options())
+
+
+async def api_chat_branches(request: Request):
+    """Local git branches for a candidate folder (branch picker). Empty when the
+    folder isn't a git work tree, so the UI shows just the folder name."""
+    if (blocked := _chat_guard(request)):
+        return blocked
+    return JSONResponse(CHAT_SERVICE.branch_options(request.query_params.get("cwd", "")))
 
 
 async def api_chat_history(request: Request):
@@ -1587,6 +1600,7 @@ def build_app() -> Starlette:
               methods=["GET", "DELETE", "PATCH"], name="api_chat_session"),
         Route("/api/chat/commands", api_chat_commands, name="api_chat_commands"),
         Route("/api/chat/folders", api_chat_folders, name="api_chat_folders"),
+        Route("/api/chat/branches", api_chat_branches, name="api_chat_branches"),
         Route("/api/chat/sessions/{session_id}/history", api_chat_history,
               name="api_chat_history"),
         Route("/api/chat/sessions/{session_id}/message", api_chat_message,

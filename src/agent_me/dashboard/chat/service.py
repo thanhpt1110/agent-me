@@ -30,6 +30,20 @@ log = logging.getLogger("agent_me.dashboard.chat")
 
 _TURN_WORKER_MODULE = "agent_me.dashboard.chat.turn_runner"
 _TAIL_POLL_S = 0.25   # how often a connected client polls the transcript for new events
+_MAX_BRANCHES = 100   # cap the branch dropdown so a huge repo can't bloat the response
+
+
+def _git(cwd: str, args: list[str], *, timeout_s: float = 1.5) -> tuple[int, str]:
+    """Run git in an arbitrary folder. Returns (returncode, stdout); rc=1 on any
+    spawn error so callers treat "git missing/blew up" the same as "not a repo"."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", cwd, *args],
+            capture_output=True, check=False, text=True, timeout=timeout_s,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return proc.returncode, proc.stdout.strip()
 
 
 class ChatService:
@@ -184,6 +198,57 @@ class ChatService:
             return None
         updated = self._store.update_meta(sid, cwd=str(Path(chosen).expanduser()))
         return updated.public_dict(busy=self.is_busy(sid)) if updated else None
+
+    def branch_options(self, cwd: str) -> dict:
+        """Local git branches for a folder (branch picker). ``is_git=False`` with
+        empty lists when the folder isn't a git work tree, so the UI hides the
+        branch dropdown and shows only the folder name."""
+        path = (cwd or "").strip()
+        if not path or not Path(path).expanduser().is_dir():
+            return {"is_git": False, "branches": [], "current": ""}
+        root = str(Path(path).expanduser())
+        if _git(root, ["rev-parse", "--is-inside-work-tree"])[0] != 0:
+            return {"is_git": False, "branches": [], "current": ""}
+        current = _git(root, ["symbolic-ref", "--short", "HEAD"])[1]  # real name even on an unborn branch
+        if not current:                                               # detached HEAD → no symbolic ref
+            current = _git(root, ["rev-parse", "--abbrev-ref", "HEAD"])[1]
+        listing = _git(root, ["for-each-ref", "--format=%(refname:short)",
+                              "--sort=-committerdate", "refs/heads"])[1]
+        branches = [b for b in listing.splitlines() if b][:_MAX_BRANCHES]
+        if current and current != "HEAD" and current not in branches:
+            branches.insert(0, current)
+        return {"is_git": True, "branches": branches, "current": current}
+
+    def _branch_switch_allowed(self, meta: SessionMeta) -> bool:
+        """A checkout mutates the whole working tree, so refuse it for the agent's
+        own repo (default_cwd — the live dashboard/bridge run there) and for any
+        folder another session is pinned to, where it would move HEAD out from
+        under them. The picker shows those branches read-only instead."""
+        cwd = str(Path(meta.cwd).expanduser())
+        if cwd == str(Path(self._config.default_cwd).expanduser()):
+            return False
+        return not any(m.id != meta.id and str(Path(m.cwd).expanduser()) == cwd
+                       for m in self._store.list())
+
+    def checkout_branch(self, sid: str, branch: str) -> dict | None:
+        """Switch an UNSTARTED, NON-SHARED session's folder to a local branch
+        (branch picker). Refused once the session has started, for a shared/own
+        tree (see ``_branch_switch_allowed``), and for any branch not already in
+        the folder (the value never reaches git as a free-form arg). Returns the
+        refreshed branch_options on success, None on locked/invalid/failed
+        checkout (e.g. a dirty tree) so the caller reverts the dropdown."""
+        meta = self._store.get_meta(sid)
+        if meta is None or self.folder_locked(meta) or not self._branch_switch_allowed(meta):
+            return None
+        target = (branch or "").strip()
+        info = self.branch_options(meta.cwd)
+        if not info["is_git"] or target not in info["branches"]:
+            return None
+        if target == info["current"]:
+            return info
+        if _git(meta.cwd, ["checkout", target], timeout_s=15.0)[0] != 0:
+            return None
+        return self.branch_options(meta.cwd)
 
     def delete_session(self, sid: str) -> bool:
         meta = self._store.get_meta(sid)

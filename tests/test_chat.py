@@ -6,6 +6,7 @@ exercising the SOLID seam (DIP). HTTP tests drive the real Starlette app.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -141,6 +142,89 @@ async def test_update_cwd_locked_after_start(tmp_path: Path) -> None:
     assert svc.folder_locked(store.get_meta(meta.id)) is True
     assert svc.update_cwd(meta.id, str(a)) is None        # started → locked
     assert store.get_meta(meta.id).cwd == str(b)          # unchanged
+
+
+def _git_init(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    def run(*a: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True, text=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@e.x")
+    run("config", "user.name", "t")
+    (repo / "f").write_text("x")
+    run("add", "-A")
+    run("commit", "-qm", "init")
+    run("branch", "feature")
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+async def test_branch_options_and_checkout(tmp_path: Path) -> None:
+    """The branch picker lists a folder's local branches and checks one out on an
+    unstarted, dedicated chat; it's refused for a non-git folder, an unknown
+    branch, and a started chat (whose cwd/branch are pinned to --resume)."""
+    repo, plain = tmp_path / "repo", tmp_path / "plain"
+    _git_init(repo)
+    plain.mkdir()
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    svc = _wire(store, FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")]), cfg)
+
+    assert svc.branch_options(str(plain)) == {"is_git": False, "branches": [], "current": ""}
+    info = svc.branch_options(str(repo))
+    assert info["is_git"] is True and info["current"] == "main"
+    assert set(info["branches"]) == {"main", "feature"}
+
+    meta = svc.create_session(title=None, cwd=str(repo), model=None)
+    assert svc.checkout_branch(meta.id, "nope") is None          # unknown branch refused
+    out = svc.checkout_branch(meta.id, "feature")                # unstarted, dedicated → checked out
+    assert out is not None and out["current"] == "feature"
+    assert _head(repo) == "feature"
+
+    await svc.start_turn(meta.id, "go")
+    await _drain(svc, meta.id)
+    assert svc.checkout_branch(meta.id, "main") is None          # started → locked
+    assert _head(repo) == "feature"
+
+
+def test_branch_options_handles_unborn_branch(tmp_path: Path) -> None:
+    """A freshly-init'd repo with no commits reports its real (unborn) branch name,
+    not a misleading 'HEAD'."""
+    repo = tmp_path / "fresh"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True,
+                   capture_output=True, text=True)
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
+    svc = _wire(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    info = svc.branch_options(str(repo))
+    assert info["is_git"] is True and info["current"] == "main"
+
+
+async def test_branch_checkout_refused_for_shared_or_own_tree(tmp_path: Path) -> None:
+    """A checkout mutates the whole working tree, so it's refused for the agent's
+    own repo (default_cwd) and for any folder another session is pinned to."""
+    own = tmp_path / "own"
+    _git_init(own)
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(own), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    svc = _wire(store, FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")]), cfg)
+
+    s_own = svc.create_session(title=None, cwd=str(own), model=None)
+    assert svc.branch_options(str(own))["is_git"] is True        # still listed (read-only)
+    assert svc.checkout_branch(s_own.id, "feature") is None       # own/default tree → refused
+    assert _head(own) == "main"
+
+    dedi = tmp_path / "dedi"
+    _git_init(dedi)
+    a = svc.create_session(title=None, cwd=str(dedi), model=None)
+    assert svc.checkout_branch(a.id, "feature") is not None       # sole user → allowed
+    subprocess.run(["git", "-C", str(dedi), "checkout", "-q", "main"], check=True)
+    svc.create_session(title=None, cwd=str(dedi), model=None)     # a second chat shares the folder
+    assert svc.checkout_branch(a.id, "feature") is None           # now shared → refused
+    assert _head(dedi) == "main"
 
 
 async def test_followups_queue_while_busy(tmp_path: Path) -> None:

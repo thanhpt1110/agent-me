@@ -6,7 +6,7 @@
 {% endblock %}
 
 {% block content %}
-<div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_branch | tojson }}, {{ chat_terminal_enabled | tojson }}, {{ chat_context_window | tojson }})' x-init="init()"
+<div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_terminal_enabled | tojson }}, {{ chat_context_window | tojson }})' x-init="init()"
      class="relative grid grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]" style="height: calc(100dvh - 9rem);">
 
   <!-- ── Access gate (operator passcode) ──────────────────────────────── -->
@@ -121,23 +121,39 @@
         <div class="min-w-0">
           <div class="flex items-center gap-2">
             <span class="truncate text-sm font-semibold text-slate-100" x-text="currentTitle()"></span>
-            <!-- folder@branch: a static chip once the chat has started… -->
+            <!-- folder@branch: a static chip once the chat has started (border hugs
+                 the folder name; branch suffix only when the folder is a git repo). -->
             <span x-show="currentMeta() && folderLocked()" x-cloak
-                  class="shrink-0 rounded border border-accent-400/40 bg-accent-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-400"
-                  :title="'Working directory: ' + currentCwd()"
-                  x-text="folderName(currentCwd()) + '@' + branch"></span>
-            <!-- …and a one-time folder picker while it's still new (hidden after the first prompt). -->
+                  class="shrink-0 whitespace-nowrap rounded border border-accent-400/40 bg-accent-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-400"
+                  :title="'Working directory: ' + currentCwd() + branchSuffix(currentCwd())"
+                  x-text="folderName(currentCwd()) + branchSuffix(currentCwd())"></span>
+            <!-- …and a one-time folder (+ branch) picker while it's still new. Both
+                 selects size to their content; the branch one shows only for a git repo. -->
             <span x-show="currentMeta() && !folderLocked()" x-cloak
                   class="flex shrink-0 items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5 font-mono text-[10px]"
                   title="Pick this chat's folder — locked once you send the first message">
               <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
-              <select x-model="selectedFolder" @change="onFolderChange()"
-                      class="max-w-[9rem] truncate bg-transparent py-0.5 text-[10px] text-slate-300 focus:outline-none">
+              <select x-model="selectedFolder" @change="onFolderChange()" :style="selectWidth(folderName(selectedFolder))"
+                      aria-label="Working directory"
+                      class="chip-select truncate bg-transparent py-0.5 pl-0.5 pr-3.5 text-[10px] text-slate-300 focus:outline-none">
                 <template x-for="f in pickerFolders()" :key="f">
                   <option :value="f" x-text="folderName(f)" :title="f" class="bg-ink-900 text-slate-200"></option>
                 </template>
               </select>
-              <span class="pr-1.5 text-accent-400" x-text="'@' + branch"></span>
+              <!-- editable branch dropdown for a dedicated folder; read-only @branch
+                   label for the agent's own repo / a folder another chat is using. -->
+              <span x-show="pickerIsGit() && !branchReadOnly()" class="flex items-center pr-1.5 text-accent-400">@<select
+                      x-model="selectedBranch" @change="onBranchChange()" :style="selectWidth(selectedBranch)"
+                      aria-label="Branch" title="Pick this chat's branch — checks out the folder before the first message"
+                      class="chip-select truncate bg-transparent py-0.5 pl-0.5 pr-3.5 text-[10px] text-accent-400 focus:outline-none">
+                <template x-for="b in pickerBranches()" :key="b">
+                  <option :value="b" x-text="b" :title="b" class="bg-ink-900 text-slate-200"></option>
+                </template>
+              </select></span>
+              <span x-show="pickerIsGit() && branchReadOnly()" class="whitespace-nowrap pr-1.5 text-accent-400"
+                    title="Branch is fixed here — switching the agent's own repo or a folder another chat uses would move it underneath them"
+                    x-text="branchSuffix(selectedFolder)"></span>
+              <span x-show="!pickerIsGit()" class="pr-1.5"></span>
             </span>
             <span x-show="contextPct() != null" x-cloak
                   class="shrink-0 rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
@@ -376,16 +392,17 @@ const TERM_LIGHT = {
 const EVENTS_CAP = 400;
 const FLUSH_CHUNK = 40;
 
-function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled, contextWindow) {
+function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contextWindow) {
   return {
     sessions: initialSessions || [],
     defaultCwd: defaultCwd || "",
     folders: [],                       // candidate spawn folders for a new chat
     selectedFolder: defaultCwd || "",  // the current/next chat's folder (locked once started)
+    branchesByCwd: {},                 // cwd -> {is_git, branches, current} (branch picker cache)
+    selectedBranch: "",                // the current/next chat's branch (locked once started)
     contextWindow: contextWindow || 1000000,  // denominator for the context-used % gauge
     locked: !!locked,
     host: host || "host",
-    branch: branch || "?",
     terminalEnabled: !!terminalEnabled,
     pollTimer: null,
     _now: Date.now(),          // reactive clock so relative times re-render as they age
@@ -479,6 +496,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
         if (!this.selectedFolder || !this.folders.includes(this.selectedFolder)) {
           this.selectedFolder = d.default || this.defaultCwd;
         }
+        this.syncBranches(this.selectedFolder);
       } catch (e) { /* keep defaults */ }
     },
     folderName(path) {
@@ -558,9 +576,71 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
           body: JSON.stringify({ cwd }),
         });
         if (r.status === 403) { this.relock(); return; }
-        if (r.ok) { const mm = await r.json(); if (this.currentMeta()) this.currentMeta().cwd = mm.cwd; this.selectedFolder = mm.cwd; await this.refreshSessions(); }
-        else { this.selectedFolder = m.cwd; }      // rejected (started/invalid) → revert
-      } catch (e) { this.selectedFolder = m.cwd; }
+        if (r.ok) { const mm = await r.json(); if (this.currentMeta()) this.currentMeta().cwd = mm.cwd; this.selectedFolder = mm.cwd; await this.refreshSessions(); this.syncBranches(mm.cwd); }
+        else { this.selectedFolder = m.cwd; this.syncBranches(m.cwd); }   // rejected (started/invalid) → revert
+      } catch (e) { this.selectedFolder = m.cwd; this.syncBranches(m.cwd); }
+    },
+
+    // ---- branch picker (per-folder; only meaningful while the chat is unstarted) ----
+    branchInfo(cwd) { return this.branchesByCwd[(cwd || "").trim()] || null; },
+    branchSuffix(cwd) {
+      const info = this.branchInfo(cwd);
+      return info && info.is_git && info.current ? "@" + info.current : "";
+    },
+    pickerInfo() { return this.branchInfo(this.selectedFolder); },
+    pickerIsGit() { const i = this.pickerInfo(); return !!(i && i.is_git); },
+    // A checkout mutates the whole working tree, so the agent's own repo and any
+    // folder another chat is pinned to show the branch read-only (mirrors the
+    // server's _branch_switch_allowed) — you can still SEE the branch, not flip it.
+    branchReadOnly() {
+      const f = this.selectedFolder;
+      if (!f || f === this.defaultCwd) return true;
+      return this.sessions.some(s => s.id !== this.currentId && s.cwd === f);
+    },
+    pickerBranches() {
+      const i = this.pickerInfo();
+      const b = (i && i.branches) ? i.branches.slice() : [];
+      if (this.selectedBranch && !b.includes(this.selectedBranch)) b.unshift(this.selectedBranch);
+      return b;
+    },
+    // Size an appearance-none mono <select> to its selected text (+ padding for the
+    // custom caret), clamped so a long name can't blow out the header width.
+    selectWidth(text) {
+      const n = Math.max(1, String(text || "").length);
+      return `width: clamp(2rem, calc(${n}ch + 1.15rem), 14rem)`;
+    },
+    async loadBranches(cwd) {
+      const key = (cwd || "").trim();
+      if (!key) return null;
+      try {
+        const r = await fetch("/api/chat/branches?cwd=" + encodeURIComponent(key));
+        if (r.status === 403) { this.relock(); return null; }
+        if (!r.ok) return null;
+        const d = await r.json();
+        this.branchesByCwd[key] = d;
+        return d;
+      } catch (e) { return null; }
+    },
+    async syncBranches(cwd) {
+      this.selectedBranch = "";   // clear synchronously so a prior folder's branch never flashes mid-fetch
+      const info = await this.loadBranches(cwd);
+      this.selectedBranch = (info && info.is_git) ? info.current : "";
+    },
+    async onBranchChange() {
+      const m = this.currentMeta();
+      if (!m) return;
+      if (this.folderLocked()) { await this.syncBranches(m.cwd); return; }
+      const info = this.branchInfo(this.selectedFolder);
+      if (!info || !info.is_git || this.selectedBranch === info.current) return;
+      try {
+        const r = await fetch(`/api/chat/sessions/${m.id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ branch: this.selectedBranch }),
+        });
+        if (r.status === 403) { this.relock(); return; }
+        if (r.ok) { const d = await r.json(); this.branchesByCwd[this.selectedFolder] = d; this.selectedBranch = d.current; }
+        else { await this.syncBranches(this.selectedFolder); }   // checkout failed (dirty tree) → revert
+      } catch (e) { await this.syncBranches(this.selectedFolder); }
     },
     // Context-window usage of the current chat (null = unknown, e.g. before the
     // first turn or for a terminal session we have no usage for).
@@ -633,6 +713,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
         this.closeStream(); this._cancelFlush(); this._pending = [];
         this.currentId = null; this.resetTranscript();
         this.selectedFolder = this.defaultCwd;   // no chat selected → picker back to default
+        this.syncBranches(this.defaultCwd);
       }
       await this.refreshSessions();
     },
@@ -647,7 +728,7 @@ function chat(initialSessions, defaultCwd, locked, host, branch, terminalEnabled
       this.closeStream();
       this.currentId = id;
       const m = this.currentMeta();
-      if (m && m.cwd) this.selectedFolder = m.cwd;   // picker reflects this chat's folder
+      if (m && m.cwd) { this.selectedFolder = m.cwd; this.syncBranches(m.cwd); }   // picker reflects this chat's folder + branch
       this._cancelFlush();
       this._pending = [];
       this.resetTranscript();
