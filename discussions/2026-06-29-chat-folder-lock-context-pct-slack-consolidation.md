@@ -66,8 +66,18 @@ Branch `big-update`. Three operator asks (summarised from a Vietnamese chat):
   x-data arg. Headless browser unavailable here (missing `libatk`) → operator
   hard-refresh + visual check.
 
-## Next
+## Cutover executed (2026-06-29, operator-authorised)
 
-- Slack cutover on operator go: `systemctl --user stop agent-me-bridge` on A100
-  (and `disable`), then install + `enable --now` the unit here; confirm the bot
-  answers from this host (journalctl + a DM).
+- A100 (`ipp1-2252`/`local-thaphan`): `systemctl --user stop agent-me-bridge`;
+  moved the real unit aside (`…service.movedaside`) and `systemctl --user mask`
+  → `/dev/null` symlink, because `agent-me-watch` (tracks `main`) would
+  `systemctl restart` the bridge on the next main commit. Mask makes that restart
+  fail ("Unit is masked") → robustly down. Dashboard (:8765) + watcher untouched.
+- This host: installed the unit to `~/.config/systemd/user/`, `enable --now`,
+  linger on. Verified `bridge_starting agent=claude cwd=/home/thaphan/agent-me`,
+  Socket Mode session established, `⚡️ Bolt app is running!`, no errors.
+- Code fix: `slack_bridge/app.py::main_async` `bridge_starting` log hardcoded
+  `agent="codex"` (+ codex model) — corrected to log the real `AGENT_BACKEND`,
+  active model, and cwd (was the last stray "Codex" in the bridge boot log).
+- Reverse if ever needed: A100 `systemctl --user unmask agent-me-bridge` + move
+  the unit back; this host `systemctl --user disable --now agent-me-bridge`.

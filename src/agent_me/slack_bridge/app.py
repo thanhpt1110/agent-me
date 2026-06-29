@@ -3597,12 +3597,14 @@ async def on_approval_auto_thread(ack, body, client):
 
 async def main_async() -> int:
     handler = AsyncSocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
-    log.info("bridge_starting", agent="codex",
+    active_model = MODEL if AGENT_BACKEND == "codex" else (CLAUDE_MODEL or "(cli-default)")
+    log.info("bridge_starting", agent=AGENT_BACKEND,
              approval_gate=APPROVAL_GATE_ON,
-             model=MODEL, mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
+             model=active_model, cwd=SLACK_AGENT_CWD,
+             mcp_check_interval_s=MCP_CHECK_INTERVAL_S)
 
-    # Legacy Claude approval bootstrap. Codex is the default backend, so this
-    # only runs if an operator explicitly enables the old hook path.
+    # Legacy approval bootstrap (codex hook path) — only runs if an operator
+    # explicitly enables the gate; claude is the default backend.
     if APPROVAL_GATE_ON:
         try:
             approvals.bootstrap_hooks(chat_cwd=CHAT_CWD, state_dir=STATE_DIR)
