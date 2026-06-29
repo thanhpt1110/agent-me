@@ -7,13 +7,30 @@ prototype's ``sessions.js``.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .models import SessionMeta, now_ms
+
+
+def pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
 
 
 @runtime_checkable
@@ -24,6 +41,8 @@ class SessionStore(Protocol):
                slack_thread_ts: str | None = ...) -> SessionMeta: ...
     def get_meta(self, session_id: str) -> SessionMeta | None: ...
     def update_meta(self, session_id: str, **patch: object) -> SessionMeta | None: ...
+    def append_pending(self, session_id: str, text: str) -> SessionMeta | None: ...
+    def pop_pending(self, session_id: str) -> str | None: ...
     def list(self) -> list[SessionMeta]: ...
     def exists(self, session_id: str) -> bool: ...
     def append_event(self, session_id: str, event: dict) -> dict: ...
@@ -95,15 +114,71 @@ class DiskSessionStore:
         except (FileNotFoundError, json.JSONDecodeError):
             return None
 
+    @contextlib.contextmanager
+    def _meta_lock(self, sid: str) -> Iterator[None]:
+        """Cross-process lock around a meta read-modify-write, so the dashboard and
+        the detached turn-runner never clobber each other's meta.json updates."""
+        lock = self._dir / sid / "meta.lock"
+        try:
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            fh = lock.open("w")
+        except OSError:
+            yield   # best-effort: a missing dir shouldn't crash the caller
+            return
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
+
     def update_meta(self, sid: str, **patch: object) -> SessionMeta | None:
-        meta = self.get_meta(sid)
-        if meta is None:
-            return None
-        for key, value in patch.items():
-            setattr(meta, key, value)
-        meta.last_activity = now_ms()
-        self._write_meta(meta)
-        return meta
+        with self._meta_lock(sid):
+            meta = self.get_meta(sid)
+            if meta is None:
+                return None
+            for key, value in patch.items():
+                setattr(meta, key, value)
+            meta.last_activity = now_ms()
+            self._write_meta(meta)
+            return meta
+
+    def append_pending(self, sid: str, text: str) -> SessionMeta | None:
+        """Atomically append a message to the durable queue (meta.pending)."""
+        with self._meta_lock(sid):
+            meta = self.get_meta(sid)
+            if meta is None:
+                return None
+            meta.pending = [*meta.pending, text]
+            meta.last_activity = now_ms()
+            self._write_meta(meta)
+            return meta
+
+    def claim_run(self, sid: str) -> bool:
+        """Atomically claim the right to run this session's turns: succeeds only if
+        no live worker already owns it. Sets ``running_pid`` to the caller's pid as a
+        placeholder (the spawned worker overwrites it with its own). Prevents two
+        workers draining the same session (which would collide on seq)."""
+        with self._meta_lock(sid):
+            meta = self.get_meta(sid)
+            if meta is None or pid_alive(meta.running_pid):
+                return False
+            meta.running_pid = os.getpid()
+            self._write_meta(meta)
+            return True
+
+    def pop_pending(self, sid: str) -> str | None:
+        """Atomically remove + return the first queued message (None if empty)."""
+        with self._meta_lock(sid):
+            meta = self.get_meta(sid)
+            if meta is None or not meta.pending:
+                return None
+            text = meta.pending[0]
+            meta.pending = meta.pending[1:]
+            meta.pending_attempts = 0
+            self._write_meta(meta)
+            return text
 
     def list(self) -> list[SessionMeta]:
         metas = [m for sid in self._ids() if (m := self.get_meta(sid)) is not None]

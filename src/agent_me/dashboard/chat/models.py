@@ -32,10 +32,24 @@ class SessionMeta:
     turns: int = 0
     origin: str = "web"               # "web" | "slack" — where the session was opened
     slack_thread_ts: str | None = None  # Slack thread this session mirrors (origin == "slack")
+    # Durable queue: messages accepted but not yet fully answered. Persisted so a
+    # dashboard restart mid-turn doesn't lose them — a detached worker drains them.
+    pending: list[str] = field(default_factory=list)
+    pending_attempts: int = 0         # consecutive signal-interrupts (poison-message guard)
+    # PID of the detached turn-runner process draining this session (0 = none). It
+    # runs in its own cgroup, so a dashboard restart doesn't kill it; the dashboard
+    # tails the transcript and reconnects to it.
+    running_pid: int = 0
 
     def public_dict(self, *, busy: bool = False) -> dict:
-        """JSON-safe view for API responses (adds the in-memory ``busy`` flag)."""
-        return {**asdict(self), "busy": busy}
+        """JSON-safe view for API responses (adds the in-memory ``busy`` flag).
+
+        ``pending``/``pending_attempts`` are internal queue state — kept out of the
+        API payload (the queued bubbles already stream in the transcript)."""
+        d = asdict(self)
+        for internal in ("pending", "pending_attempts", "running_pid"):
+            d.pop(internal, None)
+        return {**d, "busy": busy}
 
     @classmethod
     def from_dict(cls, d: dict) -> SessionMeta:

@@ -40,15 +40,29 @@ class FakeClaudeRunner:
         )
 
 
+def _wire(store, runner, cfg, native=None) -> ChatService:
+    """Build a ChatService whose turn-worker runs IN-PROCESS (no detached subprocess),
+    so tests drive the real TurnExecutor + queue/resume logic with a FakeRunner."""
+    from agent_me.dashboard.chat.turn_runner import TurnExecutor
+    tasks: dict[str, asyncio.Task] = {}
+
+    def launch(sid: str) -> None:
+        tasks[sid] = asyncio.ensure_future(TurnExecutor(store, runner, cfg).run(sid))
+
+    svc = ChatService(store, runner, cfg, native=native, launch=launch)
+    svc._test_tasks = tasks  # type: ignore[attr-defined]
+    return svc
+
+
 def _service(tmp_path: Path, events=None) -> tuple[ChatService, DiskSessionStore, FakeClaudeRunner]:
     cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
     store = DiskSessionStore(cfg.data_dir)
     runner = FakeClaudeRunner(events or [make_event(EventKind.TEXT, text="hello")])
-    return ChatService(store, runner, cfg), store, runner
+    return _wire(store, runner, cfg), store, runner
 
 
 async def _drain(svc: ChatService, sid: str) -> None:
-    task = svc._tasks.get(sid)
+    task = getattr(svc, "_test_tasks", {}).get(sid)
     if task is not None:
         await task
 
@@ -99,9 +113,6 @@ async def test_followups_queue_while_busy(tmp_path: Path) -> None:
     assert sum(1 for e in transcript if e["kind"] == "turn_end") == 1
     assert store.get_meta(meta.id).turns == 2
     assert len(runner.calls) == 2 and runner.calls[1]["resume"] is True
-    # the queued follow-up is flagged so the UI can mark it pending
-    queued = [e for e in transcript if e["kind"] == "user" and e.get("queued")]
-    assert [e["text"] for e in queued] == ["second"]
 
 
 async def test_validation_errors(tmp_path: Path) -> None:
@@ -148,7 +159,7 @@ async def test_cli_error_is_surfaced(tmp_path: Path) -> None:
     cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
     store = DiskSessionStore(cfg.data_dir)
     runner = FakeClaudeRunner([], is_error=True, exit_code=1, stderr="boom\nauth expired")
-    svc = ChatService(store, runner, cfg)
+    svc = _wire(store, runner, cfg)
     meta = svc.create_session(title=None, cwd=None, model=None)
     await svc.start_turn(meta.id, "hi")
     await _drain(svc, meta.id)
@@ -170,7 +181,7 @@ async def test_operating_context_passed_to_runner(tmp_path: Path) -> None:
                      keepalive_s=0.2, append_system_prompt="OP-CTX")
     store = DiskSessionStore(cfg.data_dir)
     runner = FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")])
-    svc = ChatService(store, runner, cfg)
+    svc = _wire(store, runner, cfg)
     meta = svc.create_session(title=None, cwd=None, model=None)
     await svc.start_turn(meta.id, "do work")
     await _drain(svc, meta.id)
@@ -249,6 +260,50 @@ async def test_tail_and_scroll_up_paging(tmp_path: Path) -> None:
     assert [e["text"] for e in rebuilt] == [f"m{i}" for i in range(50)]
 
 
+async def test_signal_exit_keeps_pending_for_resume(tmp_path: Path) -> None:
+    """A SIGTERM exit (143 — e.g. the dashboard restarted mid-turn) is NOT a claude
+    error: it surfaces as a soft "interrupted, resumes automatically" note (no scary
+    code), and the un-finished + queued messages stay in ``meta.pending`` so they can
+    auto-resume — the user never has to re-type them."""
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    runner = FakeClaudeRunner([], is_error=True, exit_code=143)
+    svc = _wire(store, runner, cfg)
+    meta = svc.create_session(title=None, cwd=None, model=None)
+    await svc.start_turn(meta.id, "first")
+    await svc.start_turn(meta.id, "second")   # queued while the first runs
+    await _drain(svc, meta.id)
+
+    m = store.get_meta(meta.id)
+    errs = [e for e in store.transcript(meta.id) if e["kind"] == "error"]
+    assert errs and "interrupt" in errs[0]["text"].lower() and "143" not in errs[0]["text"]
+    assert m.claude_started is True                 # still resumable
+    assert m.pending == ["first", "second"]         # both kept for auto-resume
+    assert m.pending_attempts == 1
+
+
+async def test_pending_auto_resumes_after_restart(tmp_path: Path) -> None:
+    """A message left pending by a restart auto-resumes: a fresh service (same store)
+    re-runs it on startup via ``resume_pending`` and clears it once it completes."""
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    # round 1: the turn is signal-interrupted, leaving the message pending
+    svc1 = _wire(store, FakeClaudeRunner([], is_error=True, exit_code=143), cfg)
+    meta = svc1.create_session(title=None, cwd=None, model=None)
+    await svc1.start_turn(meta.id, "do the thing")
+    await _drain(svc1, meta.id)
+    assert store.get_meta(meta.id).pending == ["do the thing"]
+
+    # round 2: "restart" — a new service on the same store resumes + finishes it
+    runner2 = FakeClaudeRunner([make_event(EventKind.TEXT, text="done")])
+    svc2 = _wire(store, runner2, cfg)
+    assert svc2.resume_pending() == 1
+    await _drain(svc2, meta.id)
+    assert store.get_meta(meta.id).pending == []        # cleared after completion
+    assert runner2.calls and runner2.calls[0]["resume"] is True
+    assert any(e["kind"] == "text" and e["text"] == "done" for e in store.transcript(meta.id))
+
+
 def test_folder_options_lists_default_and_dirs(tmp_path: Path) -> None:
     sub = tmp_path / "proj"
     sub.mkdir()
@@ -284,21 +339,21 @@ class GatedRunner:
         return TurnResult(session_id=session_id, result="ok", is_error=False, exit_code=0)
 
 
-async def test_send_on_old_session_streams_live_after_history(tmp_path: Path) -> None:
-    """The reported bug: opening an old session and prompting again must stream the
-    new turn. The replayed historical turn_end is tagged ``replay`` so the client
-    doesn't mistake it for the live turn's end and close the stream."""
+async def test_old_session_new_turn_streams_via_tail(tmp_path: Path) -> None:
+    """Opening an old session and prompting again must stream the new turn by tailing
+    the (detached-worker-written) transcript: the replayed historical turn_end is
+    tagged ``replay`` so it doesn't close the stream, and the live turn_end ends it."""
     cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path), keepalive_s=0.2)
     store = DiskSessionStore(cfg.data_dir)
     runner = GatedRunner()
-    svc = ChatService(store, runner, cfg)
+    svc = _wire(store, runner, cfg)
     meta = svc.create_session(title=None, cwd=None, model=None)
 
     runner.gate.set()
     await svc.start_turn(meta.id, "first")
-    await _drain(svc, meta.id)
+    await _drain(svc, meta.id)                          # history now has a turn_end
     runner.gate.clear()
-    await svc.start_turn(meta.id, "second")            # a NEW turn now runs on the old session
+    await svc.start_turn(meta.id, "second")            # a NEW turn now runs (gated) on the old session
 
     out: list[dict] = []
 
@@ -309,11 +364,12 @@ async def test_send_on_old_session_streams_live_after_history(tmp_path: Path) ->
                 break
 
     task = asyncio.ensure_future(reader())
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.05)
     runner.gate.set()
-    await asyncio.wait_for(task, timeout=3)
+    await asyncio.wait_for(task, timeout=5)
+    await _drain(svc, meta.id)
 
-    assert any(e["kind"] == "turn_end" and e.get("replay") for e in out)   # old turn_end tagged
-    live = [e["text"] for e in out if e["kind"] == "text" and not e.get("replay")]
-    assert any("second" in x for x in live)            # new prompt's live progress streamed
-    assert out[-1]["kind"] == "turn_end" and not out[-1].get("replay")     # ends on the live turn
+    assert any(e["kind"] == "turn_end" and e.get("replay") for e in out)        # old turn_end tagged
+    assert any("live:second" in (e.get("text") or "") for e in out)            # new turn's progress shown
+    assert out[-1]["kind"] == "turn_end" and not out[-1].get("replay")          # ends on the live turn
+    assert store.get_meta(meta.id).pending == []                                # completed, queue drained

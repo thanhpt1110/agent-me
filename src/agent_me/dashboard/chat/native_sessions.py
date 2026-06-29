@@ -152,6 +152,12 @@ class NativeSessionReader:
         """Drop a cached summary (after the session's file is deleted)."""
         self._cache.pop(sid, None)
 
+    def live_ids(self) -> set[str]:
+        """Session ids currently held by a live (pid-alive) ``claude`` process —
+        e.g. one open in a terminal. The web must not ``--resume`` these (it would
+        conflict with / fork the running session)."""
+        return set(self._live_map().keys())
+
     def _load(self, sid: str, path: Path) -> NativeSession | None:
         try:
             st = path.stat()

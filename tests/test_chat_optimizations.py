@@ -22,7 +22,7 @@ from agent_me.dashboard.chat.service import ChatService
 from agent_me.dashboard.chat.store import DiskSessionStore
 from agent_me.dashboard.chat.terminal import TerminalSession, resolve_shell
 
-from .test_chat import FakeClaudeRunner, _drain
+from .test_chat import FakeClaudeRunner, _drain, _wire
 
 # ── local session purge ─────────────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ async def test_delete_purges_local_claude_sessions(tmp_path: Path) -> None:
                      claude_projects_dir=projects)
     store = DiskSessionStore(cfg.data_dir)
     runner = FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")], session_id="forked-id")
-    svc = ChatService(store, runner, cfg)
+    svc = _wire(store, runner, cfg)
     meta = svc.create_session(title=None, cwd=None, model=None)
 
     pdir = projects / project_dir_name(cwd)

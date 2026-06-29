@@ -20,6 +20,11 @@ Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.15.0/bin:/usr/local/bin
 ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 0.0.0.0 --port 8787 --forwarded-allow-ips=*
 Restart=on-failure
 RestartSec=3
+# Only kill the dashboard process on stop/restart — NOT its children. Chat turns
+# run as detached worker processes (own process group); they must survive a restart
+# so an in-flight prompt isn't killed (the operator's "exit code 143"). The worker
+# clears its own state + the dashboard re-tails it on reconnect.
+KillMode=process
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=agent-me-dashboard-dev

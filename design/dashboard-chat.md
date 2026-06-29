@@ -106,3 +106,23 @@ stream takes the live path — fixes "old session shows no live progress"); the 
 "Load older" paging with DOM trim only while following at the bottom; sidebar origin badge +
 ticking relative time + `.chat-run` spinner; `Ctrl+`` terminal toggle (`e.code` fallback; `Cmd+``
 is OS-reserved on macOS); built-ins-first `/` menu (`/context`, `/usage`, …).
+
+## Detached turn-runner — turns survive a dashboard restart (2026-06-29)
+Web chat turns used to run as children of the dashboard process, so a `systemctl restart`
+(deploy, or the agent restarting the dashboard) SIGTERM-killed the in-flight `claude`
+(exit 143) and dropped the queued message. Now turns run in a **detached worker**:
+
+- `turn_runner.py::TurnExecutor` + the `agent-me-chat-turn` console script. The dashboard
+  `start_turn` only: `store.append_pending(sid, text)` (durable, flock'd) → `store.claim_run(sid)`
+  (atomic, one worker per session) → `subprocess.Popen([... turn_runner], start_new_session=True)`
+  (own process group). The unit is `KillMode=process`, so a dashboard restart leaves the worker
+  running. `_spawn_worker` records the real `Popen.pid` in `meta.running_pid`.
+- The worker drains `meta.pending` (pop on completion; keep on signal-interrupt for resume),
+  writes USER/agent/`turn_end` events to the transcript, and clears `running_pid` when done.
+- The dashboard **tails the transcript** (`_tail_external`, 0.25s) for live streaming — so it can
+  restart and a reconnecting browser just re-tails. `is_busy`/`stream` use `running_pid` (pid-alive).
+- `resume_pending()` (app lifespan startup) relaunches a worker for any session that still has
+  queued work but no live worker (poison-guarded after 3 signal-interrupts).
+- `cancel_turn` SIGTERMs the worker's process group (worker + its claude child) and clears the queue.
+- A session live in a terminal (`_live_elsewhere`, via `~/.claude/sessions` pid-alive) is read-only
+  from the web (resuming it would fork the running CLI session).

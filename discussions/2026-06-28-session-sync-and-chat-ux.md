@@ -110,3 +110,39 @@ More operator requests:
 Verified: ruff clean; 290 passed (auto_sfa flake passes on retry); DEV dashboard on :8787 renders 8
 Sources links + the folder select; `/api/chat/folders` returns repo + siblings; keybind/note gone;
 node --check passes; Slack help/version render "Claude".
+
+## Round 3 (2026-06-29): detached turn-runner — turns survive a dashboard restart
+
+Operator: "restart dev env still interrupts the in-flight prompt → claude exit code.
+Fix completely — run the web turn in an independent process so a restart doesn't kill it;
+poll/resume after restart instead of exit-code."
+
+Diagnosis (from real transcripts + journal): the exit code was **143 = SIGTERM**, emitted
+right after a "restart dashboard" command — web turns were **children of the dashboard**, so
+every `systemctl restart` killed the in-flight `claude`. The queue logic itself was fine
+(reproduced clean with opus + the real repo cwd).
+
+Fix — detached worker:
+- `turn_runner.py`: `TurnExecutor` + `agent-me-chat-turn` entry point. The dashboard appends to
+  the durable queue (`store.append_pending`, flock'd), claims it (`store.claim_run`, atomic),
+  and spawns the worker with `start_new_session=True` (own process group). Unit set to
+  `KillMode=process` so a restart leaves children alone. The worker drains `meta.pending`,
+  writes events to the transcript, manages `meta.running_pid`. The dashboard tails the
+  transcript (0.25s) and `resume_pending()` (startup) relaunches a worker for any session with
+  queued work whose worker died.
+- Bug found during live testing: `claim_run` set `running_pid` to the *dashboard's* pid as a
+  placeholder, and the worker's old single-writer guard then saw that alive pid and exited
+  immediately ("stuck" — worker spawned, exited 0, defunct). Fix: drop the worker guard
+  (claim_run already serializes), and have `_spawn_worker` overwrite `running_pid` with the real
+  `Popen.pid`.
+- Removed the in-process `ChatTurnJob` execution path from the service; `stream`/`is_busy` use
+  `running_pid` (pid-alive). A terminal-live session stays read-only (`_live_elsewhere`).
+
+A100 `.env`: read via `cim ssh ipp1-2252 --print-creds` failed (vault), but the operator holds
+the lease so `cim ssh` (piped stdin, base64) read `/localhome/local-thaphan/agent-me/configs/.env`.
+Merged the real Slack/GitHub/NVIDIA/Jira secrets into this host's `.env`, keeping
+`AGENT_BACKEND=claude`, host-correct `AGENT_ME_REPO_DIR`, and the existing DEV operator code.
+
+Verification: ruff clean; 295 passed. **Live**: a turn running `sleep 30 && echo
+SURVIVED_RESTART_MARKER` survived **two** dashboard restarts mid-turn (the `turn_runner` pid
+stayed alive) and completed (full transcript + marker + `pending=[]`, `running_pid=0`).

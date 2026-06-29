@@ -9,33 +9,41 @@ source) and fanned out live via a :class:`ChatTurnJob`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator
+import os
+import signal
+import subprocess
+import sys
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from .commands import discover_commands
 from .config import ChatConfig
-from .jobs import ChatTurnJob
 from .local_sessions import purge_local_sessions
 from .models import EventKind, SessionMeta, make_event, now_ms
 from .native_sessions import NativeSessionReader
 from .runner import ClaudeRunner
-from .store import SessionStore
+from .store import SessionStore, pid_alive
 
 log = logging.getLogger("agent_me.dashboard.chat")
+
+_TURN_WORKER_MODULE = "agent_me.dashboard.chat.turn_runner"
+_TAIL_POLL_S = 0.25   # how often a connected client polls the transcript for new events
 
 
 class ChatService:
     def __init__(self, store: SessionStore, runner: ClaudeRunner, config: ChatConfig,
-                 native: NativeSessionReader | None = None) -> None:
+                 native: NativeSessionReader | None = None,
+                 launch: Callable[[str], None] | None = None) -> None:
         self._store = store
         self._runner = runner
         self._config = config
         self._native = native
-        self._jobs: dict[str, ChatTurnJob] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
-        self._busy: set[str] = set()
-        self._queues: dict[str, list[str]] = {}  # follow-ups typed while a turn runs
+        # Turns run in a DETACHED worker process (own process group), so a dashboard
+        # restart doesn't kill them; the dashboard only appends to the queue + tails
+        # the transcript. ``launch`` is injectable so tests run the worker in-process.
+        self._launch = launch or self._spawn_worker
 
     @property
     def config(self) -> ChatConfig:
@@ -45,21 +53,29 @@ class ChatService:
     def list_sessions(self) -> list[SessionMeta]:
         return self._store.list()
 
+    def _running(self, sid: str) -> bool:
+        """A detached worker is actively draining this session (pid alive)."""
+        meta = self._store.get_meta(sid)
+        return bool(meta and pid_alive(meta.running_pid))
+
     def is_busy(self, sid: str) -> bool:
-        # In-process turn (this dashboard) OR an external turn (e.g. Slack)
-        # still mid-flight in another process writing the same store.
-        return sid in self._busy or self._external_busy(sid)
+        return self._running(sid) or self._external_busy(sid)
+
+    def _live_elsewhere(self, meta: SessionMeta | None) -> bool:
+        """True if this session's CLI id is currently held by a live ``claude``
+        process we don't own (e.g. open in a terminal). Driving it from the web
+        would ``--resume`` a session another process owns → conflict/hang/fork."""
+        if self._native is None or meta is None:
+            return False
+        live = self._native.live_ids()
+        return any(s in live for s in (meta.id, meta.claude_session_id, *meta.claude_session_ids) if s)
 
     def _external_busy(self, sid: str) -> bool:
         """A mirrored (Slack) session is "running" while its last event isn't a
         ``turn_end`` and it was touched recently — the window bounds a turn that
-        crashed without a terminal event so it doesn't show busy forever."""
-        if sid in self._busy:
-            return False
+        crashed without a terminal event so it doesn't show busy forever. (Web
+        turns use ``running_pid`` instead; see :meth:`_running`.)"""
         meta = self._store.get_meta(sid)
-        # Only Slack-mirrored sessions are driven by another process; a half-
-        # written web session (e.g. dashboard restart mid-turn) must not be
-        # reported busy here — its in-process job is simply gone.
         if meta is None or meta.origin != "slack":
             return False
         last = self._store.last_event(sid)
@@ -153,13 +169,7 @@ class ChatService:
         meta = self._store.get_meta(sid)
         if meta is None:
             return self._delete_native(sid)
-        task = self._tasks.pop(sid, None)
-        if task is not None and not task.done():
-            task.cancel()  # stops the claude subprocess (runner terminates the group)
-        job = self._jobs.pop(sid, None)
-        if job is not None:
-            job.running = False
-        self._busy.discard(sid)
+        self._terminate_worker(meta.running_pid)  # stop the detached worker (+ its claude child)
         self._store.remove(sid)
         # Also delete the CLI's own transcripts so the chat doesn't linger in
         # `claude --resume` — but only for sessions this dashboard owns. A
@@ -190,10 +200,10 @@ class ChatService:
         """Accept a user message. Returns ``(ok, error_code)``; error_code is
         ``not_found`` | ``empty`` | ``busy`` | ``live``.
 
-        Terminal-like: if a turn is already running **in this process**, the
-        message is queued (shown immediately) and runs after the current one —
-        the user isn't blocked. Only an *external* (Slack) in-flight turn rejects,
-        since this process can't safely interleave into another writer's stream."""
+        The message is appended to the durable queue and a DETACHED worker process
+        drains it (or, if one is already running, picks it up) — so the user is never
+        blocked AND a dashboard restart can't kill the turn. Only an external (Slack)
+        in-flight turn, or a session live in a terminal, is refused."""
         meta = self._store.get_meta(sid)
         if meta is None:
             meta, err = self._adopt_native(sid)
@@ -202,29 +212,50 @@ class ChatService:
         text = (text or "").strip()
         if not text:
             return False, "empty"
-
-        job = self._jobs.get(sid)
-        if job is not None:                       # an in-process turn is running → queue
-            self._queues.setdefault(sid, []).append(text)
-            self._emit(sid, job, make_event(EventKind.USER, text=text, queued=True))
-            return True, None
         if self._external_busy(sid):              # a Slack turn owns the stream elsewhere
             return False, "busy"
+        if not self._running(sid) and self._live_elsewhere(meta):  # open in a terminal → read-only
+            return False, "live"
 
-        self._busy.add(sid)
-        job = ChatTurnJob(
-            sid, start_seq=self._store.last_seq(sid),  # session-global seq (cheap tail read)
-            buffer=self._config.event_buffer,
-            queue_max=self._config.subscriber_queue_max, keepalive_s=self._config.keepalive_s,
-        )
-        self._jobs[sid] = job
-        self._queues[sid] = [text]
-        self._emit(sid, job, make_event(EventKind.USER, text=text))
-        if (not meta.title or meta.title == "New chat") and meta.turns == 0:
-            self._store.update_meta(sid, title=(" ".join(text.split())[:60] or "Chat"))
-
-        self._tasks[sid] = asyncio.ensure_future(self._drain(sid, job))
+        self._store.append_pending(sid, text)     # durable: survives a restart
+        if self._store.claim_run(sid):            # nobody draining → launch a worker
+            self._launch(sid)
         return True, None
+
+    def _spawn_worker(self, sid: str) -> None:
+        """Launch the detached turn-runner in its OWN process group (so a dashboard
+        restart — with ``KillMode=process`` — leaves it running). It inherits this
+        process's env (claude OAuth, PATH, the loaded .env)."""
+        repo = self._config.default_cwd or str(Path.cwd())
+        out: object = subprocess.DEVNULL
+        with contextlib.suppress(OSError):
+            logp = Path(self._config.data_dir) / sid / "worker.log"
+            logp.parent.mkdir(parents=True, exist_ok=True)
+            out = logp.open("ab")
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", _TURN_WORKER_MODULE, sid],
+                cwd=repo, env={**os.environ}, stdin=subprocess.DEVNULL,
+                stdout=out, stderr=out, start_new_session=True,
+            )
+            # Record the REAL worker pid (claim_run only set a placeholder), so
+            # ``_running`` reflects the worker — and clears when it dies.
+            self._store.update_meta(sid, running_pid=proc.pid)
+        except (OSError, ValueError):
+            log.exception("failed to spawn chat turn worker for %s", sid)
+            self._store.update_meta(sid, running_pid=0)   # release the claim so a retry can launch
+        finally:
+            if out is not subprocess.DEVNULL:
+                with contextlib.suppress(Exception):
+                    out.close()
+
+    @staticmethod
+    def _terminate_worker(pid: int) -> None:
+        """SIGTERM the worker's whole process group (worker + its claude child)."""
+        if not pid_alive(pid):
+            return
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(pid, signal.SIGTERM)
 
     def _adopt_native(self, sid: str) -> tuple[SessionMeta | None, str | None]:
         """Bring a native (terminal/CLI) session into the web store so it can be
@@ -248,79 +279,34 @@ class ChatService:
         return meta, None
 
     async def cancel_turn(self, sid: str) -> bool:
-        """Request cancellation of the in-flight turn (Stop generating)."""
-        task = self._tasks.get(sid)
-        if task is None or task.done():
-            return False
-        task.cancel()
-        return True
-
-    def _emit(self, sid: str, job: ChatTurnJob, event: dict) -> dict:
-        """Stamp a monotonic seq, persist, then fan out — one source of truth.
-        The seq lets the client dedup the transcript replay against the live
-        buffer and survive SSE auto-reconnects."""
-        event["seq"] = job.next_seq()
-        self._store.append_event(sid, event)
-        job.emit(event)
-        return event
-
-    async def _drain(self, sid: str, job: ChatTurnJob) -> None:
-        """Run the queued messages one after another on a single job, emitting
-        exactly one ``turn_end`` when the queue empties. The client keeps one open
-        stream across follow-ups; cancelling stops the run and drops the queue."""
-        try:
-            while True:
-                queue = self._queues.get(sid)
-                if not queue:
-                    break
-                await self._run_agent(sid, queue.pop(0), job)
-        except asyncio.CancelledError:
-            self._emit(sid, job, make_event(EventKind.ERROR, text="Turn cancelled by user."))
-            raise
-        finally:
-            self._busy.discard(sid)
-            self._tasks.pop(sid, None)
-            self._queues.pop(sid, None)
-            self._emit(sid, job, make_event(EventKind.TURN_END))
-            job.running = False
-            self._jobs.pop(sid, None)
-
-    async def _run_agent(self, sid: str, text: str, job: ChatTurnJob) -> None:
-        """One agent invocation on ``job`` (the drain owns busy/turn_end)."""
+        """Stop the in-flight turn: SIGTERM the worker's process group (so its claude
+        child dies too) and clear the queue so the cancelled message doesn't resume.
+        The worker emits ``turn_end`` on its way out so tailing clients close."""
         meta = self._store.get_meta(sid)
-        if meta is None:
-            self._emit(sid, job, make_event(EventKind.ERROR, text="Session metadata is missing; aborting turn."))
-            return
+        pid = meta.running_pid if meta else 0
+        running = pid_alive(pid)
+        if running:
+            self._terminate_worker(pid)
+        self._store.update_meta(sid, pending=[], pending_attempts=0)
+        return running
 
-        def on_event(evt: dict) -> None:
-            self._emit(sid, job, evt)
-
-        try:
-            result = await self._runner.run_turn(
-                prompt=text, cwd=meta.cwd, session_id=meta.claude_session_id,
-                resume=meta.claude_started, model=meta.model or self._config.model,
-                add_dirs=self._config.add_dirs, on_event=on_event,
-                append_system_prompt=self._config.append_system_prompt,
-            )
-            if result.is_error:
-                last = next((ln for ln in reversed((result.stderr or "").splitlines()) if ln.strip()), "")
-                self._emit(sid, job, make_event(
-                    EventKind.ERROR,
-                    text=f"claude exited with an error (code {result.exit_code}). {last[:300]}".rstrip()))
-            # Pin/refresh the resumable session id even on error so the next turn resumes.
-            new_sid = result.session_id or meta.claude_session_id
-            seen = list(dict.fromkeys(
-                s for s in [*meta.claude_session_ids, meta.claude_session_id, new_sid] if s
-            ))
-            self._store.update_meta(
-                sid, claude_session_id=new_sid, claude_session_ids=seen,
-                claude_started=True, turns=meta.turns + 1,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log.exception("chat turn failed for %s", sid)
-            self._emit(sid, job, make_event(EventKind.ERROR, text=f"Turn failed: {exc}"))
+    def resume_pending(self) -> int:
+        """At startup, relaunch a worker for any session that still has queued work
+        but no live worker (its worker died with the previous process). A worker that
+        SURVIVED the restart is left alone — the dashboard just tails it. Returns how
+        many workers were launched."""
+        resumed = 0
+        for meta in self._store.list():
+            if not meta.pending or meta.origin == "slack":
+                continue
+            if self._running(meta.id) or self._live_elsewhere(meta):
+                continue
+            if self._store.claim_run(meta.id):
+                self._launch(meta.id)
+                resumed += 1
+        if resumed:
+            log.info("relaunched %d session worker(s) with pending messages", resumed)
+        return resumed
 
     # -- streaming ------------------------------------------------------------
     async def stream(self, sid: str) -> AsyncIterator[dict]:
@@ -333,16 +319,15 @@ class ChatService:
                 yield event
             return
         cap = self._config.replay_max or 0
-        job = self._jobs.get(sid)
+        live = self._running(sid) or self._external_busy(sid)
         events, cursor = self._store.tail(sid, cap)
-        yield make_event(EventKind.SNAPSHOT, status=("running" if job else "open"), cursor=cursor)
+        yield make_event(EventKind.SNAPSHOT, status=("running" if live else "open"), cursor=cursor)
         for event in events:
             yield {**event, "replay": True}    # history: a past turn_end must NOT close the live stream
-        if job is not None:
-            async for event in job.subscribe_events():   # live (overlap deduped by seq)
-                yield event
-            return
-        if self._external_busy(sid):                     # an in-flight Slack turn
+        # A turn runs in a detached worker writing this transcript; tail it (the
+        # dashboard can restart and a reconnecting client just re-tails). When no
+        # worker is live, go idle.
+        if live:
             async for event in self._tail_external(sid, self._store.size(sid)):
                 yield event
         else:
@@ -374,13 +359,12 @@ class ChatService:
         yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
 
     async def _tail_external(self, sid: str, offset: int) -> AsyncIterator[dict]:
-        """Poll the on-disk transcript for events appended by another process
-        (a Slack turn), yielding only the newly-appended tail (by byte offset)
-        until ``turn_end`` or the turn goes quiet past the keepalive window."""
-        poll = max(0.05, self._config.external_tail_poll_s)
+        """Poll the on-disk transcript for events appended by the detached worker
+        (or a Slack turn), yielding only the newly-appended tail (by byte offset)
+        until ``turn_end`` or the worker is gone and the turn has fallen quiet."""
         idle = 0.0
         while True:
-            await asyncio.sleep(poll)
+            await asyncio.sleep(_TAIL_POLL_S)
             events, offset = self._store.transcript_since(sid, offset)
             if events:
                 for event in events:
@@ -389,8 +373,10 @@ class ChatService:
                         return
                 idle = 0.0
                 continue
-            idle += poll
-            if idle >= self._config.keepalive_s:      # gone quiet → assume done/dead
+            if not self._running(sid) and not self._external_busy(sid):
                 yield make_event(EventKind.SNAPSHOT, status="idle", busy=False)
                 return
-            yield make_event(EventKind.TIMEOUT, note="tail-keepalive")
+            idle += _TAIL_POLL_S
+            if idle >= self._config.keepalive_s:      # periodic keepalive while still running
+                yield make_event(EventKind.TIMEOUT, note="tail-keepalive")
+                idle = 0.0

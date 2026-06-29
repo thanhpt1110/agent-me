@@ -6,6 +6,7 @@ read-only, and adopts one (importing its transcript) when continued from the web
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from agent_me.dashboard.chat.models import EventKind, TurnResult, make_event
 from agent_me.dashboard.chat.native_sessions import NativeSessionReader
 from agent_me.dashboard.chat.service import ChatService
 from agent_me.dashboard.chat.store import DiskSessionStore
+from agent_me.dashboard.chat.turn_runner import TurnExecutor
 
 CWD = "/home/thaphan/agent-me"
 
@@ -154,8 +156,21 @@ def _service(tmp_path: Path, runner_events=None):
                      claude_projects_dir=projects)
     store = DiskSessionStore(cfg.data_dir)
     runner = FakeClaudeRunner(runner_events or [make_event(EventKind.TEXT, text="hi")])
-    svc = ChatService(store, runner, cfg, native=NativeSessionReader(projects, tool_result_max=50))
+    tasks: dict[str, asyncio.Task] = {}
+
+    def launch(sid: str) -> None:   # run the turn-worker in-process (no detached subprocess)
+        tasks[sid] = asyncio.ensure_future(TurnExecutor(store, runner, cfg).run(sid))
+
+    svc = ChatService(store, runner, cfg,
+                      native=NativeSessionReader(projects, tool_result_max=50), launch=launch)
+    svc._test_tasks = tasks  # type: ignore[attr-defined]
     return svc, store, runner
+
+
+async def _drain(svc: ChatService, sid: str) -> None:
+    task = getattr(svc, "_test_tasks", {}).get(sid)
+    if task is not None:
+        await task
 
 
 def test_session_dicts_merges_and_dedups(tmp_path: Path) -> None:
@@ -201,9 +216,7 @@ async def test_start_turn_adopts_native_session(tmp_path: Path) -> None:
     ])
     ok, err = await svc.start_turn("term1", "keep going")
     assert ok and err is None
-    task = svc._tasks.get("term1")
-    if task:
-        await task
+    await _drain(svc, "term1")
 
     meta = store.get_meta("term1")
     assert meta is not None and meta.origin == "terminal" and meta.claude_started is True
@@ -237,6 +250,28 @@ def test_delete_removes_native_transcript(tmp_path: Path) -> None:
     assert svc.delete_session("term-del") is True
     assert not jsonl.exists() and not sidecar.exists()
     assert not any(d["id"] == "term-del" for d in svc.session_dicts())
+
+
+async def test_turn_refused_when_session_live_in_terminal(tmp_path: Path) -> None:
+    """A session adopted into the web store that is now live in a terminal must be
+    read-only: driving it would `--resume` a session another process owns → the
+    conflicting/hanging turn that showed up as 'stuck'."""
+    svc, store, _ = _service(tmp_path)
+    projects = tmp_path / "projects"
+    _write_native(projects, "term-live", [_u("hi"), _a([{"type": "text", "text": "ok"}])])
+    store.ensure("term-live", title="t", cwd=CWD, claude_session_id="term-live", origin="terminal")
+    _mark_live(projects, "term-live")
+    assert await svc.start_turn("term-live", "do it") == (False, "live")
+
+
+def test_resume_pending_skips_live_sessions(tmp_path: Path) -> None:
+    svc, store, _ = _service(tmp_path)
+    projects = tmp_path / "projects"
+    _write_native(projects, "term-live2", [_u("hi")])
+    store.ensure("term-live2", title="t", cwd=CWD, claude_session_id="term-live2", origin="terminal")
+    store.update_meta("term-live2", pending=["x"])
+    _mark_live(projects, "term-live2")
+    assert svc.resume_pending() == 0   # skipped — the terminal owns it
 
 
 def test_delete_native_blocked_when_live(tmp_path: Path) -> None:

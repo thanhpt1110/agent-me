@@ -1524,6 +1524,13 @@ def build_app() -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette):
+        # Auto-resume any chat turns left pending by a restart/crash mid-message, so
+        # a queued message is never lost and the user doesn't have to re-send it.
+        if CHAT_SERVICE is not None:
+            try:
+                CHAT_SERVICE.resume_pending()
+            except Exception:
+                log.exception("failed to resume pending chat turns")
         async with auto_sfa_mcp.session_manager.run():
             yield
 

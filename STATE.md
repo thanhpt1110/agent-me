@@ -177,6 +177,17 @@ _Addendum 2026-06-28 (folder-picker visible + A100 .env) by Claude — **Follow-
 
 Verified: `uv run ruff check` clean; `uv run python -m pytest -q` **291 passed** (auto_sfa timing test passes on retry); DEV dashboard on :8787 serves the always-visible folder picker; `node --check` passes._
 
+_Addendum 2026-06-29 by Claude (branch `big-update`) — **Chat turns now run in a DETACHED worker → survive a dashboard restart (the real "exit code 143 / stuck" fix), + A100 .env synced via cim.**_
+
+- _**Root cause (diagnosed from real transcripts + logs):** web chat turns ran as **children of the dashboard**, so any `systemctl restart` (deploy/redeploy, or the agent itself restarting the dashboard) SIGTERM-killed the in-flight `claude` → exit code 143, and the queued message was lost (user had to re-type). The queue logic itself was correct (reproduced clean 3×)._
+- _**Fix — detached turn-runner.** New `dashboard/chat/turn_runner.py` (`TurnExecutor` + `agent-me-chat-turn` entry point). The dashboard now: (1) `store.append_pending(sid, text)` (durable, flock'd), (2) `store.claim_run(sid)` (atomic single-worker guard), (3) spawns the worker via `subprocess.Popen(..., start_new_session=True)` in its **own process group**; the unit is now **`KillMode=process`**, so a dashboard restart leaves the worker running. The worker drains `meta.pending`, writes events to the transcript, sets/clears `meta.running_pid`. The dashboard streams by **tailing the transcript** (0.25s) — it can restart and a reconnecting browser just re-tails. `resume_pending()` (app lifespan startup) relaunches a worker for any session whose worker died with queued work. Poison guard: drop after 3 signal-interrupts._
+- _**Removed** the in-process job model (`ChatTurnJob` fan-out, `_drain`/`_run_agent` in the service); `stream`/`is_busy` use `running_pid` (pid-alive). A session live in a terminal stays read-only on the web (`_live_elsewhere`)._
+- _**A100 `.env` synced.** Used `cim ssh ipp1-2252` (operator has the lease) to read `/localhome/local-thaphan/agent-me/configs/.env` and merged the real secrets (Slack `xoxb-`/`xapp-`, GitHub/NVIDIA/Jira tokens) into this host's `configs/.env`, overriding `AGENT_BACKEND=claude` + host-correct `AGENT_ME_REPO_DIR`, and keeping this box's existing `DASHBOARD_OPERATOR_ACTION_CODE` (so the DEV /chat passcode is unchanged). `.env` is gitignored (not committed)._
+
+Next: the prod A100 dashboard unit should also get `KillMode=process` when this lands there; consider a periodic reaper for stale `running_pid`/`worker.log`.
+
+Verified: `uv run ruff check` clean; `uv run python -m pytest -q` **295 passed** (worker/queue/resume/live-elsewhere tests; auto_sfa timing test passes on retry). **Live restart-survival proven on :8787:** started a turn running `sleep 30 && echo SURVIVED_RESTART_MARKER`, restarted the dashboard **twice** mid-turn — the `turn_runner` worker stayed alive across both, the turn completed (full user→tool→result→turn_end transcript, marker present, `pending=[]`, `running_pid=0`). `KillMode=process` installed on the dev unit + `daemon-reload`; `agent-me-chat-turn` registered (`uv sync --extra dev`). Discussion: [`discussions/2026-06-28-session-sync-and-chat-ux.md`](discussions/2026-06-28-session-sync-and-chat-ux.md); design: [`design/dashboard-chat.md`](design/dashboard-chat.md)._
+
 ## Phase
 
 **Phase 2a + brief fan-out + Slack session persistence live + Phase 4

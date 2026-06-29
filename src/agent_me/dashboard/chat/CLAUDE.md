@@ -17,7 +17,15 @@ disconnect. `runner`/`models` re-export the shared `agent_me.claude_agent` engin
   Continuing one from the web *adopts* it (`service._adopt_native`: import history once,
   then `--resume`); the client resets on adopt so seq stays consistent.
 - `runner.py` — re-exports `ClaudeCliRunner` (= the shared engine).
-- `jobs.py` — `ChatTurnJob` live fan-out (monotonic `seq` for client dedup).
+- `turn_runner.py` — **`TurnExecutor` + the `agent-me-chat-turn` worker.** Web turns do
+  NOT run inside the dashboard; the dashboard appends to the durable queue
+  (`store.append_pending`) and spawns this worker in its **own process group**
+  (`start_new_session=True`; the unit is `KillMode=process`) so a dashboard restart
+  can't kill an in-flight turn — the worker keeps running, writes events to the
+  transcript, and the dashboard reconnects by **tailing** it. The worker drains
+  `meta.pending`, sets/clears `meta.running_pid`, and emits USER/agent/turn_end.
+  `store.claim_run` (flock) ensures exactly one worker per session.
+- `jobs.py` — `ChatTurnJob` live fan-out (legacy; the tail-based stream replaced it).
 - `mirror.py` — `WebSessionMirror`: a *different process* (the Slack bridge) writes
   its agent turns into this same on-disk store under `slack-<thread_ts>`
   (`origin="slack"`), so Slack chats list/replay in the web like a direct chat.
@@ -25,11 +33,16 @@ disconnect. `runner`/`models` re-export the shared `agent_me.claude_agent` engin
   mirrored session with no in-process job it reports busy while the turn is
   unfinished+recent and **tails** the transcript so an in-flight Slack turn streams
   live; deleting an `origin == "slack"` session won't purge the shared CLI transcript.
-  **Queue:** sending while a turn runs enqueues the message (`_drain` runs the queue
-  on one job, one `turn_end` at the end) — terminal-like, the user isn't blocked.
+  **Queue:** sending while a turn runs appends to `meta.pending`; the running worker
+  picks it up (terminal-like, never blocked). **Durable/auto-resume:** `meta.pending`
+  survives a restart; `resume_pending()` (called at startup from the app lifespan)
+  relaunches a worker for any session with queued work whose worker died.
+  **Restart-survival:** the worker is a detached process (own group) — a dashboard
+  restart leaves it running; the dashboard tails the transcript and reconnects.
   **Replay:** `stream()` tags replayed history events `replay:true` so a *past* turn's
-  `turn_end` never closes the client mid-replay (that was the "old session won't show
-  live progress" bug); the client must POST the message before opening the SSE.
+  `turn_end` never closes the client mid-replay; `is_busy`/`stream` use
+  `running_pid` (pid-alive) to know a turn is live. A session live in a terminal
+  (`_live_elsewhere`) is read-only here.
 
 The `/chat` page is gated by the operator passcode (cookie unlock, SSE-safe).
 See `../CLAUDE.md` (single-quoted x-data) and repo-root `CLAUDE.md`.
