@@ -58,3 +58,26 @@ def test_result_line_emits_context_tokens() -> None:
                                             "context_tokens": 0}, events.append)
     result = next(e for e in events if e["kind"] == "result")
     assert result["context_tokens"] == 200
+
+
+def test_context_tokens_uses_last_assistant_not_cumulative_result() -> None:
+    """result.usage is cumulative over every API call in a turn (cache_read re-counted
+    per tool step), so it overstates context many-fold and pinned the gauge to 100%.
+    The RESULT event must report the LAST assistant message's usage instead."""
+    runner = ClaudeAgentRunner()
+    state = {"sid": "s1", "result": "", "is_error": False, "context_tokens": 0, "last_usage": None}
+    events: list[dict] = []
+    runner._handle_line(json.dumps({"type": "assistant", "message": {
+        "usage": {"input_tokens": 2, "cache_read_input_tokens": 20_000,
+                  "cache_creation_input_tokens": 100, "output_tokens": 150},
+        "content": [{"type": "text", "text": "step 1"}]}}), state, events.append)
+    runner._handle_line(json.dumps({"type": "assistant", "message": {
+        "usage": {"input_tokens": 3, "cache_read_input_tokens": 48_000,  # final call read the most context
+                  "cache_creation_input_tokens": 100, "output_tokens": 200},
+        "content": [{"type": "text", "text": "done"}]}}), state, events.append)
+    runner._handle_line(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False, "session_id": "s1",
+        "usage": {"input_tokens": 5, "cache_read_input_tokens": 6_000_000,  # cumulative — must be ignored
+                  "cache_creation_input_tokens": 200, "output_tokens": 350}}), state, events.append)
+    result = next(e for e in events if e["kind"] == "result")
+    assert result["context_tokens"] == 48_303          # last assistant call, not the 6M cumulative

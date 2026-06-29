@@ -138,13 +138,18 @@ Web chat turns used to run as children of the dashboard process, so a `systemctl
   live`. An unstarted chat can still be re-pointed: the `<select>` `@change` PATCHes `{cwd}` to
   `/api/chat/sessions/{id}`; `service.update_cwd` validates the dir and **refuses (409)** once
   locked, and the client reverts. `+ New` always opens a fresh, re-pointable chat.
-- **Context-% gauge**: the CLI `result` event's `usage` is summed (`input + cache_read +
-  cache_creation + output`) by `claude_agent.runner._context_tokens` into the RESULT event's
-  `context_tokens` and `TurnResult.context_tokens`. The worker persists it to
-  `SessionMeta.context_tokens` (a 0 from a killed turn is skipped so the prior reading stays);
-  it rides `public_dict` to the client, which renders `ctx N%` on the title over
-  `config.context_window` (`CHAT_CONTEXT_WINDOW`, default 1,000,000). The client also captures
-  `context_tokens` from the live `result` event (previously dropped) so the gauge updates per turn.
+- **Context-% gauge**: `claude_agent.runner._context_tokens` sums one API call's `usage`
+  (`input + cache_read + cache_creation + output`) into the RESULT event's `context_tokens` and
+  `TurnResult.context_tokens`. **Source = the LAST `assistant` message's `usage`, NOT the cumulative
+  `result.usage`** — `result.usage` re-counts `cache_read_input_tokens` for every internal API call
+  in the turn, so a multi-tool turn overstated context many-fold and pinned the gauge at 100% (e.g.
+  6.07M for a 2-turn chat whose real context was ~190k). The last assistant call read the most
+  context, so its usage is the true occupancy; `result.usage` is only a fallback when no assistant
+  usage was seen. The worker persists it to `SessionMeta.context_tokens` (a 0 from a killed turn is
+  skipped so the prior reading stays); it rides `public_dict` to the client, which renders `ctx N%`
+  on the title over `config.context_window` (`CHAT_CONTEXT_WINDOW`, default 1,000,000). The client
+  captures `context_tokens` from the live `result` event so the gauge updates per turn. A stale
+  pre-fix `context_tokens` self-corrects on the session's next turn.
 
 ## Header/sidebar redesign (2026-06-29)
 - The header badge is `folder@branch` (e.g. `agent-me@big-update`). The folder picker is no

@@ -21,8 +21,9 @@ def _noop(_event: dict) -> None:
 
 
 def _context_tokens(usage: object) -> int:
-    """Tokens occupying the model context after a turn: prompt (incl. cache) + output.
-    The CLI result's ``usage`` is the source of truth for the /chat % gauge."""
+    """Tokens occupying the model context for one API call: prompt (incl. cache) + output.
+    Apply to the LAST assistant message's usage (the call that read the most context), NOT
+    the cumulative result.usage which re-counts cache reads per tool step. Drives the % gauge."""
     if not isinstance(usage, dict):
         return 0
     keys = ("input_tokens", "cache_read_input_tokens",
@@ -144,7 +145,8 @@ class ClaudeAgentRunner:
             emit(make_event(EventKind.ERROR, text=f"Failed to launch claude: {exc}"))
             return TurnResult(session_id=session_id, is_error=True, stderr=str(exc))
 
-        state = {"sid": session_id, "result": "", "is_error": False, "context_tokens": 0}
+        state = {"sid": session_id, "result": "", "is_error": False,
+                 "context_tokens": 0, "last_usage": None}
 
         async def pump_stdout() -> None:
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -208,7 +210,10 @@ class ClaudeAgentRunner:
                     model=evt.get("model"), cwd=evt.get("cwd"), tools=evt.get("tools"),
                 ))
             elif etype == "assistant":
-                for block in (evt.get("message") or {}).get("content") or []:
+                message = evt.get("message") or {}
+                if isinstance(message.get("usage"), dict):
+                    state["last_usage"] = message["usage"]  # context grows per step; the last call holds the most
+                for block in message.get("content") or []:
                     self._emit_assistant_block(block, on_event)
             elif etype == "user":
                 for block in (evt.get("message") or {}).get("content") or []:
@@ -217,7 +222,11 @@ class ClaudeAgentRunner:
             elif etype == "result":
                 state["is_error"] = bool(evt.get("is_error")) or evt.get("subtype") != "success"
                 state["result"] = evt.get("result") or ""
-                state["context_tokens"] = _context_tokens(evt.get("usage"))
+                # The result.usage is cumulative over every API call in the turn (cache_read
+                # re-counted per tool step), so it overstates context many-fold. The LAST
+                # assistant message's usage is the real occupancy; fall back to result only
+                # if no assistant usage was seen.
+                state["context_tokens"] = _context_tokens(state.get("last_usage") or evt.get("usage"))
                 on_event(make_event(
                     EventKind.RESULT, subtype=evt.get("subtype"), result=state["result"],
                     is_error=state["is_error"], cost_usd=evt.get("total_cost_usd"),
