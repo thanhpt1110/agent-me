@@ -127,7 +127,8 @@ async def test_update_cwd_locked_after_start(tmp_path: Path) -> None:
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(a), keepalive_s=0.2)
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(a),
+                     add_dirs=(str(tmp_path),), keepalive_s=0.2)
     store = DiskSessionStore(cfg.data_dir)
     svc = _wire(store, FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")]), cfg)
     meta = svc.create_session(title=None, cwd=str(a), model=None)
@@ -208,7 +209,8 @@ async def test_branch_checkout_refused_for_shared_or_own_tree(tmp_path: Path) ->
     own repo (default_cwd) and for any folder another session is pinned to."""
     own = tmp_path / "own"
     _git_init(own)
-    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(own), keepalive_s=0.2)
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(own),
+                     add_dirs=(str(tmp_path),), keepalive_s=0.2)
     store = DiskSessionStore(cfg.data_dir)
     svc = _wire(store, FakeClaudeRunner([make_event(EventKind.TEXT, text="hi")]), cfg)
 
@@ -338,13 +340,14 @@ def test_http_routes_and_chat_page() -> None:
     assert r.status_code == 200
     assert "x-data='chat(" in r.text and "/api/sse/chat/" in r.text
 
-    r = client.post("/api/chat/sessions", json={"title": "t", "cwd": "/tmp"})
+    home = str(Path.home())                          # an in-scope cwd ($HOME subtree)
+    r = client.post("/api/chat/sessions", json={"title": "t", "cwd": home})
     assert r.status_code == 201
     sid = r.json()["id"]
 
     assert any(s["id"] == sid for s in client.get("/api/chat/sessions").json()["sessions"])
     got = client.get(f"/api/chat/sessions/{sid}")
-    assert got.status_code == 200 and got.json()["meta"]["cwd"] == "/tmp"
+    assert got.status_code == 200 and got.json()["meta"]["cwd"] == home
 
     assert client.post(f"/api/chat/sessions/{sid}/message", json={"text": ""}).status_code == 400
     assert client.get("/api/chat/sessions/does-not-exist").status_code == 404
@@ -452,6 +455,40 @@ def test_create_session_validates_cwd(tmp_path: Path) -> None:
     sub = tmp_path / "ok"
     sub.mkdir()
     assert svc.create_session(title=None, cwd=str(sub), model=None).cwd == str(sub)
+    # an out-of-scope dir (outside $HOME / the configured roots) also falls back
+    assert svc.create_session(title=None, cwd="/etc", model=None).cwd == str(tmp_path)
+
+
+def test_folder_options_lists_all_nonhidden_home_dirs(tmp_path: Path, monkeypatch) -> None:
+    """The folder picker offers EVERY non-hidden folder under $HOME (the dynamic
+    fix), not just git repos, and excludes dotfile dirs and non-directories."""
+    home = tmp_path / "home"
+    (home / "proj-git" / ".git").mkdir(parents=True)
+    (home / "plain-dir").mkdir(parents=True)       # non-git → must still be offered
+    (home / ".hidden").mkdir()                      # dotfile dir → excluded
+    (home / "note.txt").write_text("x")             # not a dir → excluded
+    monkeypatch.setenv("HOME", str(home))           # drives Path.home()
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(home / "proj-git"))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    folders = svc.folder_options()["folders"]
+    names = {Path(f).name for f in folders}
+    assert {"proj-git", "plain-dir"} <= names       # both git and non-git folders
+    assert str(home) in folders                      # $HOME itself
+    assert ".hidden" not in names and "note.txt" not in names
+
+
+def test_folder_options_survives_unresolvable_home(tmp_path: Path, monkeypatch) -> None:
+    """No $HOME + no passwd entry makes Path.home() raise; the picker must degrade to
+    the configured roots, not 500 (the scope helpers already guard this)."""
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+
+    def boom() -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", staticmethod(boom))
+    out = svc.folder_options()                        # must not raise
+    assert out["default"] == str(tmp_path) and str(tmp_path) in out["folders"]
 
 
 class GatedRunner:

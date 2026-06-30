@@ -12,8 +12,11 @@ disconnect. `runner`/`models` re-export the shared `agent_me.claude_agent` engin
   never read the whole transcript on a hot path. Scroll-up paging uses the cursor.
 - `native_sessions.py` — `NativeSessionReader`: read-only view of the `claude` CLI's own
   `~/.claude/projects/<slug>/*.jsonl` store (the sessions `claude --resume` lists) so the
-  web shows terminal/Slack sessions too. `list_sessions` (cached by mtime/size),
-  `read_events_tail` (bounded byte tail → web events), live/busy from `~/.claude/sessions`.
+  web shows terminal/Slack sessions too. Each cwd is a separate slug dir, so the web
+  scans **all** slug dirs, not just `default_cwd`'s: `list_all_sessions(allow=...)` (every
+  folder, filtered by cwd), `_locate`/`find_anywhere` + `read_events*_anywhere` (find a
+  session by id alone, across slugs — the web only knows the id). Summaries cached by
+  (mtime,size); `read_events_tail` is a bounded byte tail; live/busy from `~/.claude/sessions`.
   Continuing one from the web *adopts* it (`service._adopt_native`: import history once,
   then `--resume`); the client resets on adopt so seq stays consistent.
 - `runner.py` — re-exports `ClaudeCliRunner` (= the shared engine).
@@ -29,7 +32,10 @@ disconnect. `runner`/`models` re-export the shared `agent_me.claude_agent` engin
 - `mirror.py` — `WebSessionMirror`: a *different process* (the Slack bridge) writes
   its agent turns into this same on-disk store under `slack-<thread_ts>`
   (`origin="slack"`), so Slack chats list/replay in the web like a direct chat.
-- `service.py` — `ChatService`, the only object the route handlers touch. For a
+- `service.py` — `ChatService`, the only object the route handlers touch. **Folder
+  scope:** `folder_options` offers $HOME + every non-hidden folder under it (+ configured
+  roots); `_folder_in_scope`/`_allowed_cwd` gate which cwd a chat may spawn in (under
+  $HOME with no dot-prefixed component, or under `default_cwd`/`add_dirs`). For a
   mirrored session with no in-process job it reports busy while the turn is
   unfinished+recent and **tails** the transcript so an in-flight Slack turn streams
   live; deleting an `origin == "slack"` session won't purge the shared CLI transcript.

@@ -22,7 +22,7 @@ from .commands import discover_commands
 from .config import ChatConfig
 from .local_sessions import purge_local_sessions
 from .models import EventKind, SessionMeta, make_event, now_ms
-from .native_sessions import NativeSessionReader
+from .native_sessions import NativeSession, NativeSessionReader
 from .runner import ClaudeRunner
 from .store import SessionStore, pid_alive
 
@@ -113,22 +113,57 @@ class ChatService:
             s for m in web for s in (m.id, m.claude_session_id, *m.claude_session_ids) if s
         }
         extra = [
-            n.public_dict() for n in self._native.list_sessions(self._config.default_cwd)
+            n.public_dict() for n in self._native.list_all_sessions(allow=self._folder_in_scope)
             if n.id not in represented
         ]
         return sorted(dicts + extra, key=lambda d: d.get("last_activity", 0), reverse=True)
 
     def create_session(self, *, title: str | None, cwd: str | None, model: str | None) -> SessionMeta:
         chosen = (cwd or "").strip() or self._config.default_cwd
-        if not Path(chosen).expanduser().is_dir():  # never spawn into a missing dir
+        if not self._allowed_cwd(chosen):  # missing / out-of-scope → spawn in the repo
             chosen = self._config.default_cwd
         return self._store.create(
             title=title, cwd=str(Path(chosen).expanduser()), model=(model or self._config.model),
         )
 
+    @staticmethod
+    def _clean_descendant(path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+        """``path`` is ``root`` or a descendant of it with no dot-prefixed component
+        below ``root`` (so dotfile dirs and ``..`` escapes under ``root`` are out)."""
+        try:
+            rel = Path(path).expanduser().relative_to(Path(root).expanduser())
+        except (ValueError, RuntimeError):
+            return False
+        return all(not part.startswith(".") for part in rel.parts)
+
+    def _scope_roots(self) -> list[str]:
+        roots: list[str] = []
+        with contextlib.suppress(RuntimeError):  # no $HOME and no passwd entry — degrade, don't crash
+            roots.append(str(Path.home()))
+        return [r for r in (*roots, self._config.default_cwd, *self._config.add_dirs) if r]
+
+    def _folder_in_scope(self, path: str | os.PathLike[str]) -> bool:
+        """In scope to list/offer/spawn: under $HOME or a configured root
+        (``default_cwd``/``add_dirs``), with no dot-prefixed component below that root.
+        The dotfile rule holds even when a root is $HOME, so ``~/.claude/...`` stays out."""
+        return any(self._clean_descendant(path, r) for r in self._scope_roots())
+
+    def _allowed_cwd(self, path: str | os.PathLike[str]) -> bool:
+        """In scope AND an existing directory — a new chat must spawn somewhere real."""
+        p = str(path or "").strip()
+        return bool(p) and Path(p).expanduser().is_dir() and self._folder_in_scope(p)
+
+    def _scoped_native(self, sid: str) -> NativeSession | None:
+        """A native session found by id — but only when its folder is in scope, so an
+        out-of-scope session is unreachable by id (not merely hidden from the list)."""
+        if self._native is None:
+            return None
+        n = self._native.find_anywhere(sid)
+        return n if n is not None and self._folder_in_scope(n.cwd) else None
+
     def folder_options(self) -> dict:
         """Candidate working directories for a new chat: the repo, configured
-        add-dirs, $HOME, and sibling git repos under $HOME. The agent always
+        add-dirs, $HOME, and every non-hidden folder under $HOME. The agent always
         spawns (the runner passes ``--dangerously-skip-permissions``, which skips
         the CLI's workspace-trust dialog), so any existing dir is safe to offer."""
         out: list[str] = []
@@ -146,15 +181,19 @@ class ChatService:
         add(self._config.default_cwd)
         for d in self._config.add_dirs:
             add(d)
-        home = Path.home()
-        add(str(home))
+        home: Path | None = None
         try:
+            home = Path.home()
+            add(str(home))
             for child in sorted(home.iterdir()):
-                if child.is_dir() and not child.name.startswith(".") and (child / ".git").is_dir():
+                if child.is_dir() and not child.name.startswith("."):
                     add(str(child))
-        except OSError:
+        except (OSError, RuntimeError):  # unresolvable $HOME → just offer the configured roots
             pass
-        default = str(Path(self._config.default_cwd).expanduser()) if self._config.default_cwd else str(home)
+        if self._config.default_cwd:
+            default = str(Path(self._config.default_cwd).expanduser())
+        else:
+            default = str(home) if home is not None else (out[0] if out else "")
         return {"folders": out[:50], "default": default}
 
     def get_session(self, sid: str) -> dict | None:
@@ -162,11 +201,10 @@ class ChatService:
         if meta is not None:
             return {"meta": meta.public_dict(busy=self.is_busy(sid)),
                     "transcript": self._store.transcript(sid)}
-        if self._native is not None:
-            n = self._native.find(self._config.default_cwd, sid)
-            if n is not None:
-                events = self._native.read_events_tail(self._config.default_cwd, sid, self._config.replay_max or 0) or []
-                return {"meta": n.public_dict(), "transcript": events}
+        n = self._scoped_native(sid)
+        if n is not None:
+            events = self._native.read_events_tail_anywhere(sid, self._config.replay_max or 0) or []
+            return {"meta": n.public_dict(), "transcript": events}
         return None
 
     def available_commands(self) -> list[dict]:
@@ -194,7 +232,7 @@ class ChatService:
         if meta is None or self.folder_locked(meta):
             return None
         chosen = (cwd or "").strip()
-        if not chosen or not Path(chosen).expanduser().is_dir():
+        if not self._allowed_cwd(chosen):
             return None
         updated = self._store.update_meta(sid, cwd=str(Path(chosen).expanduser()))
         return updated.public_dict(busy=self.is_busy(sid)) if updated else None
@@ -273,10 +311,10 @@ class ChatService:
         too. A session open elsewhere is left alone (don't yank a live file)."""
         if self._native is None:
             return False
-        n = self._native.find(self._config.default_cwd, sid)
-        if n is None or n.live:
+        n = self._native.find_anywhere(sid)
+        if n is None or n.live or not self._folder_in_scope(n.cwd):
             return False
-        purge_local_sessions(self._config.claude_projects_dir, self._config.default_cwd, [sid])
+        purge_local_sessions(self._config.claude_projects_dir, n.cwd, [sid])
         self._native.forget(sid)
         return True
 
@@ -350,12 +388,12 @@ class ChatService:
         session open elsewhere stays read-only (resuming a live session forks it)."""
         if self._native is None:
             return None, "not_found"
-        n = self._native.find(self._config.default_cwd, sid)
-        if n is None:
+        n = self._native.find_anywhere(sid)
+        if n is None or not self._folder_in_scope(n.cwd):  # out-of-scope → not adoptable
             return None, "not_found"
         if n.live:
             return None, "live"
-        events = self._native.read_events(self._config.default_cwd, sid, cap=0) or []
+        events = self._native.read_events_anywhere(sid, cap=0) or []
         self._store.ensure(sid, title=n.title, cwd=n.cwd, model=self._config.model,
                            claude_session_id=sid, origin="terminal")
         for event in events:
@@ -432,8 +470,8 @@ class ChatService:
         A live external turn isn't captured here (no stdout) — the session-list
         poll keeps the sidebar dot fresh; continuing it from the web adopts it."""
         events = (
-            self._native.read_events_tail(self._config.default_cwd, sid, self._config.replay_max or 0)
-            if self._native is not None else None
+            self._native.read_events_tail_anywhere(sid, self._config.replay_max or 0)
+            if self._scoped_native(sid) is not None else None   # out-of-scope → not found
         )
         if events is None:
             yield make_event(EventKind.ERROR, text="session not found")

@@ -185,13 +185,15 @@ def test_http_folder_repoint_unstarted(monkeypatch: pytest.MonkeyPatch, tmp_path
     from agent_me.dashboard import app as dash
     client = TestClient(dash.app)
 
+    home = str(Path.home())                          # an in-scope cwd ($HOME subtree)
     sid = client.post("/api/chat/sessions", json={"cwd": "/tmp"}).json()["id"]
-    # an unstarted chat can be re-pointed to another real dir via the folder picker
-    r = client.patch(f"/api/chat/sessions/{sid}", json={"cwd": str(tmp_path)})
-    assert r.status_code == 200 and r.json()["cwd"] == str(tmp_path)
-    # a non-existent dir is refused
+    # an unstarted chat can be re-pointed to another in-scope dir via the folder picker
+    r = client.patch(f"/api/chat/sessions/{sid}", json={"cwd": home})
+    assert r.status_code == 200 and r.json()["cwd"] == home
+    # an out-of-scope dir (/tmp) and a non-existent dir are both refused
+    assert client.patch(f"/api/chat/sessions/{sid}", json={"cwd": "/tmp"}).status_code == 409
     assert client.patch(f"/api/chat/sessions/{sid}",
-                        json={"cwd": str(tmp_path / "nope")}).status_code == 409
+                        json={"cwd": home + "/__no_such_dir__"}).status_code == 409
 
 
 def test_chat_page_nav_sources_and_folder_picker(monkeypatch: pytest.MonkeyPatch) -> None:

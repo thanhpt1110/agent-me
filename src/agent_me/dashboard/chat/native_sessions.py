@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -120,12 +121,50 @@ class NativeSessionReader:
     def _path(self, cwd: str, sid: str) -> Path:
         return self._slug_dir(cwd) / f"{sid}.jsonl"
 
+    def _locate(self, sid: str) -> Path | None:
+        """Find ``<sid>.jsonl`` in any project slug dir. The CLI stores one file
+        per cwd-slug, but the web only knows the id, so a session born in any
+        folder (not just ``default_cwd``) can still be found by id."""
+        if not self._projects_dir.is_dir():
+            return None
+        for slug in self._projects_dir.iterdir():
+            if not slug.is_dir():
+                continue
+            path = slug / f"{sid}.jsonl"
+            if path.exists():
+                return path
+        return None
+
+    def _with_live(self, sess: NativeSession) -> NativeSession:
+        info = self._live_map().get(sess.id)
+        sess.live = info is not None
+        sess.busy = bool(info and info.get("status") == "busy")
+        return sess
+
     # -- listing --------------------------------------------------------------
     def list_sessions(self, cwd: str) -> list[NativeSession]:
-        slug = self._slug_dir(cwd)
-        if not slug.is_dir():
+        return self._list_slug(self._slug_dir(cwd), self._live_map())
+
+    def list_all_sessions(self, *, allow: Callable[[str], bool] | None = None,
+                          cap: int = 500) -> list[NativeSession]:
+        """Every CLI session across all project slug dirs (the full set
+        ``claude --resume`` could list on this host), newest first. ``allow``
+        filters by a session's own ``cwd`` so the web only surfaces in-scope
+        folders; ``cap`` bounds a host with very many sessions."""
+        if not self._projects_dir.is_dir():
             return []
         live = self._live_map()
+        out: list[NativeSession] = []
+        for slug in self._projects_dir.iterdir():
+            if slug.is_dir():
+                out.extend(s for s in self._list_slug(slug, live)
+                           if allow is None or allow(s.cwd))
+        out.sort(key=lambda s: s.last_activity, reverse=True)
+        return out[:cap]
+
+    def _list_slug(self, slug: Path, live: dict[str, dict]) -> list[NativeSession]:
+        if not slug.is_dir():
+            return []
         out: list[NativeSession] = []
         for path in slug.glob("*.jsonl"):
             sess = self._load(path.stem, path)
@@ -139,14 +178,15 @@ class NativeSessionReader:
         return out
 
     def find(self, cwd: str, sid: str) -> NativeSession | None:
-        path = self._path(cwd, sid)
-        sess = self._load(sid, path)
-        if sess is None:
+        sess = self._load(sid, self._path(cwd, sid))
+        return self._with_live(sess) if sess is not None else None
+
+    def find_anywhere(self, sid: str) -> NativeSession | None:
+        path = self._locate(sid)
+        if path is None:
             return None
-        info = self._live_map().get(sid)
-        sess.live = info is not None
-        sess.busy = bool(info and info.get("status") == "busy")
-        return sess
+        sess = self._load(sid, path)
+        return self._with_live(sess) if sess is not None else None
 
     def forget(self, sid: str) -> None:
         """Drop a cached summary (after the session's file is deleted)."""
@@ -226,13 +266,19 @@ class NativeSessionReader:
 
     # -- transcript -----------------------------------------------------------
     def read_events(self, cwd: str, sid: str, *, cap: int = 0) -> list[dict] | None:
+        return self._events_from_path(self._path(cwd, sid), cap=cap)
+
+    def read_events_anywhere(self, sid: str, *, cap: int = 0) -> list[dict] | None:
+        path = self._locate(sid)
+        return self._events_from_path(path, cap=cap) if path is not None else None
+
+    def _events_from_path(self, path: Path, *, cap: int = 0) -> list[dict] | None:
         """The session's conversation as web chat events (``kind``/``seq``).
 
         ``seq`` is numbered over the *full* history, then the last ``cap`` are
         returned (``cap=0`` → all). Keeping the true seq on the tail lets an
         adopted session's imported transcript dedup against this replay.
         """
-        path = self._path(cwd, sid)
         if not path.exists():
             return None
         events: list[dict] = []
@@ -258,11 +304,17 @@ class NativeSessionReader:
         return events[-cap:] if cap and len(events) > cap else events
 
     def read_events_tail(self, cwd: str, sid: str, limit: int, *, max_bytes: int = 1_000_000) -> list[dict] | None:
+        return self._events_tail_from_path(self._path(cwd, sid), limit, max_bytes=max_bytes)
+
+    def read_events_tail_anywhere(self, sid: str, limit: int, *, max_bytes: int = 1_000_000) -> list[dict] | None:
+        path = self._locate(sid)
+        return self._events_tail_from_path(path, limit, max_bytes=max_bytes) if path is not None else None
+
+    def _events_tail_from_path(self, path: Path, limit: int, *, max_bytes: int = 1_000_000) -> list[dict] | None:
         """The last ``limit`` events of a native session as web events, read from
         the file tail only (bounded by ``max_bytes``) so opening a long terminal
         session stays smooth. Seq is local to the window (the read-only preview is
         self-contained; the client resets when the session is adopted)."""
-        path = self._path(cwd, sid)
         try:
             size = path.stat().st_size
             with path.open("rb") as fh:

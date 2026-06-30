@@ -196,3 +196,42 @@ at render time, and both picker selects size to their content.
   guard, a dedicated folder's HEAD == the branch that session runs on (nothing else flips it).
 - Tests: `tests/test_chat.py::{test_branch_options_and_checkout, test_branch_options_handles_unborn_branch,
   test_branch_checkout_refused_for_shared_or_own_tree}`.
+
+## Dynamic folders + cross-slug session sync (2026-06-30)
+Two coupled changes so /chat works across **any** folder on the host, not just the repo.
+
+- **Dynamic folder picker.** `ChatService.folder_options` previously offered only `$HOME`'s
+  **git** siblings, so a host with non-git project dirs showed ~3 folders. It now offers
+  `$HOME` + **every non-hidden direct child dir of `$HOME`** (+ `default_cwd` + `add_dirs`).
+  Non-git folders just render without a branch dropdown (`branch_options` → `is_git=False`).
+- **Folder scope (validation).** A chat may spawn only in an *in-scope* dir:
+  `_folder_in_scope(p)` = `p` is a **clean descendant** (`_clean_descendant`) of one of the
+  `_scope_roots` (`$HOME` + `default_cwd` + `add_dirs`) — equal to a root or under it with **no
+  dot-prefixed component below that root** (so dotfile dirs and `..` escapes are out, even when
+  the root is `$HOME`, which keeps `~/.claude/...` out). Configured roots cover a non-`$HOME`
+  deploy like `/localhome/...`. `_allowed_cwd` adds an existence check. `create_session` falls
+  back to `default_cwd` for an out-of-scope/missing cwd; `update_cwd` refuses it (→ 409).
+- **Cross-slug native sync (the real bug).** Each cwd is a distinct CLI slug dir
+  (`~/.claude/projects/<cwd-slug>/`). The reader used to scan only `default_cwd`'s slug, so a
+  terminal session started in any *other* folder never synced to the web. `NativeSessionReader`
+  now scans **all** slug dirs: `list_all_sessions(allow=…)` (filtered by each session's own
+  cwd via `_folder_in_scope`, so `/tmp` and stale `/Users/...` slugs are excluded) and
+  `_locate`/`find_anywhere` + `read_events*_anywhere` (find a session by id alone — the web
+  only knows the id). `_delete_native` purges using the session's **real** cwd (`n.cwd`), not
+  `default_cwd`, so a delete removes the right slug's transcript from `claude --resume`.
+- **Scope is enforced on every id path, not just the list.** An out-of-scope session must be
+  *unreachable*, not merely unlisted — else `_adopt_native` would spawn `claude` in `/tmp` via a
+  back-door id. `_scoped_native(sid)` (= `find_anywhere` + `_folder_in_scope(n.cwd)`) gates
+  `get_session`/`_stream_native`; `_adopt_native`/`_delete_native` re-check scope inline. A
+  cwd-less transcript (no cwd-bearing turn) falls back to `cwd = projects_dir`, a dotfile path
+  (`~/.claude/...`) that fails the scope filter, so it never leaks into the list either.
+- **Direction check.** web→host already worked (the CLI persists per-cwd-slug, so
+  `cd <folder> && claude --resume` lists a web chat run there); host→web is what this fixes.
+  Slack→web is unchanged (the mirror writes the web store directly; its native twin dedups by
+  CLI id, so it isn't double-listed even though `list_all_sessions` now scans its slug too).
+- These id-path / cwd-less / `Path.home()`-crash gaps in the first cut were caught by an
+  adversarial review workflow and fixed before commit.
+- Tests: `tests/test_native_sessions.py::{test_session_dicts_merges_sessions_from_other_folders,
+  test_native_session_in_other_folder_streams_and_deletes, test_out_of_scope_native_session_is_unreachable_by_id,
+  test_cwdless_native_session_is_not_leaked, test_folder_scope_validation}` and
+  `tests/test_chat.py::{test_folder_options_lists_all_nonhidden_home_dirs, test_folder_options_survives_unresolvable_home}`.

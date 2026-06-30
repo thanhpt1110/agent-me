@@ -36,14 +36,14 @@ class FakeClaudeRunner:
         return TurnResult(session_id=self._session_id, result="ok", is_error=False, exit_code=0)
 
 
-def _u(text, ts="2026-06-27T12:00:00.000Z", entry="cli", sidechain=False):
+def _u(text, ts="2026-06-27T12:00:00.000Z", entry="cli", sidechain=False, cwd=CWD):
     return {"type": "user", "timestamp": ts, "entrypoint": entry, "isSidechain": sidechain,
-            "cwd": CWD, "gitBranch": "big-update", "message": {"role": "user", "content": text}}
+            "cwd": cwd, "gitBranch": "big-update", "message": {"role": "user", "content": text}}
 
 
-def _a(blocks, ts="2026-06-27T12:00:05.000Z", entry="cli", sidechain=False):
+def _a(blocks, ts="2026-06-27T12:00:05.000Z", entry="cli", sidechain=False, cwd=CWD):
     return {"type": "assistant", "timestamp": ts, "entrypoint": entry, "isSidechain": sidechain,
-            "cwd": CWD, "gitBranch": "big-update", "message": {"role": "assistant", "content": blocks}}
+            "cwd": cwd, "gitBranch": "big-update", "message": {"role": "assistant", "content": blocks}}
 
 
 def _write_native(projects: Path, sid: str, lines: list[dict], cwd: str = CWD) -> Path:
@@ -281,3 +281,79 @@ def test_delete_native_blocked_when_live(tmp_path: Path) -> None:
     _mark_live(projects, "live-del")
     assert svc.delete_session("live-del") is False
     assert jsonl.exists()  # a live session's file is never yanked
+
+
+# ── cross-folder native sync (sessions started in ANY in-scope folder, not just
+#    default_cwd's slug — what the dynamic folder picker depends on) ────────────
+
+def test_session_dicts_merges_sessions_from_other_folders(tmp_path: Path) -> None:
+    svc, _, _ = _service(tmp_path)             # default_cwd = CWD (a configured root)
+    projects = tmp_path / "projects"
+    other = CWD + "/subproject"                # a different cwd → a different CLI slug
+    _write_native(projects, "in-default", [_u("from the repo root")])
+    _write_native(projects, "in-other", [_u("from a subfolder", cwd=other)], cwd=other)
+    _write_native(projects, "in-tmp", [_u("scratch", cwd="/tmp/scratchpad")], cwd="/tmp/scratchpad")
+    ids = {d["id"] for d in svc.session_dicts()}
+    assert {"in-default", "in-other"} <= ids   # both in-scope slugs surface
+    assert "in-tmp" not in ids                 # out-of-scope (outside $HOME / roots) hidden
+
+
+async def test_native_session_in_other_folder_streams_and_deletes(tmp_path: Path) -> None:
+    svc, _, _ = _service(tmp_path)
+    projects = tmp_path / "projects"
+    other = CWD + "/svc-x"
+    jsonl = _write_native(projects, "other1",
+                          [_u("hi", cwd=other), _a([{"type": "text", "text": "yo"}], cwd=other)],
+                          cwd=other)
+    got = svc.get_session("other1")            # found + replayed by id alone (no cwd hint)
+    assert got is not None and [e["kind"] for e in got["transcript"]] == ["user", "text"]
+    out = [ev async for ev in svc.stream("other1")]
+    assert any(e["kind"] == "text" for e in out)
+    assert svc.delete_session("other1") is True and not jsonl.exists()  # purged from its real slug
+
+
+async def test_out_of_scope_native_session_is_unreachable_by_id(tmp_path: Path) -> None:
+    """An out-of-scope folder's terminal session is not just hidden from the list —
+    it can't be fetched, streamed, adopted/run, or deleted by id either (the agent
+    must never be spawned in /tmp via a back-door id)."""
+    svc, store, _ = _service(tmp_path)
+    projects = tmp_path / "projects"
+    _write_native(projects, "tmp-sess",
+                  [_u("scratch", cwd="/tmp/work"), _a([{"type": "text", "text": "x"}], cwd="/tmp/work")],
+                  cwd="/tmp/work")
+    assert not any(d["id"] == "tmp-sess" for d in svc.session_dicts())   # not listed
+    assert svc.get_session("tmp-sess") is None                          # not fetchable
+    out = [ev async for ev in svc.stream("tmp-sess")]
+    assert any(e["kind"] == "error" for e in out)                       # stream → not found
+    assert await svc.start_turn("tmp-sess", "go") == (False, "not_found")  # not adoptable / runnable
+    assert store.get_meta("tmp-sess") is None                           # nothing imported
+    assert svc.delete_session("tmp-sess") is False                      # not deletable by id
+
+
+def test_cwdless_native_session_is_not_leaked(tmp_path: Path) -> None:
+    """A transcript with no cwd-bearing turn falls back to the projects dir for its
+    cwd; that fallback must NOT pass the scope filter, or an out-of-scope session
+    would silently leak into the web list."""
+    svc, _, _ = _service(tmp_path)
+    projects = tmp_path / "projects"
+    _write_native(projects, "cwdless", [
+        {"type": "ai-title", "sessionId": "cwdless", "aiTitle": "No cwd here"},
+        _u("subagent prompt", sidechain=True),     # only sidechain → no cwd parsed
+    ], cwd="/tmp/secret")                           # physically in an out-of-scope slug
+    n = svc._native.find_anywhere("cwdless")
+    assert n is not None and n.cwd == str(projects)  # the fallback cwd (= projects dir)
+    assert not any(d["id"] == "cwdless" for d in svc.session_dicts())   # not leaked
+
+
+def test_folder_scope_validation(tmp_path: Path) -> None:
+    svc, _, _ = _service(tmp_path)             # default_cwd = CWD, home = the test user's $HOME
+    home = str(Path.home())
+    assert svc._allowed_cwd(home) is True
+    assert svc._allowed_cwd(CWD) is True                          # under home + a configured root
+    assert svc._allowed_cwd(home + "/.config") is False           # dot-prefixed component
+    assert svc._allowed_cwd("/tmp") is False                      # outside home / roots
+    assert svc._allowed_cwd(home + "/__no_such_dir_zzz__") is False  # missing dir
+    # the in-scope predicate is lexical (no existence): dotfile + .. escapes rejected
+    assert svc._folder_in_scope(home + "/projects") is True
+    assert svc._folder_in_scope(home + "/../etc") is False
+    assert svc._folder_in_scope("/etc") is False
