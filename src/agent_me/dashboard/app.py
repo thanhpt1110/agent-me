@@ -127,6 +127,7 @@ from agent_me.dashboard.chat import (  # noqa: E402
     TerminalSession,
     build_chat_service,
     resolve_shell,
+    resolve_tmux,
     stream_output,
 )
 
@@ -1469,9 +1470,12 @@ async def ws_chat_terminal(websocket: WebSocket):
 
     await websocket.accept()
     cfg = svc.config
+    tmux_bin = resolve_tmux() if cfg.terminal_persist else None
     session = TerminalSession(
         shell=resolve_shell(cfg.terminal_shell or None),
         cwd=(cfg.terminal_cwd or cfg.default_cwd),
+        tmux_session=(cfg.terminal_tmux_session if tmux_bin else None),
+        tmux_bin=tmux_bin,
     )
     try:
         session.start()

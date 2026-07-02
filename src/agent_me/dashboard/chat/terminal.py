@@ -5,6 +5,12 @@ write, resize, kill) so it stays surface-agnostic and unit-testable; the
 WebSocket glue lives in the dashboard route. This grants full shell access to the
 host as the dashboard user, so the route gates it behind the operator passcode —
 the same gate as ``/chat``.
+
+Persistence: with ``tmux_session`` set, the PTY child is a **tmux client**
+(``tmux new-session -A``) instead of a bare shell. Closing the WebSocket only
+kills the client — the tmux session (and anything running in it, e.g. a long
+``claude`` turn) survives on the host; the next connect reattaches to the same
+screen. The same session is also reachable from SSH (``tmux attach``).
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ import contextlib
 import fcntl
 import os
 import pty
+import shutil
 import signal
 import struct
 import termios
@@ -26,29 +33,53 @@ def resolve_shell(preferred: str | None = None) -> str:
     return "/bin/sh"
 
 
+def resolve_tmux() -> str | None:
+    """Path to tmux, or None when not installed (→ plain, non-persistent shell)."""
+    found = shutil.which("tmux")
+    if found:
+        return found
+    return "/usr/bin/tmux" if os.path.exists("/usr/bin/tmux") else None
+
+
 class TerminalSession:
-    """One interactive shell behind a pseudo-terminal."""
+    """One interactive shell behind a pseudo-terminal.
+
+    With ``tmux_session`` (+ an installed tmux), the child is a tmux client
+    attached to that named session (created on first use) — killing the client
+    on close never kills the session, which is the whole point.
+    """
 
     def __init__(self, *, shell: str, cwd: str, env: dict[str, str] | None = None,
-                 cols: int = 80, rows: int = 24) -> None:
+                 cols: int = 80, rows: int = 24,
+                 tmux_session: str | None = None, tmux_bin: str | None = None) -> None:
         self.shell = shell
         self.cwd = cwd
         self._env = env
         self.cols = cols
         self.rows = rows
+        self.tmux_session = tmux_session
+        self.tmux_bin = tmux_bin
         self.pid: int | None = None
         self.fd: int | None = None
+
+    def build_argv(self) -> list[str]:
+        if self.tmux_session and self.tmux_bin:
+            # -A = attach when the session already exists; -c sets the start dir
+            # on create; the trailing shell only applies on create too.
+            return [self.tmux_bin, "new-session", "-A", "-s", self.tmux_session,
+                    "-c", self.cwd, self.shell]
+        return [self.shell, "-i"]
 
     def start(self) -> None:
         # Build argv/env in the parent: after forkpty in a multi-threaded server
         # the child must only call async-signal-safe syscalls (chdir/execve), not
         # allocate Python objects, or it can deadlock on a lock held at fork time.
-        shell = self.shell
-        argv = [shell, "-i"]
+        argv = self.build_argv()
+        exe = argv[0]
         env = self._child_env()
         cwd = self.cwd
         pid, fd = pty.fork()
-        if pid == 0:  # child: become the shell and never return.
+        if pid == 0:  # child: become the shell/tmux client and never return.
             # Bare try/except (not contextlib.suppress): post-fork the child must
             # avoid allocating Python objects, so SIM105 is intentionally ignored.
             try:  # noqa: SIM105
@@ -56,7 +87,7 @@ class TerminalSession:
             except OSError:
                 pass
             try:  # noqa: SIM105
-                os.execve(shell, argv, env)
+                os.execve(exe, argv, env)
             except OSError:
                 pass
             os._exit(127)

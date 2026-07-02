@@ -30,6 +30,11 @@ _CHAT_TEST_DIR = tempfile.mkdtemp(prefix="agent-me-chat-test-")
 os.environ["CHAT_DATA_DIR"] = str(Path(_CHAT_TEST_DIR) / "chat-sessions")
 atexit.register(lambda: shutil.rmtree(_CHAT_TEST_DIR, ignore_errors=True))
 
+# Terminal WS tests must spawn plain shells, never attach the operator's real
+# persistent tmux session (agme-web). Dedicated tmux tests build their own
+# TerminalSession with a throwaway session name instead.
+os.environ["CHAT_TERMINAL_PERSIST"] = "0"
+
 # Load configs/.env once now (the dashboard does it at import) so the autouse
 # delenv below reliably strips the operator passcode for every test.
 with contextlib.suppress(Exception):

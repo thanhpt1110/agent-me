@@ -210,7 +210,8 @@
         <button type="button" x-show="busy" x-cloak @click="cancel()" title="Stop" aria-label="Stop"
                 class="btn btn-danger btn-icon btn-sm">■</button>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
-                title="Open a host terminal" aria-label="Open a host terminal"
+                title="Open the host terminal (persistent — tmux-backed, survives disconnects)"
+                aria-label="Open the host terminal"
                 class="btn btn-icon btn-sm font-mono" :class="termOpen ? 'btn-primary' : 'btn-secondary'">&gt;_</button>
         <span class="text-[11px]" :class="connected ? 'text-accent-400' : 'text-slate-500'"
               x-text="connected ? '● live' : '○ idle'"></span>

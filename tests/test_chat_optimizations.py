@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import select
+import subprocess
 import time
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from agent_me.dashboard.chat.local_sessions import (
 from agent_me.dashboard.chat.models import EventKind, make_event
 from agent_me.dashboard.chat.service import ChatService
 from agent_me.dashboard.chat.store import DiskSessionStore
-from agent_me.dashboard.chat.terminal import TerminalSession, resolve_shell
+from agent_me.dashboard.chat.terminal import TerminalSession, resolve_shell, resolve_tmux
 
 from .test_chat import FakeClaudeRunner, _drain, _wire
 
@@ -157,6 +158,87 @@ def test_terminal_session_echo_and_resize() -> None:
     finally:
         sess.close()
     assert sess.fd is None and sess.pid is None
+
+
+def _read_until(sess: TerminalSession, needle: bytes, timeout: float = 8.0) -> bool:
+    out = b""
+    deadline = time.time() + timeout
+    while time.time() < deadline and needle not in out:
+        r, _, _ = select.select([sess.fd], [], [], 0.3)
+        if r:
+            try:
+                out += os.read(sess.fd, 4096)
+            except OSError:
+                break
+    return needle in out
+
+
+def test_terminal_tmux_session_default_is_per_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DEV and PROD share the uid's tmux socket — a fixed default name would fuse
+    their terminals into one live screen across both gates."""
+    monkeypatch.delenv("CHAT_TERMINAL_TMUX_SESSION", raising=False)
+    monkeypatch.setenv("DEPLOY_ENV", "dev")
+    assert ChatConfig.from_env("/tmp").terminal_tmux_session == "agme-web-dev"
+    monkeypatch.delenv("DEPLOY_ENV", raising=False)
+    assert ChatConfig.from_env("/tmp").terminal_tmux_session == "agme-web-prod"
+    monkeypatch.setenv("CHAT_TERMINAL_TMUX_SESSION", "custom-name")
+    assert ChatConfig.from_env("/tmp").terminal_tmux_session == "custom-name"
+
+
+def test_terminal_build_argv_tmux_and_fallback() -> None:
+    plain = TerminalSession(shell="/bin/bash", cwd="/tmp")
+    assert plain.build_argv() == ["/bin/bash", "-i"]
+    tm = TerminalSession(shell="/bin/bash", cwd="/tmp",
+                         tmux_session="agme-t", tmux_bin="/usr/bin/tmux")
+    assert tm.build_argv() == ["/usr/bin/tmux", "new-session", "-A", "-s", "agme-t",
+                               "-c", "/tmp", "/bin/bash"]
+    # tmux requested but not installed → plain shell (feature degrades, never breaks)
+    half = TerminalSession(shell="/bin/bash", cwd="/tmp", tmux_session="agme-t")
+    assert half.build_argv() == ["/bin/bash", "-i"]
+
+
+@pytest.mark.skipif(resolve_tmux() is None, reason="tmux not installed")
+def test_terminal_tmux_session_survives_client_close() -> None:
+    """The persistence contract: killing the PTY client (browser closed / SSH
+    dropped) leaves the tmux session and whatever runs in it alive; a new client
+    reattaches to the same screen."""
+    tmux = resolve_tmux()
+    name = f"agme-test-{os.getpid()}"
+
+    def session_alive() -> bool:
+        return subprocess.run([tmux, "has-session", "-t", name],
+                              capture_output=True).returncode == 0
+
+    def wait_session_alive(timeout: float = 8.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if session_alive():
+                return True
+            time.sleep(0.2)
+        return False
+
+    a = TerminalSession(shell=resolve_shell(), cwd="/tmp",
+                        tmux_session=name, tmux_bin=tmux)
+    a.start()
+    try:
+        # Let the tmux server/session finish starting before typing — killing the
+        # first client mid-startup takes the still-forking server down with it.
+        assert wait_session_alive()
+        # $((70+7)) makes the OUTPUT differ from the typed line, so the PTY's
+        # input echo can't satisfy the assertion.
+        a.write("echo persist_$((70+7))_ok\n")
+        assert _read_until(a, b"persist_77_ok")
+        a.close()                                   # simulate browser/SSH death
+        assert session_alive()                      # THE feature: session survives
+        b = TerminalSession(shell=resolve_shell(), cwd="/tmp",
+                            tmux_session=name, tmux_bin=tmux)
+        b.start()
+        # reattach redraws the surviving session's screen — the marker is still there
+        assert _read_until(b, b"persist_77_ok")
+        b.close()
+        assert session_alive()
+    finally:
+        subprocess.run([tmux, "kill-session", "-t", name], capture_output=True)
 
 
 def test_terminal_ws_rejected_when_locked(monkeypatch: pytest.MonkeyPatch) -> None:

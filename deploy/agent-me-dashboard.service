@@ -44,6 +44,12 @@ ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 0.0.0.0 --port 8765 --f
 TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5
+# Only kill the dashboard process on stop/restart — NOT the cgroup. The web
+# terminal's tmux server is born inside this service's cgroup; the default
+# control-group kill would take the "persistent" session (and any claude run
+# in it) down with every release restart. Chat turn workers (post-merge) rely
+# on the same guarantee.
+KillMode=process
 
 StandardOutput=journal
 StandardError=journal

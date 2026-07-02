@@ -13,7 +13,7 @@ from .native_sessions import NativeSessionReader
 from .runner import ClaudeCliRunner
 from .service import ChatService
 from .store import DiskSessionStore
-from .terminal import TerminalSession, resolve_shell, stream_output
+from .terminal import TerminalSession, resolve_shell, resolve_tmux, stream_output
 
 __all__ = [
     "ChatConfig",
@@ -24,6 +24,7 @@ __all__ = [
     "build_chat_service",
     "build_session_mirror",
     "resolve_shell",
+    "resolve_tmux",
     "stream_output",
     "web_session_id_for",
 ]

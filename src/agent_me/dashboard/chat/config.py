@@ -49,6 +49,11 @@ class ChatConfig:
     terminal_enabled: bool = True    # Ctrl+~ host terminal (gated by the operator passcode)
     terminal_shell: str = ""         # "" → resolve $SHELL / bash at connect time
     terminal_cwd: str = ""           # "" → default_cwd
+    # Persistent web terminal: back it with a named tmux session so a closed
+    # browser/laptop never kills what's running in it (falls back to a plain
+    # shell when tmux isn't installed). Same session is reachable over SSH.
+    terminal_persist: bool = True
+    terminal_tmux_session: str = "agme-web"
     # Cross-process mirroring (Slack turns written to this same store by another
     # process): tail the on-disk transcript so an in-flight external turn streams
     # live, and treat a session as busy while its turn is unfinished and recent.
@@ -97,4 +102,12 @@ class ChatConfig:
             terminal_enabled=_env_flag("CHAT_TERMINAL_ENABLED", True),
             terminal_shell=(os.environ.get("CHAT_TERMINAL_SHELL") or "").strip(),
             terminal_cwd=(os.environ.get("CHAT_TERMINAL_CWD") or "").strip(),
+            terminal_persist=_env_flag("CHAT_TERMINAL_PERSIST", True),
+            # Per-instance default: DEV and PROD run as the same uid (same tmux
+            # socket) — one shared name would fuse their terminals into a single
+            # live screen across both gates.
+            terminal_tmux_session=(
+                (os.environ.get("CHAT_TERMINAL_TMUX_SESSION") or "").strip()
+                or f"agme-web-{(os.environ.get('DEPLOY_ENV') or '').strip().lower() or 'prod'}"
+            ),
         )
