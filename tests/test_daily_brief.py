@@ -394,16 +394,12 @@ def test_build_connector_mirror_text_contains_source_links() -> None:
     assert "<https://nvbugspro.nvidia.com/bug/1234567|1234567 ARB waiver needs QA signoff>" in text
 
 
-def test_readonly_mcp_approval_configs_cover_core_brief_tools() -> None:
-    joined = "\n".join(daily_brief.READONLY_MAAS_APPROVAL_CONFIGS)
-
-    assert "maas-jira.tools.jira_search" in joined
-    assert "maas-gitlab.tools.gitlab_list_merge_requests" in joined
-    assert "maas-confluence.tools.confluence_search" in joined
-    assert "maas-nvbugs.tools.nvbugs_search_v2" in joined
-    assert "maas-nvbugs.tools.nvbugs_get_bug_details_v2" in joined
-    assert "maas-nvbugs.tools.nvbugs_get_bug_v2" not in joined
-    assert "approval_mode=\"approve\"" in joined
+def test_brief_agent_cwd_is_hidden_from_chat_scope() -> None:
+    """Brief claude fetchers must spawn in a dot-dir: the web chat's folder scope
+    hides any path with a dot-prefixed component, so brief plumbing sessions
+    never clutter the chat page's native-session list."""
+    assert daily_brief.BRIEF_AGENT_CWD.name.startswith(".")
+    assert daily_brief.BRIEF_AGENT_CWD.parent == daily_brief.REPO_DIR
 
 
 def test_connector_mirror_uses_app_server_auto_review(monkeypatch) -> None:

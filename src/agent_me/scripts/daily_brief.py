@@ -87,7 +87,9 @@ USER = os.environ.get("AGENT_ME_USER", "thaphan")  # NVIDIA shortname
 USER_FULL_NAME = os.environ.get("AGENT_ME_FULL_NAME", "Thanh Phan")
 DEFAULT_MIRROR_EMAIL = os.environ.get("BRIEF_MIRROR_EMAIL", "thaphan@nvidia.com")
 AGENT_TIMEOUT_S = float(os.environ.get("AGENT_TIMEOUT_S", os.environ.get("CODEX_TIMEOUT_S", 240.0)))
-MODEL = os.environ.get("CODEX_MODEL", os.environ.get("AGENT_MODEL", "gpt-5.5"))
+# Blank → don't pass -m; codex uses its own config.toml model. A hardcoded
+# fallback rots (gpt-5.5 now 400s on the config's reasoning-effort setting).
+MODEL = os.environ.get("CODEX_MODEL") or os.environ.get("AGENT_MODEL") or ""
 CLAUDE_BRIEF_MODEL = (os.environ.get("CLAUDE_BRIEF_MODEL") or os.environ.get("CLAUDE_MODEL") or "").strip() or None
 PRIORITY_WINDOW_DAYS = 7
 ITEMS_PER_GROUP = 5
@@ -126,15 +128,10 @@ NVBUGS_MCP_URL = os.environ.get(
     "AGENT_ME_NVBUGS_MCP_URL",
     "https://nvaihub.nvidia.com/maas/nvbugs/mcp/",
 )
-READONLY_MAAS_APPROVAL_CONFIGS = (
-    'mcp_servers.maas-jira.tools.jira_search.approval_mode="approve"',
-    'mcp_servers.maas-gitlab.tools.gitlab_list_merge_requests.approval_mode="approve"',
-    'mcp_servers.maas-gitlab.tools.gitlab_list_issues.approval_mode="approve"',
-    'mcp_servers.maas-confluence.tools.confluence_search.approval_mode="approve"',
-    'mcp_servers.maas-nvbugs.tools.nvbugs_check_connection_v2.approval_mode="approve"',
-    'mcp_servers.maas-nvbugs.tools.nvbugs_search_v2.approval_mode="approve"',
-    'mcp_servers.maas-nvbugs.tools.nvbugs_get_bug_details_v2.approval_mode="approve"',
-)
+# Brief claude fetchers run in a dot-dir so their sessions never surface in the
+# web chat's native-session list (the chat scope hides any dot-prefixed
+# component) — brief agents are plumbing, not conversations.
+BRIEF_AGENT_CWD = REPO_DIR / ".brief-agents"
 
 
 # ── Data model ──────────────────────────────────────────────────────────
@@ -837,28 +834,29 @@ Do not report errors as "nothing pending". JSON ONLY."""
 
 BRIEF_SYSTEM_PROMPT = """\
 Return only the JSON object requested by the source prompt. Use Codex app tools
-and registered MaaS MCP servers directly. Do not run shell commands, do not
-read local skill files, and do not call PA or Claude CLI for enterprise-source
-reads. If a source tool fails, return an explicit error object; do not turn
-tool failures into empty task lists.
+directly. Do not run shell commands, do not read local skill files, and do not
+call PA or Claude CLI for enterprise-source reads. If a source tool fails,
+return an explicit error object; do not turn tool failures into empty task
+lists.
 """
 
 
 async def _run_codex(prompt: str, timeout_s: float) -> str:
+    # No `-c mcp_servers.*` overrides here: codex sources use app tools only, and
+    # a partial mcp_servers override entry (approval_mode with no command/url)
+    # fails config parsing ("invalid transport") when the base config.toml does
+    # not define that server — the case on this host since the claude migration.
     args = [
         CODEX_BIN,
-    ]
-    for cfg in READONLY_MAAS_APPROVAL_CONFIGS:
-        args.extend(["-c", cfg])
-    args.extend([
         "exec",
         "--json",
         "--ephemeral",
         "--sandbox", "read-only",
         "--cd", str(REPO_DIR),
-        "-m", MODEL,
-        f"{BRIEF_SYSTEM_PROMPT}\n\n{prompt}",
-    ])
+    ]
+    if MODEL:
+        args.extend(["-m", MODEL])
+    args.append(f"{BRIEF_SYSTEM_PROMPT}\n\n{prompt}")
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=str(REPO_DIR),
         env={**os.environ, **codex_mcp_token_env()},
@@ -971,8 +969,9 @@ _brief_claude_runner = ClaudeAgentRunner(RunnerConfig(turn_timeout_s=AGENT_TIMEO
 
 
 async def _run_claude_brief(prompt: str, tool_glob: str | None, timeout_s: float) -> str:
+    BRIEF_AGENT_CWD.mkdir(exist_ok=True)
     result = await _brief_claude_runner.run_turn(
-        prompt=prompt, cwd=str(REPO_DIR),
+        prompt=prompt, cwd=str(BRIEF_AGENT_CWD),
         allowed_tools=[tool_glob] if tool_glob else None,
         append_system_prompt=CLAUDE_BRIEF_SYSTEM_PROMPT, model=CLAUDE_BRIEF_MODEL,
     )

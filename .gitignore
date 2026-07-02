@@ -83,3 +83,6 @@ Desktop.ini
 
 # Production deploy worktree (branch main), pinned on this host — see CLAUDE.md host layout
 /.prod/
+
+# Brief claude-fetcher scratch cwd (dot-dir so chat scope hides its sessions)
+/.brief-agents/
