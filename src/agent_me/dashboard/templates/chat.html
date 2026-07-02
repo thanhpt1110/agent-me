@@ -216,14 +216,14 @@
                 class="btn btn-icon btn-sm font-mono" :class="termOpen ? 'btn-primary' : 'btn-secondary'">&gt;_</button>
         <span class="text-[11px]" :class="connected ? 'text-accent-400' : 'text-slate-500'"
               x-text="connected ? '● live' : '○ idle'"></span>
-        <!-- terminals-panel toggle: outermost right; only when the panel isn't
-             already a static column (below xl / zoomed-in). -->
+        <!-- terminals-panel toggle: outermost right, text-only (the >_ icon
+             belongs to the host-terminal button); shown only when the panel
+             isn't a static column (below xl / zoomed-in). -->
         <button type="button" x-show="terminalEnabled" x-cloak @click="termPanelOpen = true"
                 title="Live tmux sessions — open the terminals panel"
                 aria-label="Open the terminals panel"
                 class="btn btn-secondary btn-sm xl:hidden">
-          <span class="font-mono">&gt;_</span>
-          <span class="ml-1">Terminals</span>
+          <span>Terminals</span>
           <span x-show="tmuxSessions.length" x-cloak
                 class="ml-1 rounded bg-accent-400/20 px-1 font-mono text-[10px] font-semibold text-accent-400"
                 x-text="tmuxSessions.length"></span>
@@ -436,7 +436,12 @@
          class="fixed inset-y-0 right-0 z-40 flex min-h-0 w-72 max-w-[82vw] flex-col rounded-card border border-ink-700 bg-ink-900 transition-transform xl:static xl:z-auto xl:w-auto xl:max-w-none xl:translate-x-0"
          :class="termPanelOpen ? 'translate-x-0' : 'translate-x-full xl:translate-x-0'">
     <div class="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-ink-700 px-3">
-      <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Terminals</span>
+      <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Terminals
+        <span x-show="tmuxSessions.length" x-cloak
+              class="rounded bg-accent-400/20 px-1 font-mono text-[10px] font-semibold text-accent-400"
+              x-text="tmuxSessions.length"></span>
+      </span>
       <div class="flex items-center gap-2">
         <button type="button" @click="newTermOpen = !newTermOpen; if (newTermOpen) $nextTick(() => $refs.newTermInput && $refs.newTermInput.focus())"
                 title="New persistent tmux session"
