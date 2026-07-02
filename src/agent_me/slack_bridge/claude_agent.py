@@ -181,3 +181,23 @@ async def run_turn_with_progress(
     if result.session_id:
         state["session_id"] = result.session_id
     return result, state, final
+
+
+def format_thread_context(messages: list[dict], exclude_ts: str | None = None) -> str | None:
+    """Prior Slack thread messages → a context seed for a session-less thread
+    (e.g. a reply under a bot-posted brief). Skips the current message, empty
+    texts, and the bridge's own 🔄 progress placeholders; None = nothing to seed."""
+    lines: list[str] = []
+    for msg in messages or []:
+        text = (msg.get("text") or "").strip()
+        if not text or msg.get("ts") == exclude_ts or text.startswith("🔄"):
+            continue
+        who = "assistant (this bot)" if msg.get("bot_id") else "user"
+        lines.append(f"{who}: {text[:1500]}")
+    if not lines:
+        return None
+    joined = "\n\n".join(lines)[-6000:]
+    return (
+        "[Slack thread context — the messages already in this thread, oldest "
+        "first. The user's new message below replies to them.]\n" + joined
+    )

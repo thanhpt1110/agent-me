@@ -83,7 +83,7 @@ from agent_me.mcp_tokens import (
     refresh_mcp_tokens,
 )
 from agent_me.slack_bridge import approvals
-from agent_me.slack_bridge.claude_agent import run_turn_with_progress
+from agent_me.slack_bridge.claude_agent import format_thread_context, run_turn_with_progress
 
 # ── Repo dir resolution ──────────────────────────────────────────────────
 
@@ -2371,6 +2371,20 @@ async def recover_model_free_subject_from_slack_thread(
     return None
 
 
+async def slack_thread_context(
+    client, channel: str, thread_ts: str, exclude_ts: str | None = None,
+) -> str | None:
+    """Prior messages of a thread the agent has NO session for — e.g. a reply
+    under a bot-posted brief. Without this seed, the first agent turn in such a
+    thread would see only the user's reply and none of what it replies to."""
+    try:
+        res = await client.conversations_replies(channel=channel, ts=thread_ts, limit=20)
+    except Exception as exc:
+        log.warning("thread_context_fetch_failed", err=str(exc), thread_ts=thread_ts)
+        return None
+    return format_thread_context(res.get("messages") or [], exclude_ts=exclude_ts)
+
+
 async def post_thinking(client, channel: str, thread_ts: str) -> str:
     res = await client.chat_postMessage(channel=channel, thread_ts=thread_ts, text="🔄 thinking…")
     return res["ts"]
@@ -2759,6 +2773,15 @@ async def handle_user_query(*, client, channel: str, thread_ts: str,
         # messages resume the same session, preserving context, prompt-cache
         # hits, and tool-use history. (Table name stays `claude_sessions`.)
         existing_sid = await get_session_id(thread_ts)
+        if existing_sid is None:
+            # No session ⇒ the agent hasn't seen this thread. If it already has
+            # messages (a bot-posted brief, a pre-reset thread), seed them so
+            # the reply is answered in context instead of cold.
+            seed = await slack_thread_context(
+                client, channel, thread_ts, exclude_ts=event_ts,
+            )
+            if seed:
+                agent_prompt = f"{seed}\n\n{agent_prompt}"
         try:
             answer, new_sid = await spawn_agent(
                 agent_prompt, resume_session_id=existing_sid,

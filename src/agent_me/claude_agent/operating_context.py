@@ -8,14 +8,25 @@ place stops the two surfaces from drifting apart.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 DEFAULT_BRANCH = "big-update"
 
 
-def operating_context(repo: str | os.PathLike[str], *, branch: str = DEFAULT_BRANCH) -> str:
+def operating_context(cwd: str | os.PathLike[str], *, branch: str = DEFAULT_BRANCH) -> str:
+    # The cwd may be the repo itself OR the workspace umbrella that contains it
+    # (e.g. Slack agents run at /data/agent-me.nvidia.com) — name the repo path
+    # explicitly either way so the git guidance below always has a target.
+    path = Path(cwd)
+    child = path / "agent-me"
+    repo = child if not (path / ".git").exists() and (child / ".git").exists() else path
+    where = (
+        f"in the repo {repo}" if repo == path
+        else f"in the workspace {path}; the agent-me repo is {repo}"
+    )
     return (
         "Operating context for this machine (authoritative):\n"
-        f"- You run on host agent-me.nvidia.com (CPU) in the repo {repo}.\n"
+        f"- You run on host agent-me.nvidia.com (CPU) {where}.\n"
         f"- Always work on the `{branch}` branch. Never switch to or commit on `main`.\n"
         "- The git remote `origin` is GitLab "
         "(gitlab-master.nvidia.com/vrdc-swqa/swqa-2e2-workflow/agent-me). "

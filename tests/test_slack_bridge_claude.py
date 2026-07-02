@@ -195,3 +195,23 @@ async def test_heartbeat_disabled_when_interval_zero() -> None:
         model=None, progress_cb=cb, heartbeat_interval_s=0,
     )
     assert ticks == 0
+
+
+def test_format_thread_context_seeds_bot_started_threads() -> None:
+    """A reply under a bot-posted thread (e.g. the brief) seeds the agent with
+    the prior messages — excluding the current reply and 🔄 placeholders."""
+    from agent_me.slack_bridge.claude_agent import format_thread_context
+
+    msgs = [
+        {"ts": "1", "bot_id": "B1", "text": "Daily Brief: 3 Jira, 2 PRs…"},
+        {"ts": "2", "text": "🔄 thinking…", "bot_id": "B1"},
+        {"ts": "3", "text": "what's the P0 about?"},   # the current reply
+        {"ts": "4", "text": "   "},
+    ]
+    seed = format_thread_context(msgs, exclude_ts="3")
+    assert seed is not None
+    assert "Daily Brief: 3 Jira" in seed and "assistant (this bot)" in seed
+    assert "thinking" not in seed and "what's the P0" not in seed
+    # nothing left after exclusions → no seed at all
+    assert format_thread_context([{"ts": "3", "text": "hi"}], exclude_ts="3") is None
+    assert format_thread_context([]) is None
