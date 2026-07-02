@@ -210,6 +210,9 @@
         </span>
         <button type="button" x-show="busy" x-cloak @click="cancel()" title="Stop" aria-label="Stop"
                 class="btn btn-danger btn-icon btn-sm">■</button>
+        <button type="button" x-show="terminalEnabled" x-cloak @click="termPanelOpen = true"
+                title="Terminals (live tmux sessions)" aria-label="Open the terminals panel"
+                class="btn btn-icon btn-sm font-mono xl:hidden">▤</button>
         <button type="button" x-show="terminalEnabled" @click="toggleTerminal()"
                 title="Open the host terminal (persistent — tmux-backed, survives disconnects)"
                 aria-label="Open the host terminal"
@@ -414,16 +417,26 @@
     </div>
   </section>
 
-  <!-- ── Right panel: persistent tmux terminals (xl+) ─────────────────── -->
+  <!-- ── Right panel: persistent tmux terminals ───────────────────────────
+       Static third column at xl; below xl (small screens OR browser zoom-in
+       shrinking the CSS viewport) it becomes a slide-over drawer from the
+       right, opened by the ▤ header button — never unreachable. -->
+  <div x-show="termPanelOpen" x-cloak @click="termPanelOpen = false"
+       class="fixed inset-0 z-30 bg-black/60 xl:hidden"></div>
   <aside x-show="terminalEnabled" x-cloak
-         class="hidden min-h-0 flex-col rounded-card border border-ink-700 bg-ink-900 xl:flex">
+         class="fixed inset-y-0 right-0 z-40 flex min-h-0 w-72 max-w-[82vw] flex-col rounded-card border border-ink-700 bg-ink-900 transition-transform xl:static xl:z-auto xl:w-auto xl:max-w-none xl:translate-x-0"
+         :class="termPanelOpen ? 'translate-x-0' : 'translate-x-full xl:translate-x-0'">
     <div class="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-ink-700 px-3">
       <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Terminals</span>
-      <button type="button" @click="newTermOpen = !newTermOpen; if (newTermOpen) $nextTick(() => $refs.newTermInput && $refs.newTermInput.focus())"
-              title="New persistent tmux session"
-              class="rounded bg-accent-400 px-2.5 py-1 text-xs font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
-        + New
-      </button>
+      <div class="flex items-center gap-2">
+        <button type="button" @click="newTermOpen = !newTermOpen; if (newTermOpen) $nextTick(() => $refs.newTermInput && $refs.newTermInput.focus())"
+                title="New persistent tmux session"
+                class="rounded bg-accent-400 px-2.5 py-1 text-xs font-semibold text-ink-950 hover:bg-nvgreen-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nvgreen-100">
+          + New
+        </button>
+        <button type="button" @click="termPanelOpen = false" aria-label="Close terminals"
+                class="xl:hidden rounded border border-ink-700 px-2 py-1 text-xs text-slate-400 hover:border-accent-400">✕</button>
+      </div>
     </div>
     <div x-show="newTermOpen" x-cloak class="shrink-0 border-b border-ink-800 p-2">
       <form @submit.prevent="newTerminalSession()" class="flex items-center gap-1.5">
@@ -582,6 +595,7 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
     termConnected: false,
     termName: "",            // tmux session the drawer attaches to ("" until known)
     tmuxSessions: [],        // live tmux sessions for the right panel (click → attach)
+    termPanelOpen: false,    // slide-over state for the terminals panel below xl
     termHeight: 0,           // drawer height in px (0 → the h-[45vh] default); persisted
     newTermOpen: false,      // "+ New" inline form
     newTermName: "",
@@ -1236,6 +1250,7 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
     // Terminals panel: attach the drawer to a specific tmux session.
     openTerminalFor(name) {
       if (!this.terminalEnabled || this.locked || !name) return;
+      this.termPanelOpen = false;   // below xl the slide-over would cover the drawer
       if (this.termOpen && this.termName === name) { if (this.term) this.term.focus(); return; }
       this.termName = name;
       if (this.termOpen) {
