@@ -293,8 +293,12 @@ class ChatService:
             except (OSError, RuntimeError):
                 current = None
         if current is None or not current.is_dir() or not in_scope(current):
+            # Top-level view: hide a root nested under another root (e.g. the repo
+            # inside the workspace umbrella) — it's reachable by expanding, and
+            # listing it twice reads as two different folders.
+            top = [r for r in roots if not any(o != r and o in r.parents for o in roots)]
             return {"path": "", "parent": None, "crumbs": [],
-                    "dirs": [entry(r) for r in roots], "selectable": False}
+                    "dirs": [entry(r) for r in top], "selectable": False}
 
         root = max((r for r in roots if current == r or r in current.parents),
                    key=lambda r: len(r.parts))

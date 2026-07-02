@@ -160,9 +160,6 @@
                    selects it, "Use this folder" applies. Multi-level stays visible. -->
               <div x-show="fp.open" x-cloak @click.outside="fp.open = false"
                    class="absolute left-0 top-full z-30 mt-1 w-80 rounded-lg border border-ink-700 bg-ink-900 p-2 shadow-xl">
-                <div class="mb-1 px-1 font-mono text-[10px] text-slate-500">
-                  ▸ expands a level · click a name to select
-                </div>
                 <div class="max-h-64 overflow-y-auto" role="tree">
                   <template x-for="n in fp.nodes" :key="n.path">
                     <div class="flex items-center gap-0.5 rounded py-0.5 pr-1 font-mono text-[11px]"

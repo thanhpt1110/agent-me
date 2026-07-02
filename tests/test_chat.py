@@ -586,6 +586,20 @@ def test_browse_folders_drilldown(tmp_path: Path, monkeypatch) -> None:
     assert svc.browse_folders("/no/such/dir")["path"] == ""
 
 
+def test_browse_roots_hide_nested_roots(tmp_path: Path) -> None:
+    """A scope root nested under another root (e.g. the repo inside the workspace
+    umbrella) is hidden from the top-level view — it's reachable by expanding,
+    and listing it twice reads as two different folders."""
+    umbrella = tmp_path / "ws"
+    (umbrella / "repo").mkdir(parents=True)
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(umbrella / "repo"),
+                     add_dirs=(str(umbrella),))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    names = [d["name"] for d in svc.browse_folders("")["dirs"]]
+    assert "ws" in names and "repo" not in names
+    assert [d["name"] for d in svc.browse_folders(str(umbrella))["dirs"]] == ["repo"]
+
+
 def test_folder_options_survives_unresolvable_home(tmp_path: Path, monkeypatch) -> None:
     """No $HOME + no passwd entry makes Path.home() raise; the picker must degrade to
     the configured roots, not 500 (the scope helpers already guard this)."""
