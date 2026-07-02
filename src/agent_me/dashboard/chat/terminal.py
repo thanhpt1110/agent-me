@@ -19,11 +19,19 @@ import contextlib
 import fcntl
 import os
 import pty
+import re
 import shutil
 import signal
 import struct
+import subprocess
 import termios
 from collections.abc import Awaitable, Callable
+
+_TMUX_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def valid_tmux_name(name: str) -> bool:
+    return bool(_TMUX_NAME_RE.match(name or ""))
 
 
 def resolve_shell(preferred: str | None = None) -> str:
@@ -39,6 +47,39 @@ def resolve_tmux() -> str | None:
     if found:
         return found
     return "/usr/bin/tmux" if os.path.exists("/usr/bin/tmux") else None
+
+
+def list_tmux_sessions(tmux_bin: str | None = None) -> list[dict]:
+    """Live tmux sessions, most recently active first — the web sidebar lists
+    these so a closed tab can always find its way back to a running session.
+    Empty when tmux is missing or no server is running (not an error)."""
+    tmux = tmux_bin or resolve_tmux()
+    if not tmux:
+        return []
+    try:
+        proc = subprocess.run(
+            [tmux, "list-sessions", "-F",
+             "#{session_name}\t#{session_created}\t#{session_attached}"
+             "\t#{session_windows}\t#{session_activity}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    sessions: list[dict] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 5 or not valid_tmux_name(parts[0]):
+            continue
+        name, created, attached, windows, activity = parts
+        with contextlib.suppress(ValueError):
+            sessions.append({
+                "name": name, "created": int(created or 0),
+                "attached": int(attached or 0), "windows": int(windows or 0),
+                "activity": int(activity or 0),
+            })
+    return sorted(sessions, key=lambda s: -s["activity"])
 
 
 class TerminalSession:
@@ -65,9 +106,13 @@ class TerminalSession:
     def build_argv(self) -> list[str]:
         if self.tmux_session and self.tmux_bin:
             # -A = attach when the session already exists; -c sets the start dir
-            # on create; the trailing shell only applies on create too.
+            # on create; the trailing shell only applies on create too. The
+            # chained set-option makes the most recently active client win the
+            # window size (default "smallest" shrinks every viewer to the
+            # smallest attached client — web + SSH together would squeeze both).
             return [self.tmux_bin, "new-session", "-A", "-s", self.tmux_session,
-                    "-c", self.cwd, self.shell]
+                    "-c", self.cwd, self.shell,
+                    ";", "set-option", "-g", "window-size", "latest"]
         return [self.shell, "-i"]
 
     def start(self) -> None:

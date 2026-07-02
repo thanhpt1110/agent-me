@@ -111,6 +111,28 @@
       </template>
       <li x-show="!sessions.length" class="px-2.5 py-6 text-center text-xs text-slate-500">No chats yet.</li>
     </ul>
+    <!-- live tmux sessions: the way back into a persistent terminal after a
+         closed tab — click to attach the drawer to that session. -->
+    <div class="shrink-0 border-t border-ink-700 px-2 py-2" x-show="tmuxSessions.length" x-cloak>
+      <div class="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Live terminals</div>
+      <ul class="max-h-40 space-y-0.5 overflow-y-auto">
+        <template x-for="s in tmuxSessions" :key="s.name">
+          <li>
+            <button type="button" @click="openTerminalFor(s.name)"
+                    :title="'Attach ' + s.name + ' (' + s.windows + ' window' + (s.windows === 1 ? '' : 's') + ')'"
+                    class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-[11px] hover:bg-ink-800 hover:text-accent-400"
+                    :class="termOpen && termName === s.name ? 'bg-accent-400/10 text-accent-400' : 'text-slate-300'">
+              <span class="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                    :class="s.attached > 0 ? 'bg-accent-400' : 'bg-slate-600'"
+                    :title="s.attached > 0 ? 'attached' : 'running detached'"></span>
+              <span class="truncate" x-text="s.name"></span>
+              <span class="ml-auto shrink-0 text-[10px] text-slate-500"
+                    :title="absTime(s.activity * 1000)" x-text="relTime(s.activity * 1000)"></span>
+            </button>
+          </li>
+        </template>
+      </ul>
+    </div>
   </aside>
 
   <!-- ── Main: transcript + composer ────────────────────────────────── -->
@@ -395,6 +417,9 @@
         <span class="flex items-center gap-2 font-mono text-xs text-accent-400">
           <span>⌁ terminal</span>
           <span class="text-slate-600" x-text="host"></span>
+          <span x-show="termName" x-cloak class="rounded bg-ink-800 px-1.5 py-0.5 text-[10px] text-slate-400"
+                :title="'tmux session: ' + termName + ' — survives disconnects; also reachable via ssh + tmux attach'"
+                x-text="'tmux:' + termName"></span>
         </span>
         <div class="flex items-center gap-3">
           <span class="text-[10px]" :class="termConnected ? 'text-accent-400' : 'text-slate-500'"
@@ -477,6 +502,8 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
     // host terminal
     termOpen: false,
     termConnected: false,
+    termName: "",            // tmux session the drawer attaches to ("" until known)
+    tmuxSessions: [],        // live tmux sessions for the sidebar (click → attach)
     termThemeName: "dark",   // reactive → drives the drawer bg + xterm theme
     term: null,
     termFit: null,
@@ -520,6 +547,7 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
       this.startPolling();
       this.loadCommands();
       this.loadFolders();
+      this.loadTmuxSessions();
     },
 
     async loadFolders() {
@@ -581,6 +609,17 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
         const r = await fetch("/api/chat/sessions");
         if (r.status === 403) { this.relock(); return; }
         this.sessions = (await r.json()).sessions || [];
+      } catch (e) { /* keep stale list */ }
+      this.loadTmuxSessions();   // keep the live-terminals sidebar fresh too
+    },
+    async loadTmuxSessions() {
+      try {
+        const r = await fetch("/api/chat/tmux");
+        if (r.status === 403) { this.relock(); return; }
+        if (!r.ok) return;
+        const d = await r.json();
+        this.tmuxSessions = d.sessions || [];
+        if (!this.termName && d.default) this.termName = d.default;
       } catch (e) { /* keep stale list */ }
     },
     currentMeta() { return this.sessions.find(s => s.id === this.currentId); },
@@ -1061,6 +1100,19 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
       this.termOpen = true;
       this.$nextTick(() => this.initTerminal());
     },
+    // Sidebar "Live terminals": attach the drawer to a specific tmux session.
+    openTerminalFor(name) {
+      if (!this.terminalEnabled || this.locked || !name) return;
+      if (this.termOpen && this.termName === name) { if (this.term) this.term.focus(); return; }
+      this.termName = name;
+      if (this.termOpen) {
+        if (this.term) { try { this.term.reset(); } catch (e) {} }
+        this.connectTerminalWs();
+        if (this.term) this.term.focus();
+      } else {
+        this.openTerminal();
+      }
+    },
     initTerminal() {
       if (!window.Terminal) { return; }
       this.syncTermThemeName();
@@ -1142,7 +1194,8 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
     connectTerminalWs() {
       if (this.termWs) { try { this.termWs.close(); } catch (e) {} this.termWs = null; }
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${location.host}/ws/chat/terminal`);
+      const qs = this.termName ? `?session=${encodeURIComponent(this.termName)}` : "";
+      const ws = new WebSocket(`${proto}://${location.host}/ws/chat/terminal${qs}`);
       this.termWs = ws;
       ws.onopen = () => { this.termConnected = true; this.$nextTick(() => this.fitTerminal()); };
       ws.onclose = () => { this.termConnected = false; if (this.term && this.termOpen) this.term.write("\r\n\x1b[90m[disconnected]\x1b[0m\r\n"); };

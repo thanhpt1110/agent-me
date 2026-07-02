@@ -21,7 +21,13 @@ from agent_me.dashboard.chat.local_sessions import (
 from agent_me.dashboard.chat.models import EventKind, make_event
 from agent_me.dashboard.chat.service import ChatService
 from agent_me.dashboard.chat.store import DiskSessionStore
-from agent_me.dashboard.chat.terminal import TerminalSession, resolve_shell, resolve_tmux
+from agent_me.dashboard.chat.terminal import (
+    TerminalSession,
+    list_tmux_sessions,
+    resolve_shell,
+    resolve_tmux,
+    valid_tmux_name,
+)
 
 from .test_chat import FakeClaudeRunner, _drain, _wire
 
@@ -191,7 +197,8 @@ def test_terminal_build_argv_tmux_and_fallback() -> None:
     tm = TerminalSession(shell="/bin/bash", cwd="/tmp",
                          tmux_session="agme-t", tmux_bin="/usr/bin/tmux")
     assert tm.build_argv() == ["/usr/bin/tmux", "new-session", "-A", "-s", "agme-t",
-                               "-c", "/tmp", "/bin/bash"]
+                               "-c", "/tmp", "/bin/bash",
+                               ";", "set-option", "-g", "window-size", "latest"]
     # tmux requested but not installed → plain shell (feature degrades, never breaks)
     half = TerminalSession(shell="/bin/bash", cwd="/tmp", tmux_session="agme-t")
     assert half.build_argv() == ["/bin/bash", "-i"]
@@ -239,6 +246,34 @@ def test_terminal_tmux_session_survives_client_close() -> None:
         assert session_alive()
     finally:
         subprocess.run([tmux, "kill-session", "-t", name], capture_output=True)
+
+
+def test_valid_tmux_name() -> None:
+    assert valid_tmux_name("agme-web-dev") and valid_tmux_name("a_b.c-1")
+    assert not valid_tmux_name("") and not valid_tmux_name("bad name")
+    assert not valid_tmux_name("a;b") and not valid_tmux_name("x" * 65)
+
+
+@pytest.mark.skipif(resolve_tmux() is None, reason="tmux not installed")
+def test_list_tmux_sessions_lists_live_sessions() -> None:
+    tmux = resolve_tmux()
+    name = f"agme-list-{os.getpid()}"
+    subprocess.run([tmux, "new-session", "-d", "-s", name], check=True)
+    try:
+        found = [s for s in list_tmux_sessions() if s["name"] == name]
+        assert found and found[0]["windows"] >= 1 and found[0]["attached"] == 0
+        assert found[0]["activity"] > 0
+    finally:
+        subprocess.run([tmux, "kill-session", "-t", name], capture_output=True)
+
+
+def test_api_chat_tmux_persist_off_reports_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With persistence off (the test suite's mode) the endpoint reports no
+    sessions and persist=false, so the sidebar simply hides."""
+    from agent_me.dashboard import app as dash
+    client = TestClient(dash.app)
+    d = client.get("/api/chat/tmux").json()
+    assert d == {"sessions": [], "default": "", "persist": False}
 
 
 def test_terminal_ws_rejected_when_locked(monkeypatch: pytest.MonkeyPatch) -> None:

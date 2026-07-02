@@ -53,6 +53,40 @@ Notes:
   `--dangerously-skip-permissions`) so claude never blocks on an approval
   prompt overnight; `/loop` gives self-scheduled recurring work.
 
+## Live terminals sidebar (web → any tmux session)
+
+The chat sidebar lists **live tmux sessions** (`GET /api/chat/tmux` →
+name/created/attached/windows/activity, newest activity first). Clicking one
+opens the terminal drawer attached to THAT session
+(`/ws/chat/terminal?session=<name>`, name validated `^[A-Za-z0-9_.-]{1,64}$`);
+the drawer header shows `tmux:<name>`. This is the way back in after a closed
+tab — and the way to watch/drive an agent someone started over SSH.
+
+Research-informed choices (ttyd/GoTTY/xterm.js findings, 2026-07-02):
+`new-session -A` as the idempotent attach-or-create (ttyd's documented tmux
+pattern); `term.reset()` before every reattach and let tmux repaint the screen
+(no server-side replay needed); chained `set-option -g window-size latest` so
+the most recent client wins the size (the `smallest` default would let a small
+phone viewer squeeze the SSH user). Future options if ever needed: read-only
+watchers (`attach -r` = `read-only,ignore-size` — UX, not security),
+ACK-based flow control for very chatty output.
+
+## The operating model for long, self-waking agent flows
+
+Web chat turns are `claude -p` (headless): the process **exits when the turn
+ends**, so an agent that wants to poll-for-hours or self-schedule wake-ups
+(`/loop`, ScheduleWakeup) cannot live there — this is why long flows "died and
+never woke up". The supported pattern now:
+
+1. Start an **interactive** claude in tmux — web terminal (`>_`, session
+   `agme-web-<env>`) or SSH (`scripts/claude-persistent.sh <name>`).
+2. Give it the long task, e.g. `/loop 10m check the deploy; investigate if red`
+   — interactive claude self-schedules wake-ups; tmux keeps it alive with no
+   client attached.
+3. Watch it from anywhere: the conversation streams **live in /chat** (native
+   session tail — structured, readable), and the raw terminal is one click
+   away in the Live-terminals sidebar. Both survive laptop-off.
+
 ## Verification
 
 - `test_terminal_build_argv_tmux_and_fallback` — argv contract incl. the

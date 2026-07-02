@@ -126,9 +126,11 @@ AUTO_SFA_RUNNER = AutoSFARunner()
 from agent_me.dashboard.chat import (  # noqa: E402
     TerminalSession,
     build_chat_service,
+    list_tmux_sessions,
     resolve_shell,
     resolve_tmux,
     stream_output,
+    valid_tmux_name,
 )
 
 DEPLOY_ENV = os.environ.get("DEPLOY_ENV", "production").strip().lower()
@@ -1394,6 +1396,20 @@ async def api_chat_branches(request: Request):
     return JSONResponse(CHAT_SERVICE.branch_options(request.query_params.get("cwd", "")))
 
 
+async def api_chat_tmux(request: Request):
+    """Live tmux sessions for the sidebar — the way back into a persistent
+    terminal after a closed tab (click → the drawer attaches to it)."""
+    if (blocked := _chat_guard(request)):
+        return blocked
+    cfg = CHAT_SERVICE.config
+    persist = bool(cfg.terminal_persist and resolve_tmux())
+    return JSONResponse({
+        "sessions": list_tmux_sessions() if persist else [],
+        "default": cfg.terminal_tmux_session if persist else "",
+        "persist": persist,
+    })
+
+
 async def api_chat_history(request: Request):
     """Older transcript events for scroll-up paging (cursor from the SSE snapshot)."""
     if (blocked := _chat_guard(request)):
@@ -1471,10 +1487,16 @@ async def ws_chat_terminal(websocket: WebSocket):
     await websocket.accept()
     cfg = svc.config
     tmux_bin = resolve_tmux() if cfg.terminal_persist else None
+    # ?session=<name> attaches a specific live tmux session (the sidebar's
+    # click-to-reattach); default is this instance's own persistent session.
+    requested = (websocket.query_params.get("session") or "").strip()
+    tmux_name = cfg.terminal_tmux_session
+    if requested and valid_tmux_name(requested):
+        tmux_name = requested
     session = TerminalSession(
         shell=resolve_shell(cfg.terminal_shell or None),
         cwd=(cfg.terminal_cwd or cfg.default_cwd),
-        tmux_session=(cfg.terminal_tmux_session if tmux_bin else None),
+        tmux_session=(tmux_name if tmux_bin else None),
         tmux_bin=tmux_bin,
     )
     try:
@@ -1615,6 +1637,7 @@ def build_app() -> Starlette:
         Route("/api/chat/folders/browse", api_chat_folders_browse,
               name="api_chat_folders_browse"),
         Route("/api/chat/branches", api_chat_branches, name="api_chat_branches"),
+        Route("/api/chat/tmux", api_chat_tmux, name="api_chat_tmux"),
         Route("/api/chat/sessions/{session_id}/history", api_chat_history,
               name="api_chat_history"),
         Route("/api/chat/sessions/{session_id}/message", api_chat_message,
