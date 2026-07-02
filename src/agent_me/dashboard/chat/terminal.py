@@ -60,7 +60,7 @@ def list_tmux_sessions(tmux_bin: str | None = None) -> list[dict]:
         proc = subprocess.run(
             [tmux, "list-sessions", "-F",
              "#{session_name}\t#{session_created}\t#{session_attached}"
-             "\t#{session_windows}\t#{session_activity}"],
+             "\t#{session_windows}\t#{session_activity}\t#{@agme_locked}"],
             capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -70,14 +70,14 @@ def list_tmux_sessions(tmux_bin: str | None = None) -> list[dict]:
     sessions: list[dict] = []
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 5 or not valid_tmux_name(parts[0]):
+        if len(parts) != 6 or not valid_tmux_name(parts[0]):
             continue
-        name, created, attached, windows, activity = parts
+        name, created, attached, windows, activity, locked = parts
         with contextlib.suppress(ValueError):
             sessions.append({
                 "name": name, "created": int(created or 0),
                 "attached": int(attached or 0), "windows": int(windows or 0),
-                "activity": int(activity or 0),
+                "activity": int(activity or 0), "locked": locked.strip() == "1",
             })
     return sorted(sessions, key=lambda s: -s["activity"])
 
@@ -101,15 +101,55 @@ def create_tmux_session(name: str, *, cwd: str, shell: str,
     return _tmux_cmd(["new-session", "-d", "-s", name, "-c", cwd, shell], tmux_bin)
 
 
+def _tmux_session_id(name: str, tmux_bin: str | None = None) -> str | None:
+    """Exact name → tmux session id ($N). set-option/show-options don't accept
+    the `=name` exact-match syntax kill/rename do, and a bare name would
+    prefix-match — the id is unambiguous."""
+    ok, out = _tmux_cmd(["list-sessions", "-F", "#{session_name}\t#{session_id}"], tmux_bin)
+    if not ok:
+        return None
+    for line in out.splitlines():
+        sess, _, sid = line.partition("\t")
+        if sess == name:
+            return sid or None
+    return None
+
+
+def tmux_session_locked(name: str, tmux_bin: str | None = None) -> bool:
+    """The operator's protect flag, stored IN tmux (user option @agme_locked) so
+    it lives and dies with the session and survives dashboard restarts."""
+    sid = _tmux_session_id(name, tmux_bin)
+    if not sid:
+        return False
+    ok, out = _tmux_cmd(["show-options", "-t", sid, "-v", "@agme_locked"], tmux_bin)
+    return ok and out.strip() == "1"
+
+
+def set_tmux_session_locked(name: str, locked: bool,
+                            tmux_bin: str | None = None) -> tuple[bool, str]:
+    if not valid_tmux_name(name):
+        return False, "invalid session name"
+    sid = _tmux_session_id(name, tmux_bin)
+    if not sid:
+        return False, "no such session"
+    if locked:
+        return _tmux_cmd(["set-option", "-t", sid, "@agme_locked", "1"], tmux_bin)
+    return _tmux_cmd(["set-option", "-t", sid, "-u", "@agme_locked"], tmux_bin)
+
+
 def rename_tmux_session(name: str, to: str, tmux_bin: str | None = None) -> tuple[bool, str]:
     if not (valid_tmux_name(name) and valid_tmux_name(to)):
         return False, "invalid session name"
+    if tmux_session_locked(name, tmux_bin):
+        return False, "session is locked — unlock it first"
     return _tmux_cmd(["rename-session", "-t", f"={name}", to], tmux_bin)
 
 
 def kill_tmux_session(name: str, tmux_bin: str | None = None) -> tuple[bool, str]:
     if not valid_tmux_name(name):
         return False, "invalid session name"
+    if tmux_session_locked(name, tmux_bin):
+        return False, "session is locked — unlock it first"
     return _tmux_cmd(["kill-session", "-t", f"={name}"], tmux_bin)
 
 

@@ -29,6 +29,7 @@ from agent_me.dashboard.chat.terminal import (
     rename_tmux_session,
     resolve_shell,
     resolve_tmux,
+    set_tmux_session_locked,
     valid_tmux_name,
 )
 
@@ -291,6 +292,28 @@ def test_tmux_session_lifecycle_helpers() -> None:
         assert not rename_tmux_session(renamed, "x y")[0]
     finally:
         subprocess.run([tmux, "kill-session", "-t", f"={renamed}"], capture_output=True)
+        subprocess.run([tmux, "kill-session", "-t", f"={name}"], capture_output=True)
+
+
+@pytest.mark.skipif(resolve_tmux() is None, reason="tmux not installed")
+def test_tmux_lock_blocks_rename_and_kill() -> None:
+    """A locked session (user option @agme_locked, lives inside tmux) refuses
+    rename/kill server-side until unlocked; attach/viewing is unaffected."""
+    tmux = resolve_tmux()
+    name = f"agme-lock-{os.getpid()}"
+    try:
+        ok, err = create_tmux_session(name, cwd="/tmp", shell=resolve_shell())
+        assert ok, err
+        ok, err = set_tmux_session_locked(name, True)
+        assert ok, err
+        assert next(s for s in list_tmux_sessions() if s["name"] == name)["locked"] is True
+        assert not rename_tmux_session(name, name + "-x")[0]   # blocked
+        assert not kill_tmux_session(name)[0]                  # blocked
+        ok, err = set_tmux_session_locked(name, False)
+        assert ok, err
+        assert next(s for s in list_tmux_sessions() if s["name"] == name)["locked"] is False
+        assert kill_tmux_session(name)[0]                      # unlocked → allowed
+    finally:
         subprocess.run([tmux, "kill-session", "-t", f"={name}"], capture_output=True)
 
 

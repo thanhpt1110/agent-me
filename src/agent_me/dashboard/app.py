@@ -132,6 +132,7 @@ from agent_me.dashboard.chat import (  # noqa: E402
     rename_tmux_session,
     resolve_shell,
     resolve_tmux,
+    set_tmux_session_locked,
     stream_output,
     valid_tmux_name,
 )
@@ -1440,6 +1441,8 @@ async def api_chat_tmux_action(request: Request):
         ok, err = rename_tmux_session(name, to)
     elif action == "kill":
         ok, err = kill_tmux_session(name)
+    elif action in ("lock", "unlock"):
+        ok, err = set_tmux_session_locked(name, action == "lock")
     else:
         return JSONResponse({"error": "unknown action"}, status_code=404)
     if not ok:

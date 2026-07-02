@@ -21,6 +21,7 @@ from .terminal import (
     rename_tmux_session,
     resolve_shell,
     resolve_tmux,
+    set_tmux_session_locked,
     stream_output,
     valid_tmux_name,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "rename_tmux_session",
     "resolve_shell",
     "resolve_tmux",
+    "set_tmux_session_locked",
     "stream_output",
     "valid_tmux_name",
     "web_session_id_for",

@@ -434,7 +434,7 @@
       </form>
     </div>
     <ul class="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
-      <template x-for="s in tmuxSessions" :key="s.name">
+      <template x-for="s in tmuxUnlocked()" :key="s.name">
         <li class="group rounded"
             :class="termOpen && termName === s.name ? 'bg-accent-400/10' : 'hover:bg-ink-800'">
           <div class="flex items-center gap-1.5 px-1.5 py-1">
@@ -455,6 +455,8 @@
             <span class="shrink-0 text-[10px] text-slate-500 group-hover:hidden"
                   :title="absTime(s.activity * 1000)" x-text="relTime(s.activity * 1000)"></span>
             <span class="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+              <button type="button" @click="lockTerminal(s.name, true)" title="Lock session (blocks rename/kill until unlocked)"
+                      class="rounded px-1 text-[10px] text-slate-400 hover:text-accent-400">🔒</button>
               <button type="button" @click="startRenameTerminal(s)" title="Rename session"
                       class="rounded px-1 text-[11px] text-slate-400 hover:text-accent-400">✎</button>
               <button type="button" @click="termKillConfirm = s.name" title="Kill session (everything in it stops)"
@@ -476,6 +478,32 @@
       <li x-show="!tmuxSessions.length" class="px-2 py-6 text-center text-xs text-slate-500">
         No live sessions.<br/>Anything started here survives disconnects.
       </li>
+      <!-- locked sessions: parked below a divider, protected from rename/kill
+           (server-enforced) until explicitly unlocked. Click still attaches. -->
+      <li x-show="tmuxLocked().length" x-cloak class="pb-1 pt-2">
+        <div class="flex items-center gap-2 px-1.5">
+          <span class="h-px flex-1 bg-ink-700"></span>
+          <span class="text-[9px] font-semibold uppercase tracking-wide text-slate-600">🔒 locked</span>
+          <span class="h-px flex-1 bg-ink-700"></span>
+        </div>
+      </li>
+      <template x-for="s in tmuxLocked()" :key="'locked-' + s.name">
+        <li class="group rounded opacity-70"
+            :class="termOpen && termName === s.name ? 'bg-accent-400/10' : 'hover:bg-ink-800 hover:opacity-100'">
+          <div class="flex items-center gap-1.5 px-1.5 py-1">
+            <span class="shrink-0 text-[10px]" title="Locked — unlock to rename/kill">🔒</span>
+            <button type="button" @click="openTerminalFor(s.name)"
+                    :title="'Attach ' + s.name + ' (locked — viewing/typing still works)'"
+                    class="min-w-0 flex-1 truncate text-left font-mono text-[11px]"
+                    :class="termOpen && termName === s.name ? 'text-accent-400' : 'text-slate-400'"
+                    x-text="s.name"></button>
+            <span class="shrink-0 text-[10px] text-slate-600 group-hover:hidden"
+                  :title="absTime(s.activity * 1000)" x-text="relTime(s.activity * 1000)"></span>
+            <button type="button" @click="lockTerminal(s.name, false)" title="Unlock session (allows rename/kill again)"
+                    class="hidden shrink-0 rounded px-1 text-[10px] font-semibold text-slate-400 hover:text-accent-400 group-hover:block">Unlock</button>
+          </div>
+        </li>
+      </template>
     </ul>
     <div class="shrink-0 border-t border-ink-800 px-3 py-1.5 font-mono text-[10px] text-slate-600">
       tmux-backed · survives disconnects
@@ -1198,6 +1226,12 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
         if (this.termOpen && this.termName === name) this.closeTerminal();
         await this.loadTmuxSessions();
       }
+    },
+    tmuxUnlocked() { return this.tmuxSessions.filter(s => !s.locked); },
+    tmuxLocked() { return this.tmuxSessions.filter(s => s.locked); },
+    async lockTerminal(name, locked) {
+      this.termKillConfirm = ""; this.termEditFrom = "";
+      if (await this._tmuxAction(locked ? "lock" : "unlock", { name })) await this.loadTmuxSessions();
     },
     // Terminals panel: attach the drawer to a specific tmux session.
     openTerminalFor(name) {
