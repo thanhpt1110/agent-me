@@ -10,7 +10,7 @@
      this grid fills the <main> flex-1 slot exactly — only the transcript scrolls. -->
 <div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_terminal_enabled | tojson }}, {{ chat_context_window | tojson }})' x-init="init()"
      class="relative grid h-full grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]"
-     :class="terminalEnabled && 'xl:grid-cols-[18rem_1fr_15rem]'">
+     :class="terminalEnabled && 'xl:grid-cols-[16rem_1fr_14rem] 2xl:grid-cols-[18rem_1fr_15rem]'">
 
   <!-- ── Access gate (operator passcode) ──────────────────────────────── -->
   <div x-show="locked" x-cloak
