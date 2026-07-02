@@ -18,6 +18,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/agent-me
 EnvironmentFile=%h/agent-me/configs/.env
+# node bin is required so agent spawns (`claude` CLI) resolve node; ~/.local/bin for uv.
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
 
 # `uv run` resolves the venv and entry point declared in pyproject.toml.
 # We don't pre-source .venv/bin/activate — uv handles it.

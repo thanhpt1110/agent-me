@@ -1,8 +1,9 @@
 [Unit]
 # DEV deployment of the agent-me dashboard on this VM (port 8787), with the
 # native Chat feature. Direct access (DASHBOARD_TRUST_NETWORK=1 — no token; SSO
-# is handled separately). Production stays on the A100 dashboard (:8765); keep
-# this on the big-update branch.
+# is handled separately). Production (:8765, agent-me-dashboard.service) runs
+# from the SAME checkout on this VM behind Caddy — restart it deliberately to
+# "release"; this dev unit is the one to bounce freely while iterating.
 Description=agent-me dashboard (DEV — :8787, native chat)
 Documentation=https://github.com/thanhpt1110/agent-me
 After=network-online.target

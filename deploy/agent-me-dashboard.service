@@ -1,12 +1,12 @@
 [Unit]
-Description=agent-me dashboard (Phase 4 — read-only web view)
+Description=agent-me dashboard (production — :8765, agent-me.nvidia.com via Caddy)
 Documentation=https://github.com/thanhpt1110/agent-me/blob/main/design/dashboard-design.md
 After=network-online.target agent-me-bridge.service
 Wants=network-online.target
-# We don't `Requires=agent-me-bridge.service` on purpose: the dashboard is
-# read-only and degrades gracefully if the bridge is offline (it just
-# shows zero stats). Keeping units independent means a dashboard restart
-# doesn't disturb the bridge.
+# We don't `Requires=agent-me-bridge.service` on purpose: the dashboard
+# degrades gracefully if the bridge is offline (it just shows zero stats).
+# Keeping units independent means a dashboard restart doesn't disturb the
+# bridge.
 
 # This is a USER unit (systemd --user). Install via scripts/install-dashboard.sh.
 # Same rationale as agent-me-bridge.service for picking user-level over
@@ -16,6 +16,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/agent-me
 EnvironmentFile=%h/agent-me/configs/.env
+# node bin is required so the chat can spawn the `claude` CLI; ~/.local/bin for uv/cim/etc.
+Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
 
 # Bind to 0.0.0.0:8765 — exposed to the NVIDIA-internal reverse proxy
 # (`https://agent-me.nvidia.com`, VPN-gated; see
@@ -34,11 +36,12 @@ EnvironmentFile=%h/agent-me/configs/.env
 # --forwarded-allow-ips to get the safer default.
 ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 0.0.0.0 --port 8765 --forwarded-allow-ips=*
 
-# Read-only over the bridge's SQLite, no writes to bridge state. A
-# graceful stop just kills the uvicorn worker; nothing to flush.
 TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5
+# Only kill the dashboard process on stop/restart — NOT its children. Chat turns
+# run as detached worker processes that must survive a restart (see the dev unit).
+KillMode=process
 
 StandardOutput=journal
 StandardError=journal

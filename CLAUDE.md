@@ -2,6 +2,16 @@
 
 You are working in `~/agent-me/` — _"myself, but in agent mode."_ A public-shareable framework for a personal AI OS. Currently being built/operated by **thaphan@nvidia.com** as the first deployment.
 
+> **Host layout (since 2026-07-02):** the real path is
+> `/data/agent-me.nvidia.com/agent-me` (`~/agent-me` is a symlink to it) and it is
+> the **only** checkout of this repo on the host — always on branch `big-update`.
+> Sibling dirs: `../devtest-wrapper` (separate repo) and `../state` (runtime state —
+> SQLite, approvals, chat-cwd; never a repo, never edit by hand). Workspace map:
+> `/data/agent-me.nvidia.com/CLAUDE.md`. This one working tree serves production
+> :8765 (agent-me.nvidia.com via Caddy), dev :8787, and the Slack bridge — restart
+> `agent-me-dashboard.service` deliberately to "release"; bounce
+> `agent-me-dashboard-dev.service` freely while iterating.
+
 ## What this project is
 
 A 24/7 always-on autonomous agent framework, inspired by NVIDIA's Personal Assistant. Goal: orchestrator + sub-agents handle daily/weekly workload across Jira, GitLab, Confluence, Glean, calendar, code review, ops. Configs sync to GitHub. Runtime hosted on cloud host (CPU). Primary interface: Slack DM. The framework should be generic enough that any user can fork → set their own configs → have their own `agent-me`.
@@ -135,7 +145,9 @@ agent-me/
 > - **`/chat`** (dashboard) — persistent sessions over SSE; gated by the operator
 >   passcode (`DASHBOARD_OPERATOR_ACTION_CODE`) via a cookie unlock, plus a floating
 >   Chat button + mobile-responsive layout. DEV runs on **:8787** (`DEPLOY_ENV=dev`)
->   via `deploy/agent-me-dashboard-dev.service`; production stays on the A100 (:8765).
+>   via `deploy/agent-me-dashboard-dev.service`; production runs on **:8765** from
+>   the same checkout via `deploy/agent-me-dashboard.service` (Caddy →
+>   agent-me.nvidia.com).
 > - **Slack bridge** — DMs run claude in the `~/agent-me` workspace (terminal-like),
 >   per-thread sessions, live progress, final summary in-thread. `AGENT_BACKEND=codex`
 >   restores the legacy path.
