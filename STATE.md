@@ -202,6 +202,22 @@ Blockers: none. Real in-browser click-test still can't run on this host (no chro
 
 Verified: `uv run ruff check src tests` clean; `uv run python -m pytest -q` **313 passed** (incl. 7 new regression tests across `test_native_sessions.py` + `test_chat.py`; the auto_sfa timing flake did not recur). An adversarial 3-dimension review workflow (`wf_85af5687-8ca`) confirmed 4 findings (by-id scope bypass ×2, cwd-less leak, unguarded `Path.home()`); all fixed + regression-tested. **Live on the real store:** `folder_options()` returns all 6 home folders; `list_all_sessions(allow=_folder_in_scope)` surfaces 13 in-scope native sessions across `agent-me`/`~`/`agent-me-qa-handsfree`/`st2110` (was only the 3 in `agent-me`), filtering out `/tmp/*` + `/Users/*`; `_folder_in_scope` now correctly rejects `~/.claude/projects`, `~/.config`, `/tmp`, `~/../etc`; a real out-of-scope `/tmp/*` session is unreachable by id (`_scoped_native`/`get_session` → None). **Real round-trip:** ran a real `claude` turn in `~/st2110` (non-default folder) → CLI wrote `…/-home-thaphan-st2110/<id>.jsonl` (web→host `--resume` sees it); web `find_anywhere`/`session_dicts`/`get_session` surfaced + replayed it by id; `delete_session` purged the right slug's transcript; throwaway session removed. Discussion: [`discussions/2026-06-30-dynamic-folders-and-cross-slug-sync.md`](discussions/2026-06-30-dynamic-folders-and-cross-slug-sync.md); design: [`design/dashboard-chat.md`](design/dashboard-chat.md)._
 
+_Addendum 2026-07-02 by Claude (branch `big-update`) — **Killed the long-standing flaky
+`test_auto_sfa_runner_persists_trigger_history`** (logged in `ideas.md` 2026-06-27; the
+"passes on retry" caveat in every recent verification note). Root cause was test-side, not
+runtime: `AutoSFARunner._run` flips `job.status = "done"` in-memory **before** the
+`await asyncio.to_thread(self._record_history, …)` SQLite write lands, and the test polled
+`get_job().status == "done"` then read `recent_history()` from the DB — which could still
+hold the earlier `"running"` row. Reproduced 2/25 before the fix (always
+`assert rows[0]["status"] == "done"` → `'running'`). Fix: await the job's background task
+(`await job._task`) instead of polling status — `_run` awaits the history write before it
+returns, so the DB is consistent on read. Applied to that test + the sibling
+`test_auto_sfa_runner_runs_create_flow` (same poll-then-read-history shape); left the
+concurrent/cancel tests on their polls (they assert mid-flight state). No runtime change —
+the runner is correct. Verified: previously-flaky node + sibling run **40×** → 40/40 pass;
+`uv run ruff check src tests` clean; `uv run python -m pytest` → **313 passed**. Discussion:
+[`discussions/2026-07-02-flaky-auto-sfa-history-test.md`](discussions/2026-07-02-flaky-auto-sfa-history-test.md)._
+
 ## Phase
 
 **Phase 2a + brief fan-out + Slack session persistence live + Phase 4

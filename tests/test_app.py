@@ -564,10 +564,10 @@ async def test_auto_sfa_runner_persists_trigger_history(
     runner = runner_module.AutoSFARunner()
     job = await runner.start(request)
 
-    for _ in range(50):
-        if runner.get_job(job.job_id).status == "done":
-            break
-        await asyncio.sleep(0.01)
+    # job.status flips to "done" in-memory before the history DB write finishes, so
+    # awaiting the background task (not polling status) is what makes the DB read race-free.
+    assert job._task is not None
+    await job._task
 
     rows = runner.recent_history(limit=5)
     assert rows[0]["run_id"] == job.job_id
@@ -599,10 +599,8 @@ async def test_auto_sfa_runner_runs_create_flow(
     runner = runner_module.AutoSFARunner()
     job = await runner.start(request)
 
-    for _ in range(50):
-        if runner.get_job(job.job_id).status == "done":
-            break
-        await asyncio.sleep(0.01)
+    assert job._task is not None
+    await job._task
 
     assert calls == [request]
     assert runner.get_job(job.job_id).status == "done"
