@@ -45,6 +45,22 @@ def test_purge_local_sessions(tmp_path: Path) -> None:
     assert purge_local_sessions(tmp_path, cwd, ["a"]) == []
 
 
+def test_purge_local_sessions_resolves_symlinked_cwd(tmp_path: Path) -> None:
+    """The CLI slugs its PHYSICAL getcwd; a session whose stored cwd is a symlink
+    alias (e.g. ``~/agent-me`` → ``/data/.../agent-me``) must purge the transcript
+    under the resolved slug too, or deleted chats linger in ``claude --resume``."""
+    real = tmp_path / "disk" / "repo"
+    real.mkdir(parents=True)
+    alias = tmp_path / "alias-repo"
+    alias.symlink_to(real, target_is_directory=True)
+    physical = tmp_path / project_dir_name(str(real.resolve()))
+    physical.mkdir(parents=True)
+    (physical / "s1.jsonl").write_text("x")
+    removed = purge_local_sessions(tmp_path, str(alias), ["s1"])
+    assert removed == ["s1.jsonl"]
+    assert not (physical / "s1.jsonl").exists()
+
+
 async def test_delete_purges_local_claude_sessions(tmp_path: Path) -> None:
     projects = tmp_path / "projects"
     cwd = str(tmp_path / "work")

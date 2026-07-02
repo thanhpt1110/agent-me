@@ -229,6 +229,27 @@ async def test_branch_checkout_refused_for_shared_or_own_tree(tmp_path: Path) ->
     assert _head(dedi) == "main"
 
 
+async def test_branch_checkout_refused_for_alias_of_own_tree(tmp_path: Path) -> None:
+    """Path identity for the checkout guard is canonical, not string equality: a
+    symlink-alias spelling of default_cwd is still the live dashboard tree. New
+    sessions store a canonical cwd; legacy metas with an alias spelling hit the
+    same guard via the canonical compare."""
+    own = tmp_path / "own"
+    _git_init(own)
+    alias = tmp_path / "own-alias"
+    alias.symlink_to(own, target_is_directory=True)
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(own),
+                     add_dirs=(str(tmp_path),), keepalive_s=0.2)
+    store = DiskSessionStore(cfg.data_dir)
+    svc = _wire(store, FakeClaudeRunner([]), cfg)
+    s = svc.create_session(title=None, cwd=str(alias), model=None)
+    assert s.cwd == str(own.resolve())                          # cwd stored canonical
+    assert svc.checkout_branch(s.id, "feature") is None         # own tree via alias → refused
+    assert _head(own) == "main"
+    legacy = store.create(title=None, cwd=str(alias), model=None)  # pre-canon meta on disk
+    assert svc._branch_switch_allowed(legacy) is False
+
+
 async def test_followups_queue_while_busy(tmp_path: Path) -> None:
     """Terminal-like: a 2nd message sent while a turn runs is queued (not rejected)
     and runs after the first, under a single turn_end."""
@@ -450,13 +471,16 @@ def test_folder_options_lists_default_and_dirs(tmp_path: Path) -> None:
 def test_create_session_validates_cwd(tmp_path: Path) -> None:
     cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(tmp_path))
     svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
-    # a missing folder falls back to the default (never spawn into a dead cwd)
-    assert svc.create_session(title=None, cwd="/no/such/dir/zzz", model=None).cwd == str(tmp_path)
+    # a missing folder falls back to the default (never spawn into a dead cwd);
+    # the stored cwd is canonical (symlink-resolved)
+    assert (svc.create_session(title=None, cwd="/no/such/dir/zzz", model=None).cwd
+            == str(tmp_path.resolve()))
     sub = tmp_path / "ok"
     sub.mkdir()
-    assert svc.create_session(title=None, cwd=str(sub), model=None).cwd == str(sub)
+    assert svc.create_session(title=None, cwd=str(sub), model=None).cwd == str(sub.resolve())
     # an out-of-scope dir (outside $HOME / the configured roots) also falls back
-    assert svc.create_session(title=None, cwd="/etc", model=None).cwd == str(tmp_path)
+    assert (svc.create_session(title=None, cwd="/etc", model=None).cwd
+            == str(tmp_path.resolve()))
 
 
 def test_folder_options_lists_all_nonhidden_home_dirs(tmp_path: Path, monkeypatch) -> None:
@@ -475,6 +499,36 @@ def test_folder_options_lists_all_nonhidden_home_dirs(tmp_path: Path, monkeypatc
     assert {"proj-git", "plain-dir"} <= names       # both git and non-git folders
     assert str(home) in folders                      # $HOME itself
     assert ".hidden" not in names and "note.txt" not in names
+
+
+def test_folder_options_dedup_symlink_alias_and_add_dir_children(tmp_path: Path, monkeypatch) -> None:
+    """A $HOME symlink into the real workspace dedups against the real path
+    (offered once, first spelling wins), and non-hidden children of every
+    add-dir are offered too — so sibling repos on another disk show up."""
+    home = tmp_path / "home"
+    home.mkdir()
+    data = tmp_path / "data" / "workspace"
+    (data / "agent-me").mkdir(parents=True)
+    (data / "devtest-wrapper").mkdir()
+    (data / ".hidden").mkdir()
+    (home / "agent-me").symlink_to(data / "agent-me", target_is_directory=True)
+    outside = tmp_path / "outside"                  # resolves under NO scope root
+    outside.mkdir()
+    (home / "escape").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(home))           # drives Path.home()
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(data / "agent-me"),
+                     add_dirs=(str(data),))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    folders = svc.folder_options()["folders"]
+    assert folders.count(str(data / "agent-me")) == 1     # real path offered once...
+    assert str(home / "agent-me") not in folders          # ...the symlink alias dedup'd
+    assert str(data) in folders                           # the add-dir itself
+    assert str(data / "devtest-wrapper") in folders       # add-dir children offered
+    assert not any(Path(f).name == ".hidden" for f in folders)
+    # the picker only offers what create_session will accept: a $HOME child
+    # symlinking outside every scope root is not offered (it isn't in scope)
+    assert str(home / "escape") not in folders
+    assert not svc._allowed_cwd(str(home / "escape"))
 
 
 def test_folder_options_survives_unresolvable_home(tmp_path: Path, monkeypatch) -> None:

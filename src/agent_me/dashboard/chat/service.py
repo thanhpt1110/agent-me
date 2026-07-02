@@ -113,7 +113,7 @@ class ChatService:
             s for m in web for s in (m.id, m.claude_session_id, *m.claude_session_ids) if s
         }
         extra = [
-            n.public_dict() for n in self._native.list_all_sessions(allow=self._folder_in_scope)
+            n.public_dict() for n in self._native.list_all_sessions(allow=self._scope_checker())
             if n.id not in represented
         ]
         return sorted(dicts + extra, key=lambda d: d.get("last_activity", 0), reverse=True)
@@ -123,18 +123,39 @@ class ChatService:
         if not self._allowed_cwd(chosen):  # missing / out-of-scope → spawn in the repo
             chosen = self._config.default_cwd
         return self._store.create(
-            title=title, cwd=str(Path(chosen).expanduser()), model=(model or self._config.model),
+            title=title, cwd=self._canon(chosen), model=(model or self._config.model),
         )
 
     @staticmethod
-    def _clean_descendant(path: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
-        """``path`` is ``root`` or a descendant of it with no dot-prefixed component
-        below ``root`` (so dotfile dirs and ``..`` escapes under ``root`` are out)."""
+    def _canon(path: str | os.PathLike[str]) -> str:
+        """Resolved (symlink-free) spelling of ``path``; falls back to the expanded
+        string when resolution fails. Session cwds are stored in this form so the
+        slug the CLI writes under, the branch guard, and the purge all agree."""
+        p = Path(path).expanduser()
         try:
-            rel = Path(path).expanduser().relative_to(Path(root).expanduser())
-        except (ValueError, RuntimeError):
+            return str(p.resolve())
+        except (OSError, RuntimeError):
+            return str(p)
+
+    @staticmethod
+    def _clean_descendant_of_any(path: str | os.PathLike[str], roots: list[Path]) -> bool:
+        """``path`` resolves to one of ``roots`` or a descendant of it with no
+        dot-prefixed component below that root (so dotfile dirs and ``..`` escapes
+        stay out). Symlinks are resolved on both sides so aliases compare as the
+        same folder — e.g. a CLI session recorded under ``/data/...`` matches a
+        ``~/...`` root that symlinks there (and vice versa)."""
+        try:
+            p = Path(path).expanduser().resolve()
+        except (OSError, RuntimeError):
             return False
-        return all(not part.startswith(".") for part in rel.parts)
+        for root in roots:
+            try:
+                rel = p.relative_to(root)
+            except ValueError:
+                continue
+            if all(not part.startswith(".") for part in rel.parts):
+                return True
+        return False
 
     def _scope_roots(self) -> list[str]:
         roots: list[str] = []
@@ -142,11 +163,39 @@ class ChatService:
             roots.append(str(Path.home()))
         return [r for r in (*roots, self._config.default_cwd, *self._config.add_dirs) if r]
 
+    def _resolved_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for r in self._scope_roots():
+            try:
+                rp = Path(r).expanduser().resolve()
+            except (OSError, RuntimeError):
+                continue
+            if str(rp) not in seen:
+                seen.add(str(rp))
+                roots.append(rp)
+        return roots
+
     def _folder_in_scope(self, path: str | os.PathLike[str]) -> bool:
         """In scope to list/offer/spawn: under $HOME or a configured root
         (``default_cwd``/``add_dirs``), with no dot-prefixed component below that root.
         The dotfile rule holds even when a root is $HOME, so ``~/.claude/...`` stays out."""
-        return any(self._clean_descendant(path, r) for r in self._scope_roots())
+        return self._clean_descendant_of_any(path, self._resolved_roots())
+
+    def _scope_checker(self) -> Callable[[str | os.PathLike[str]], bool]:
+        """`_folder_in_scope` for hot paths: roots resolved once, per-path verdicts
+        memoized. The session listing runs this for every native session on every
+        poll — per-call resolve() syscalls add up there."""
+        roots = self._resolved_roots()
+        memo: dict[str, bool] = {}
+
+        def in_scope(path: str | os.PathLike[str]) -> bool:
+            key = str(path)
+            if key not in memo:
+                memo[key] = self._clean_descendant_of_any(path, roots)
+            return memo[key]
+
+        return in_scope
 
     def _allowed_cwd(self, path: str | os.PathLike[str]) -> bool:
         """In scope AND an existing directory — a new chat must spawn somewhere real."""
@@ -163,20 +212,37 @@ class ChatService:
 
     def folder_options(self) -> dict:
         """Candidate working directories for a new chat: the repo, configured
-        add-dirs, $HOME, and every non-hidden folder under $HOME. The agent always
-        spawns (the runner passes ``--dangerously-skip-permissions``, which skips
-        the CLI's workspace-trust dialog), so any existing dir is safe to offer."""
+        add-dirs, $HOME, and every non-hidden folder under $HOME and under each
+        add-dir. The agent always spawns (the runner passes
+        ``--dangerously-skip-permissions``, which skips the CLI's workspace-trust
+        dialog), so any existing dir is safe to offer. Entries dedup by resolved
+        path so a symlink alias (e.g. ``~/agent-me`` → the data disk) is offered
+        once, under whichever spelling was added first — and only in-scope folders
+        are offered, so nothing the picker shows gets silently rejected (a $HOME
+        child symlinking outside every scope root stays out)."""
         out: list[str] = []
+        seen: set[str] = set()
+        in_scope = self._scope_checker()
 
         def add(p: str | None) -> None:
             if not p:
                 return
             try:
-                rp = str(Path(p).expanduser())
+                path = Path(p).expanduser()
+                key = str(path.resolve())
             except (OSError, RuntimeError):
                 return
-            if rp not in out and Path(rp).is_dir():
-                out.append(rp)
+            if key not in seen and path.is_dir() and in_scope(key):
+                seen.add(key)
+                out.append(str(path))
+
+        def add_children(root: str | None) -> None:
+            if not root:
+                return
+            with contextlib.suppress(OSError, RuntimeError):
+                for child in sorted(Path(root).expanduser().iterdir()):
+                    if child.is_dir() and not child.name.startswith("."):
+                        add(str(child))
 
         add(self._config.default_cwd)
         for d in self._config.add_dirs:
@@ -185,11 +251,11 @@ class ChatService:
         try:
             home = Path.home()
             add(str(home))
-            for child in sorted(home.iterdir()):
-                if child.is_dir() and not child.name.startswith("."):
-                    add(str(child))
+            add_children(str(home))
         except (OSError, RuntimeError):  # unresolvable $HOME → just offer the configured roots
             pass
+        for d in self._config.add_dirs:
+            add_children(d)
         if self._config.default_cwd:
             default = str(Path(self._config.default_cwd).expanduser())
         else:
@@ -234,7 +300,7 @@ class ChatService:
         chosen = (cwd or "").strip()
         if not self._allowed_cwd(chosen):
             return None
-        updated = self._store.update_meta(sid, cwd=str(Path(chosen).expanduser()))
+        updated = self._store.update_meta(sid, cwd=self._canon(chosen))
         return updated.public_dict(busy=self.is_busy(sid)) if updated else None
 
     def branch_options(self, cwd: str) -> dict:
@@ -261,11 +327,13 @@ class ChatService:
         """A checkout mutates the whole working tree, so refuse it for the agent's
         own repo (default_cwd — the live dashboard/bridge run there) and for any
         folder another session is pinned to, where it would move HEAD out from
-        under them. The picker shows those branches read-only instead."""
-        cwd = str(Path(meta.cwd).expanduser())
-        if cwd == str(Path(self._config.default_cwd).expanduser()):
+        under them. The picker shows those branches read-only instead. Paths
+        compare in canonical (symlink-resolved) form so an alias spelling of the
+        same folder can't slip past the guard."""
+        cwd = self._canon(meta.cwd)
+        if cwd == self._canon(self._config.default_cwd):
             return False
-        return not any(m.id != meta.id and str(Path(m.cwd).expanduser()) == cwd
+        return not any(m.id != meta.id and self._canon(m.cwd) == cwd
                        for m in self._store.list())
 
     def checkout_branch(self, sid: str, branch: str) -> dict | None:

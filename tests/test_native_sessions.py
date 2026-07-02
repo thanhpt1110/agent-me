@@ -357,3 +357,45 @@ def test_folder_scope_validation(tmp_path: Path) -> None:
     assert svc._folder_in_scope(home + "/projects") is True
     assert svc._folder_in_scope(home + "/../etc") is False
     assert svc._folder_in_scope("/etc") is False
+
+
+def test_folder_scope_resolves_symlinks(tmp_path: Path) -> None:
+    """Scope compares resolved paths: a session recorded under the real path is in
+    scope when the configured root is a symlink to it (e.g. ``~/agent-me`` →
+    ``/data/...``), so sessions born on either spelling of a symlinked workspace
+    stay visible on the web."""
+    real = tmp_path / "disk" / "workspace"
+    (real / "repo").mkdir(parents=True)
+    link = tmp_path / "link-ws"
+    link.symlink_to(real, target_is_directory=True)
+    projects = tmp_path / "projects"
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(link / "repo"),
+                     claude_projects_dir=projects)
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg,
+                      native=NativeSessionReader(projects, tool_result_max=50))
+    assert svc._folder_in_scope(str(real / "repo")) is True          # alias of the root
+    assert svc._folder_in_scope(str(real / "repo" / "sub")) is True  # descendant via alias
+    assert svc._folder_in_scope(str(real)) is False                  # parent of the root
+    real_cwd = str(real / "repo")
+    _write_native(projects, "sym-real", [
+        _u("hi", cwd=real_cwd), _a([{"type": "text", "text": "yo"}], cwd=real_cwd),
+    ], cwd=real_cwd)
+    assert any(d["id"] == "sym-real" for d in svc.session_dicts())
+
+
+def test_workspace_root_add_dir_brings_umbrella_sessions_in_scope(tmp_path: Path) -> None:
+    """A CLI session started AT the workspace umbrella root (the parent of the
+    repo, e.g. ``/data/agent-me.nvidia.com``) lists on the web once the umbrella
+    is a configured add-dir — it is neither under $HOME nor under default_cwd."""
+    umbrella = tmp_path / "workspace"
+    (umbrella / "repo").mkdir(parents=True)
+    projects = tmp_path / "projects"
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(umbrella / "repo"),
+                     add_dirs=(str(umbrella),), claude_projects_dir=projects)
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg,
+                      native=NativeSessionReader(projects, tool_result_max=50))
+    assert svc._folder_in_scope(str(umbrella)) is True
+    _write_native(projects, "umbrella-root", [
+        _u("hi", cwd=str(umbrella)), _a([{"type": "text", "text": "yo"}], cwd=str(umbrella)),
+    ], cwd=str(umbrella))
+    assert any(d["id"] == "umbrella-root" for d in svc.session_dicts())
