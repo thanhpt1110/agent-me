@@ -54,3 +54,25 @@ any Claude session can orient instantly.
   clean `mcp_health_check`, `⚡️ Bolt app is running!`.
 - `systemctl --user list-units`: bridge + dashboard + dashboard-dev active;
   `agent-me-prod` gone (reset-failed cleared the residue).
+
+## Follow-up (same day, evening): prod re-pinned to `main` via `.prod` worktree
+
+The operator corrected decision 2: production must **stay on `main`**, isolated
+from `big-update`, but still without a second top-level folder. Implemented with
+a **git worktree**: `git worktree add .prod main` inside the single clone,
+gitignored (`/.prod/`), own `.venv` + `configs/.env`
+(`AGENT_ME_REPO_DIR` → `.prod`, state dir still shared).
+`agent-me-dashboard.service` now runs from `%h/agent-me/.prod` (KillMode=process
+dropped — that was for big-update chat workers, `main` has none). Release flow:
+merge `big-update` → `main`, push, `git -C ~/agent-me/.prod pull --ff-only`,
+`uv sync` there, restart the unit.
+
+Also fixed along the way: plain `uv sync` during the rename had stripped the
+`dev` extra (ruff/pytest gone) — restored with `uv sync --extra dev` and noted
+in CLAUDE.md. And an operator question answered: `state/` must NOT be deleted —
+it holds the MCP bearer-token DB + fernet key (deleting invalidates every
+issued `agme-…` token), Slack thread history, and the approvals queue.
+
+Verified: prod cwd `/proc/<pid>/cwd` = `.prod`, `:8765/chat` 404 (main code),
+`:8787/chat` 200 (big-update), Caddy 200, `git status` clean, ruff clean,
+pytest green.

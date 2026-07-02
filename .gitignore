@@ -80,3 +80,6 @@ brev/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Production deploy worktree (branch main), pinned on this host — see CLAUDE.md host layout
+/.prod/

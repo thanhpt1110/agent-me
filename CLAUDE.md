@@ -4,13 +4,21 @@ You are working in `~/agent-me/` — _"myself, but in agent mode."_ A public-sha
 
 > **Host layout (since 2026-07-02):** the real path is
 > `/data/agent-me.nvidia.com/agent-me` (`~/agent-me` is a symlink to it) and it is
-> the **only** checkout of this repo on the host — always on branch `big-update`.
-> Sibling dirs: `../devtest-wrapper` (separate repo) and `../state` (runtime state —
-> SQLite, approvals, chat-cwd; never a repo, never edit by hand). Workspace map:
-> `/data/agent-me.nvidia.com/CLAUDE.md`. This one working tree serves production
-> :8765 (agent-me.nvidia.com via Caddy), dev :8787, and the Slack bridge — restart
-> `agent-me-dashboard.service` deliberately to "release"; bounce
-> `agent-me-dashboard-dev.service` freely while iterating.
+> the **only** clone of this repo on the host. Two environments, one repo:
+> - **DEV** = this working tree, always on **`big-update`** — serves the dev
+>   dashboard :8787 (`agent-me-dashboard-dev.service`) and the Slack bridge.
+>   Bounce them freely while iterating.
+> - **PROD** = the pinned, gitignored **`.prod/` git worktree on `main`** — serves
+>   :8765 (`agent-me-dashboard.service`, Caddy → agent-me.nvidia.com). Never edit
+>   files in `.prod/`. Release = merge `big-update` → `main`, push, then
+>   `git -C ~/agent-me/.prod pull --ff-only && (cd ~/agent-me/.prod && uv sync) &&
+>   systemctl --user restart agent-me-dashboard`. `.prod` has its own `.venv` and
+>   `configs/.env` (`AGENT_ME_REPO_DIR` points at `.prod`).
+>
+> Sibling dirs: `../devtest-wrapper` (separate repo) and `../state` (shared runtime
+> state — SQLite, MCP tokens, approvals, chat-cwd; never a repo, never edit by
+> hand). Workspace map: `/data/agent-me.nvidia.com/CLAUDE.md`. Dev tooling needs
+> `uv sync --extra dev` (plain `uv sync` strips ruff/pytest).
 
 ## What this project is
 
@@ -145,9 +153,9 @@ agent-me/
 > - **`/chat`** (dashboard) — persistent sessions over SSE; gated by the operator
 >   passcode (`DASHBOARD_OPERATOR_ACTION_CODE`) via a cookie unlock, plus a floating
 >   Chat button + mobile-responsive layout. DEV runs on **:8787** (`DEPLOY_ENV=dev`)
->   via `deploy/agent-me-dashboard-dev.service`; production runs on **:8765** from
->   the same checkout via `deploy/agent-me-dashboard.service` (Caddy →
->   agent-me.nvidia.com).
+>   via `deploy/agent-me-dashboard-dev.service`; production :8765 runs `main` from
+>   the pinned `.prod` worktree (`deploy/agent-me-dashboard.service`, Caddy →
+>   agent-me.nvidia.com) — chat reaches prod only when `big-update` merges to `main`.
 > - **Slack bridge** — DMs run claude in the `~/agent-me` workspace (terminal-like),
 >   per-thread sessions, live progress, final summary in-thread. `AGENT_BACKEND=codex`
 >   restores the legacy path.
