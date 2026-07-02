@@ -1043,7 +1043,7 @@ async def _jira_search(
     if res.status_code == 401:
         raise RuntimeError(
             "Jira MCP auth token expired or invalid; run "
-            "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
+            "`./scripts/auth/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
             "then retry."
         )
     res.raise_for_status()
@@ -1163,7 +1163,7 @@ async def _gitlab_list_merge_requests(
     if res.status_code == 401:
         raise RuntimeError(
             "GitLab MCP auth token expired or invalid; run "
-            "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
+            "`./scripts/auth/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
             "then retry."
         )
     res.raise_for_status()
@@ -1280,7 +1280,7 @@ async def _nvbugs_search_v2(client: httpx.AsyncClient, token: str, query: str) -
     if res.status_code == 401:
         raise RuntimeError(
             "NVBugs MCP auth token expired or invalid; run "
-            "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
+            "`./scripts/auth/mac-reauth-and-sync.sh 1xA100-40` from the Mac, "
             "then retry."
         )
     res.raise_for_status()

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/sync-mcp-creds-to-host.sh — copy MCP OAuth tokens from the local
+# scripts/auth/sync-mcp-creds-to-host.sh — copy MCP OAuth tokens from the local
 #                                      Mac's Keychain to a remote host's
 #                                      ~/.claude/.credentials.json.
 #
 # Usage:
-#   ./scripts/sync-mcp-creds-to-host.sh <ssh-alias-or-host>
+#   ./scripts/auth/sync-mcp-creds-to-host.sh <ssh-alias-or-host>
 #
 # What it does (Mac-only, by design):
 # 1. Extracts the Keychain item `Claude Code-credentials` (plain JSON,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# scripts/bootstrap.sh — first-time setup on a fresh host (e.g. Cloud host).
+# scripts/setup/bootstrap.sh — first-time setup on a fresh host (e.g. Cloud host).
 #
 # Run from the repo root after `git clone`:
-#   ./scripts/bootstrap.sh
+#   ./scripts/setup/bootstrap.sh
 #
 # Idempotent — safe to re-run after partial failure.
 #
@@ -10,7 +10,7 @@
 #   1. Verify prerequisites (codex, uv, gh, jq) — error if missing
 #   2. Install Python deps via `uv sync`
 #   3. Verify configs/.env exists (or copy from .env.example with warning)
-#   4. Register all MaaS MCP servers via scripts/setup-codex-mcps.sh
+#   4. Register all MaaS MCP servers via scripts/setup/setup-codex-mcps.sh
 #   5. Print next-step instructions for the interactive parts:
 #        - codex login (one-time, per-machine)
 #        - uv run agent-me-codex-reauth (interactive OAuth tabs)
@@ -46,7 +46,7 @@ Install hints:
   gh       → brew install gh   (Mac) | apt install gh (Debian) | dnf install gh (RHEL)
   jq       → brew install jq   (Mac) | apt install jq (Debian) | dnf install jq (RHEL)
 
-After installing, re-run: ./scripts/bootstrap.sh"
+After installing, re-run: ./scripts/setup/bootstrap.sh"
 fi
 
 # ── 2. python deps ─────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ fi
 # ── 4. register MCP servers ────────────────────────────────────────────
 echo
 bold "Step 4 — register MaaS MCP servers"
-bash "$REPO_ROOT/scripts/setup-codex-mcps.sh"
+bash "$REPO_ROOT/scripts/setup/setup-codex-mcps.sh"
 
 # ── 5. interactive next steps ──────────────────────────────────────────
 echo

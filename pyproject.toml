@@ -33,7 +33,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",  # async fixtures + test funcs
     "httpx>=0.27",            # already a runtime dep — re-list for clarity
-    "playwright>=1.55",       # headless browser UI behavior tests (scripts/verify_chat_ui.py)
+    "playwright>=1.55",       # headless browser UI behavior tests (scripts/dev/verify_chat_ui.py)
 ]
 
 [project.scripts]

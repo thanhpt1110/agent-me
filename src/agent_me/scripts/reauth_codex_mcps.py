@@ -5,7 +5,7 @@ reports "No authorization support detected" for `codex mcp login <server>`.
 agent-me therefore keeps the proven MaaS OAuth bootstrap path: refresh the
 existing Claude/MaaS credential store, then inject those access tokens into
 Codex MCP processes through the bearer-token env vars configured by
-`scripts/setup-codex-mcps.sh`.
+`scripts/setup/setup-codex-mcps.sh`.
 """
 
 from __future__ import annotations
@@ -210,7 +210,7 @@ def main() -> int:
 
     print("[codex-reauth] Codex native OAuth is unsupported for MaaS HTTP MCP servers.")
     print("[codex-reauth] Refreshing the existing MaaS credential store instead.")
-    print("[codex-reauth] Ensure Codex MCPs have bearer env vars: ./scripts/setup-codex-mcps.sh")
+    print("[codex-reauth] Ensure Codex MCPs have bearer env vars: ./scripts/setup/setup-codex-mcps.sh")
     if not os.environ.get("AGENT_ME_REAUTH_SERVERS") and not os.environ.get("AGENT_ME_REAUTH_EXCLUDE"):
         os.environ["AGENT_ME_REAUTH_EXCLUDE"] = ",".join(CONNECTOR_COVERED_MAAS)
         print(

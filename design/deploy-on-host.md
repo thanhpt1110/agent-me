@@ -144,7 +144,7 @@ test -f CLAUDE.md && test -f STATE.md && echo "  ✓ repo cloned"
 ## Step 2 — bootstrap (Python deps + register MCPs)
 
 ```bash
-./scripts/bootstrap.sh
+./scripts/setup/bootstrap.sh
 ```
 
 This is idempotent. It does:
@@ -152,7 +152,7 @@ This is idempotent. It does:
 2. `uv sync` — populates `.venv` from `pyproject.toml` + `uv.lock`.
 3. Copies `configs/.env.example` to `configs/.env` if absent (so we
    know what env vars to expect).
-4. Runs `scripts/setup-mcps.sh` — registers all 17 MaaS MCP servers
+4. Runs `scripts/setup/setup-mcps.sh` — registers all 17 MaaS MCP servers
    at user scope (idempotent: skips already-registered).
 
 **Verify:**
@@ -259,7 +259,7 @@ no browser, so the URLs will be printed and need manual handling.
 
    ```bash
    # On the Mac, after all 17 MCPs show ✓ Connected in `claude mcp list`:
-   ./scripts/sync-mcp-creds-to-host.sh <ssh-alias>
+   ./scripts/auth/sync-mcp-creds-to-host.sh <ssh-alias>
    ```
 
    The helper also writes `~/.config/agent-me/codex-mcp-env.sh` on the
@@ -272,7 +272,7 @@ no browser, so the URLs will be printed and need manual handling.
 
    ```bash
    # On the Mac:
-   ./scripts/mac-reauth-and-sync.sh <ssh-alias>
+   ./scripts/auth/mac-reauth-and-sync.sh <ssh-alias>
    ```
 
    Verify with `claude mcp list` or `codex mcp list` on the host. Empirically
@@ -322,7 +322,7 @@ claude mcp list 2>&1 | grep -c "✓ Connected"
 ## Step 6 — install systemd services
 
 ```bash
-./scripts/install-systemd.sh
+./scripts/setup/install-systemd.sh
 ```
 
 This installs both unit files (`agent-me-bridge.service`,
@@ -416,11 +416,11 @@ directory if MCP tokens should survive host rebuilds.
 
 ```bash
 cd ~/agent-me
-./scripts/install-dashboard.sh                 # default: reverse-proxy mode
+./scripts/setup/install-dashboard.sh                 # default: reverse-proxy mode
 # or
-./scripts/install-dashboard.sh --tailscale     # also enable Tailscale Funnel as a backup public URL
+./scripts/setup/install-dashboard.sh --tailscale     # also enable Tailscale Funnel as a backup public URL
 # or
-./scripts/install-dashboard.sh --token         # also generate DASHBOARD_TOKEN (defense-in-depth)
+./scripts/setup/install-dashboard.sh --token         # also generate DASHBOARD_TOKEN (defense-in-depth)
 ```
 
 The default mode:
@@ -493,7 +493,7 @@ uv run agent-me-brief --period day
 | Bridge restarts every 5s, env looks ok | Wrong `SLACK_APP_TOKEN` (xoxa- not xapp-) | regenerate App Token in Slack app config |
 | Watcher pulls but bridge doesn't restart | `loginctl enable-linger` not run | `sudo loginctl enable-linger $USER && systemctl --user daemon-reload` |
 | `journalctl --user` empty after logout | linger not enabled, services died | same as above |
-| Legacy MaaS MCPs go to 401 after a day | normal (MaaS OAuth tokens expire ~24h) | On the Mac: `./scripts/mac-reauth-and-sync.sh <ssh-alias>` |
+| Legacy MaaS MCPs go to 401 after a day | normal (MaaS OAuth tokens expire ~24h) | On the Mac: `./scripts/auth/mac-reauth-and-sync.sh <ssh-alias>` |
 | `git pull` fails: "would clobber" | local change on the host (someone edited there) | `git stash` (only if intentional) or hand-resolve |
 | `git pull` fails: "diverged" | local commit on the host that isn't on origin | `git log origin/main..HEAD` to inspect; either push or reset |
 
@@ -531,8 +531,8 @@ to webhooks later if we want — the watcher script is small.
 ~/agent-me/                            ← repo (git pulls update this)
 ├── configs/.env                       ← Slack tokens (NOT in git)
 ├── deploy/*.service                   ← systemd unit files (in git)
-├── scripts/agent-me-watch.sh          ← polled by watcher (in git)
-└── scripts/install-systemd.sh         ← idempotent installer (in git)
+├── scripts/ops/agent-me-watch.sh          ← polled by watcher (in git)
+└── scripts/setup/install-systemd.sh         ← idempotent installer (in git)
 
 ~/.config/systemd/user/                ← installed unit files (copied from deploy/)
 ├── agent-me-bridge.service

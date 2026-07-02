@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/setup-mcps.sh — register every MaaS MCP server with the user's
+# scripts/setup/setup-mcps.sh — register every MaaS MCP server with the user's
 #                         `claude` CLI. Idempotent: already-registered
 #                         servers are reported and skipped.
 #

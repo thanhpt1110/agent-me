@@ -4,7 +4,7 @@ Documentation=https://github.com/thanhpt1110/agent-me
 After=network-online.target
 Wants=network-online.target
 
-# This is a USER unit (systemd --user). Install via scripts/install-systemd.sh,
+# This is a USER unit (systemd --user). Install via scripts/setup/install-systemd.sh,
 # which copies it into ~/.config/systemd/user/ and runs `loginctl enable-linger`
 # so the unit keeps running after the SSH session that started it disconnects.
 #

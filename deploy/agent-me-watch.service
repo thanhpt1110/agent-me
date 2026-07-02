@@ -11,7 +11,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/agent-me.nvidia.com/agent-me
-ExecStart=%h/agent-me.nvidia.com/agent-me/scripts/agent-me-watch.sh
+ExecStart=%h/agent-me.nvidia.com/agent-me/scripts/ops/agent-me-watch.sh
 
 # Watcher loop already idempotent under SIGTERM (the `trap` handler in the script).
 # Give it a few seconds to finish a poll cycle.

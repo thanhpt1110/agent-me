@@ -5,7 +5,7 @@ Drives a real browser through the full flow — Alpine init, the passcode gate,
 unlock, New chat, type, Send, and an assistant reply — so a "the API returns
 200" check can never again hide a dead UI (e.g. a broken x-data attribute).
 
-Run:  uv run python scripts/verify_chat_ui.py [base_url]
+Run:  uv run python scripts/dev/verify_chat_ui.py [base_url]
 Needs the chromium browser + its system libs:
   uv run python -m playwright install chromium
   sudo uv run python -m playwright install-deps chromium   # one-time, needs root

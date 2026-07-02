@@ -1321,7 +1321,7 @@ async def cmd_mcp(refresh: bool = False) -> str:
                 f"Force-refreshed `{refreshed}/{attempted}` MaaS OAuth token(s). "
                 "The token endpoint rejected: "
                 f"{failed}. If any rejected server later returns 401, run "
-                "`./scripts/mac-reauth-and-sync.sh 1xA100-40` from the Mac."
+                "`./scripts/auth/mac-reauth-and-sync.sh 1xA100-40` from the Mac."
             )
         else:
             refresh_summary = (
@@ -1349,7 +1349,7 @@ async def cmd_mcp(refresh: bool = False) -> str:
             "\n\n⚠️ Missing bearer token(s) in the local MaaS credential store: "
             + ", ".join(f"`{name}`" for name in missing_tokens)
             + "\nIf your Mac auth is still valid, run "
-            "`./scripts/sync-mcp-creds-to-host.sh <host>` on the Mac, then "
+            "`./scripts/auth/sync-mcp-creds-to-host.sh <host>` on the Mac, then "
             "`/mcp refresh` here. Otherwise run `/reauth`."
         )
     return (
@@ -3173,7 +3173,7 @@ async def check_mcp_auth(client) -> None:
         "",
         "If Mac auth is still valid, run this on the Mac first:",
         "```",
-        "./scripts/sync-mcp-creds-to-host.sh <host>",
+        "./scripts/auth/sync-mcp-creds-to-host.sh <host>",
         "```",
         "Then run `/mcp refresh` here. If auth is actually expired, run `/reauth` here or on the bridge host:",
         "```",

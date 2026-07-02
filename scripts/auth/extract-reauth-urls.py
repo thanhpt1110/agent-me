@@ -1,6 +1,6 @@
 """agent-me — extract authorize URLs from the latest agent-me-reauth log.
 
-Mate of `scripts/open-auth-urls.py`. Given a directory of `reauth-*.log`
+Mate of `scripts/auth/open-auth-urls.py`. Given a directory of `reauth-*.log`
 files (default `~/.local/state/agent-me/`), reads the most recent one,
 strips terminal ANSI escapes, stitches URLs that wrap across pty newlines,
 and prints `<label>\\t<url>` lines for each unique authorize URL — one per
@@ -14,11 +14,11 @@ generated fresh each run.
 
 Usage:
     # Pipe straight into the opener:
-    uv run python scripts/extract-reauth-urls.py \\
-      | uv run python scripts/open-auth-urls.py
+    uv run python scripts/auth/extract-reauth-urls.py \\
+      | uv run python scripts/auth/open-auth-urls.py
 
     # Or save the list:
-    uv run python scripts/extract-reauth-urls.py > /tmp/auth-urls.txt
+    uv run python scripts/auth/extract-reauth-urls.py > /tmp/auth-urls.txt
 """
 
 from __future__ import annotations

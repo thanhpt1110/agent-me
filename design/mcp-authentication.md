@@ -88,10 +88,10 @@ Run these from the Mac checkout when the target host is `1xA100-40`:
 
 ```bash
 # Reauth on the Mac, then push credentials and Codex env exports to the host.
-./scripts/mac-reauth-and-sync.sh 1xA100-40
+./scripts/auth/mac-reauth-and-sync.sh 1xA100-40
 
 # Copy the current Mac Keychain credentials to the host only.
-./scripts/sync-mcp-creds-to-host.sh 1xA100-40
+./scripts/auth/sync-mcp-creds-to-host.sh 1xA100-40
 
 # Reauth only on the current machine; do not sync to a host.
 uv run agent-me-codex-reauth
@@ -119,9 +119,9 @@ Codex sessions.
 
 - Bridge running on your **Mac** → auth from your **Mac terminal**.
 - Bridge running on **Colossus/remote Linux** → auth from your **Mac terminal**
-  with `./scripts/mac-reauth-and-sync.sh <ssh-host>` whenever possible.
+  with `./scripts/auth/mac-reauth-and-sync.sh <ssh-host>` whenever possible.
   If the Mac auth is still valid and only the host copy/env is stale, run
-  `./scripts/sync-mcp-creds-to-host.sh <ssh-host>` on the Mac, then `/mcp refresh`
+  `./scripts/auth/sync-mcp-creds-to-host.sh <ssh-host>` on the Mac, then `/mcp refresh`
   in Slack.
 - Bridge running on **Cloud host** without Mac sync → auth from a **Cloud host SSH
   session** with the auth URL opened in your local browser; the

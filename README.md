@@ -143,9 +143,9 @@ Deployment helpers live in `scripts/` and systemd user units live in `deploy/`.
 The current internal deployment is served through `agent-me.nvidia.com`.
 
 ```bash
-./scripts/bootstrap.sh
-./scripts/install-systemd.sh
-./scripts/install-dashboard.sh
+./scripts/setup/bootstrap.sh
+./scripts/setup/install-systemd.sh
+./scripts/setup/install-dashboard.sh
 systemctl --user status agent-me-bridge.service
 systemctl --user status agent-me-dashboard.service
 ```
@@ -176,7 +176,7 @@ tests/           Unit + behavior tests
 ```
 
 Useful diagnostics: `systemctl --user status ...`, `journalctl --user -u ...`,
-and `./scripts/tail-log.sh`.
+and `./scripts/ops/tail-log.sh`.
 
 ## Testing
 
@@ -185,7 +185,7 @@ uv run ruff check .
 uv run pytest
 uv run pyright
 # Behavior test for the /chat UI (needs a chromium browser; see the script header):
-uv run python scripts/verify_chat_ui.py
+uv run python scripts/dev/verify_chat_ui.py
 ```
 
 Rule: after changing a feature, test its real behavior (drive the UI/CLI/agent),

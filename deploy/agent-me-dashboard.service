@@ -13,7 +13,7 @@ Wants=network-online.target
 # Keeping units independent means a dashboard restart doesn't disturb the
 # bridge.
 
-# This is a USER unit (systemd --user). Install via scripts/install-dashboard.sh.
+# This is a USER unit (systemd --user). Install via scripts/setup/install-dashboard.sh.
 # Same rationale as agent-me-bridge.service for picking user-level over
 # system-level — see that file's preamble.
 

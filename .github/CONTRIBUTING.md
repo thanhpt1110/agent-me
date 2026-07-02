@@ -50,7 +50,7 @@ MCP).
 ```bash
 git clone git@github.com:<you>/agent-me.git
 cd agent-me
-./scripts/bootstrap.sh
+./scripts/setup/bootstrap.sh
 ```
 
 `bootstrap.sh` is idempotent: it runs `uv sync`, copies

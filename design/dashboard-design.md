@@ -103,7 +103,7 @@ A single web page that lets the operator see, at a glance:
 
 - `agent-me-funnel.service` — runs `tailscale funnel` for a backup
   Tailscale Funnel URL (`*.<tailnet>.ts.net`). Disabled by default;
-  enable with `./scripts/install-dashboard.sh --tailscale` if you also
+  enable with `./scripts/setup/install-dashboard.sh --tailscale` if you also
   want to reach the dashboard from outside the NVIDIA VPN (e.g. when
   travelling without VPN).
 
@@ -168,7 +168,7 @@ is active so the proxy admin can sanity-check.
 
 ### Option B — VPN + bearer/cookie (defense-in-depth)
 
-Run `./scripts/install-dashboard.sh --token` to generate
+Run `./scripts/setup/install-dashboard.sh --token` to generate
 `DASHBOARD_TOKEN`. The middleware then requires:
 
 - **Browser flow**: visit `https://agent-me.nvidia.com/?t=<token>`
@@ -316,7 +316,7 @@ design/reverse-proxy-config.md     # nginx/caddy/traefik snippets for the proxy 
 deploy/agent-me-dashboard.service  # systemd unit (always installed)
 deploy/agent-me-funnel.service     # systemd unit (opt-in via --tailscale)
 
-scripts/install-dashboard.sh       # idempotent setup; default = reverse-proxy mode
+scripts/setup/install-dashboard.sh       # idempotent setup; default = reverse-proxy mode
 ```
 
 ## Brief parser changes (additive)
@@ -380,7 +380,7 @@ dashboard can ingest it without re-implementing parser logic.
 3. From an NVIDIA-VPN'd machine: `curl -sSL https://agent-me.nvidia.com/healthz`
    eventually returns `{"ok": true, ...}` once the dashboard service
    is up. (Until then it 502s — that's normal.)
-4. `./scripts/install-dashboard.sh` from the repo root. The script:
+4. `./scripts/setup/install-dashboard.sh` from the repo root. The script:
    - `uv sync` to pull dashboard deps,
    - appends `DASHBOARD_TRUST_NETWORK=1` to `configs/.env`,
    - installs and starts `agent-me-dashboard.service`,

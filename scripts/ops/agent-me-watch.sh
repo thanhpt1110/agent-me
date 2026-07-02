@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/agent-me-watch.sh — poll origin/$BRANCH; on new commit, pull,
+# scripts/ops/agent-me-watch.sh — poll origin/$BRANCH; on new commit, pull,
 # uv-sync if pyproject changed, restart agent-me services (bridge +
 # dashboard if installed).
 #
 # Designed to run under systemd --user as agent-me-watch.service.
-# Stand-alone use: just `bash scripts/agent-me-watch.sh` from the repo root.
+# Stand-alone use: just `bash scripts/ops/agent-me-watch.sh` from the repo root.
 # Re-runs are safe; the loop is the primary control flow.
 #
 # Environment overrides (set in the systemd unit or shell):

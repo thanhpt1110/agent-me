@@ -3,9 +3,9 @@
 # SSH connection / closed laptop NEVER kills a running prompt — reattach later
 # from SSH (this script again) or from the dashboard web terminal.
 #
-#   scripts/claude-persistent.sh                 # session "agme-main", cwd = $HOME
-#   scripts/claude-persistent.sh qa              # session "agme-qa"
-#   scripts/claude-persistent.sh qa --resume     # extra args go to claude (create only)
+#   scripts/ops/claude-persistent.sh                 # session "agme-main", cwd = $HOME
+#   scripts/ops/claude-persistent.sh qa              # session "agme-qa"
+#   scripts/ops/claude-persistent.sh qa --resume     # extra args go to claude (create only)
 #
 # Detach and leave it running: Ctrl-b d.  List: tmux ls.  End it: exit claude,
 # then exit the shell (or `tmux kill-session -t agme-<name>`).

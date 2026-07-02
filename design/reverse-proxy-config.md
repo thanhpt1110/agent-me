@@ -275,7 +275,7 @@ The default install uses VPN as the trust boundary:
 - The dashboard middleware injects `X-Dashboard-Auth: trust-network`
   on every response so you can confirm the model is active.
 
-For defense-in-depth, run `./scripts/install-dashboard.sh --token` to
+For defense-in-depth, run `./scripts/setup/install-dashboard.sh --token` to
 also generate a `DASHBOARD_TOKEN`. Then any request still needs either
 the bearer header or the signed cookie set via `?t=<token>` once.
 Useful when multiple NVIDIA employees can VPN but only one operator

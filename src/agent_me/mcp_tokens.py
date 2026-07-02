@@ -286,7 +286,7 @@ def refresh_codex_mcp_env_file(
 
     The bridge can call this after the Mac-to-host sync updates
     ``~/.claude/.credentials.json``. It mirrors
-    ``scripts/install-codex-mcp-env-on-host.sh`` without requiring a shell
+    ``scripts/setup/install-codex-mcp-env-on-host.sh`` without requiring a shell
     restart, then callers may merge ``codex_mcp_token_env()`` into their
     subprocess environment.
     """

@@ -2,9 +2,9 @@
 # agent-me bridge log tailer — pretty-prints the JSON file log.
 #
 # Usage:
-#   ~/agent-me.nvidia.com/agent-me/scripts/tail-log.sh           # follow live
-#   ~/agent-me.nvidia.com/agent-me/scripts/tail-log.sh -n 200    # last 200 lines, no follow
-#   ~/agent-me.nvidia.com/agent-me/scripts/tail-log.sh -e error  # only error+ lines
+#   ~/agent-me.nvidia.com/agent-me/scripts/ops/tail-log.sh           # follow live
+#   ~/agent-me.nvidia.com/agent-me/scripts/ops/tail-log.sh -n 200    # last 200 lines, no follow
+#   ~/agent-me.nvidia.com/agent-me/scripts/ops/tail-log.sh -e error  # only error+ lines
 #
 # Requires `jq`. Install with: brew install jq
 

@@ -2,7 +2,7 @@
 # Daily 06:00 (Asia/Ho_Chi_Minh) dashboard-brief refresher, built to live inside
 # a tmux session (see design/persistent-sessions.md):
 #
-#   env TMUX= tmux new-session -d -s agme-brief bash ~/agent-me.nvidia.com/agent-me/scripts/brief-6am-loop.sh
+#   env TMUX= tmux new-session -d -s agme-brief bash ~/agent-me.nvidia.com/agent-me/scripts/ops/brief-6am-loop.sh
 #
 # Sleeps to the next 06:00 VN, runs `agent-me-brief --period day` (which writes
 # state/dashboard-cache → the dashboard brief page refreshes), repeats forever.

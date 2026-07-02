@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# scripts/install-systemd.sh — copy deploy/*.service into the user's systemd
+# scripts/setup/install-systemd.sh — copy deploy/*.service into the user's systemd
 #                               unit directory, enable + start them.
 #
 # Idempotent: re-running re-copies the unit files and re-enables. Use after
 # pulling new versions of the units (in practice rare — they don't change much).
 #
 # Run from repo root, after `bootstrap.sh` and after configs/.env is filled:
-#   ./scripts/install-systemd.sh
+#   ./scripts/setup/install-systemd.sh
 #
 # What it sets up (USER scope, so no sudo for normal operation):
 #   ~/.config/systemd/user/agent-me-bridge.service
@@ -45,7 +45,7 @@ if [[ ! -f "$REPO_ROOT/configs/.env" ]]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not found in PATH. Run ./scripts/bootstrap.sh first."
+    fail "uv not found in PATH. Run ./scripts/setup/bootstrap.sh first."
 fi
 
 # ── Linger ─────────────────────────────────────────────────────────────

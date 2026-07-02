@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/install-dashboard.sh — install the Phase 4 dashboard.
+# scripts/setup/install-dashboard.sh — install the Phase 4 dashboard.
 #
 # Default mode: behind a reverse proxy you (or a colleague) operate. The
 # canonical NVIDIA-internal deployment serves the dashboard at
@@ -20,9 +20,9 @@
 #   ~/.config/systemd/user/agent-me-funnel.service             (only with --tailscale)
 #
 # Usage:
-#   ./scripts/install-dashboard.sh                # reverse-proxy mode (default)
-#   ./scripts/install-dashboard.sh --tailscale    # also enable Tailscale Funnel
-#   ./scripts/install-dashboard.sh --token        # also generate DASHBOARD_TOKEN
+#   ./scripts/setup/install-dashboard.sh                # reverse-proxy mode (default)
+#   ./scripts/setup/install-dashboard.sh --tailscale    # also enable Tailscale Funnel
+#   ./scripts/setup/install-dashboard.sh --token        # also generate DASHBOARD_TOKEN
 #                                                 # (defense-in-depth on top of VPN)
 
 set -euo pipefail
@@ -58,7 +58,7 @@ if [[ ! -d "$REPO_ROOT/deploy" ]]; then
     fail "deploy/ directory not found — are you running from the repo root?"
 fi
 if ! command -v uv >/dev/null 2>&1; then
-    fail "uv not found. Run ./scripts/bootstrap.sh first."
+    fail "uv not found. Run ./scripts/setup/bootstrap.sh first."
 fi
 if [[ ! -f "$ENV_FILE" ]]; then
     fail "configs/.env not found. Run bootstrap.sh + apply secrets first."

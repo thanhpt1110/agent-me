@@ -98,7 +98,7 @@ On every non-trivial prompt, **build context before writing code — don't imple
 
 After implementing or changing a feature, **test its actual behavior** before claiming it works — not just that the code compiles or an API returns 200.
 
-- **Run the real path a user takes.** For HTTP/UI, drive the browser (Alpine init, the click, the result), not only `curl` the endpoint — a 200 from `curl` can still be a dead UI (e.g. a broken `x-data` attribute that kills Alpine). For the dashboard chat use `uv run python scripts/verify_chat_ui.py`; for CLIs run the command; for the agent run a real turn.
+- **Run the real path a user takes.** For HTTP/UI, drive the browser (Alpine init, the click, the result), not only `curl` the endpoint — a 200 from `curl` can still be a dead UI (e.g. a broken `x-data` attribute that kills Alpine). For the dashboard chat use `uv run python scripts/dev/verify_chat_ui.py`; for CLIs run the command; for the agent run a real turn.
 - **Confirm every behavior you touched**, including the failure/edge paths (gate locked vs unlocked, empty input, resume, cancel).
 - Always run `uv run ruff check` and `uv run python -m pytest -q` green, and add a regression test for any bug you fix.
 - Only then report it as working, and say exactly how you verified it.
@@ -109,10 +109,10 @@ Project is **Python 3.12+** with [uv](https://docs.astral.sh/uv/) for dependency
 
 ```bash
 cd ~/agent-me.nvidia.com/agent-me
-./scripts/bootstrap.sh    # idempotent: uv sync + register all 17 MaaS MCPs + reminders
+./scripts/setup/bootstrap.sh    # idempotent: uv sync + register all 17 MaaS MCPs + reminders
 ```
 
-Bootstrap delegates the MCP-registration step to `scripts/setup-mcps.sh`, which is also idempotent — re-run anytime to detect/add new servers without disturbing existing ones. The full setup walkthrough (prerequisites, why each step) lives in `design/setup-on-fresh-host.md`. The end-to-end 24/7 deployment playbook (systemd, watcher, secrets, verification) lives in `design/deploy-on-host.md` — Claude on the deploy host can follow it step-by-step.
+Bootstrap delegates the MCP-registration step to `scripts/setup/setup-mcps.sh`, which is also idempotent — re-run anytime to detect/add new servers without disturbing existing ones. The full setup walkthrough (prerequisites, why each step) lives in `design/setup-on-fresh-host.md`. The end-to-end 24/7 deployment playbook (systemd, watcher, secrets, verification) lives in `design/deploy-on-host.md` — Claude on the deploy host can follow it step-by-step.
 
 Run any first-party script through `uv run <entry-point>` (the venv stays implicit; agents don't need to manually `source .venv/bin/activate`):
 

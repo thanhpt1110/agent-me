@@ -14,10 +14,10 @@ separated) and emits one of these, in priority order:
 
 Two callers:
     # Direct from a fresh reauth log:
-    cd ~/agent-me.nvidia.com/agent-me && uv run python scripts/extract-reauth-urls.py | uv run python scripts/open-auth-urls.py
+    cd ~/agent-me.nvidia.com/agent-me && uv run python scripts/auth/extract-reauth-urls.py | uv run python scripts/auth/open-auth-urls.py
 
     # From a saved label/url file (output of extract-reauth-urls.py):
-    cat /tmp/reauth-urls-final.txt | uv run python scripts/open-auth-urls.py
+    cat /tmp/reauth-urls-final.txt | uv run python scripts/auth/open-auth-urls.py
 
 Why a `data:` URL and not a localhost mini-server: we don't have to keep a
 listener alive, no port to forward, no cleanup. Cursor terminal hyperlinks

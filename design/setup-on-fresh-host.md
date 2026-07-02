@@ -15,7 +15,7 @@ The path is deliberately scripted so you don't have to remember which
 ```bash
 git clone https://github.com/thanhpt1110/agent-me.git
 cd agent-me
-./scripts/bootstrap.sh
+./scripts/setup/bootstrap.sh
 
 # Then the three interactive steps the script prints:
 claude /login              # one-time, links this machine to your Anthropic account
@@ -45,7 +45,7 @@ uv run agent-me-bridge                # starts the always-on bridge
    `REPLACE-ME` placeholders are still there. The bridge refuses to
    start without real Slack tokens, so this is a soft gate.
 
-4. **`scripts/setup-mcps.sh`** — registers all 17 MaaS MCP servers via
+4. **`scripts/setup/setup-mcps.sh`** — registers all 17 MaaS MCP servers via
    `claude mcp add`. Idempotent: any server already in
    `claude mcp list` is reported and skipped. The list is hard-coded
    in the script — when NVIDIA adds a new server we want, append a row.
@@ -93,7 +93,7 @@ array. Pulling in a new one is a one-line edit:
 "<stdio-server>|stdio|<command and args>"
 ```
 
-Run `./scripts/setup-mcps.sh` to apply. Idempotent.
+Run `./scripts/setup/setup-mcps.sh` to apply. Idempotent.
 
 ### Always uses `--scope user`
 
