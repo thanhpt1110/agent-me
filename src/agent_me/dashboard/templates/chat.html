@@ -219,10 +219,12 @@
         <!-- terminals-panel toggle: outermost right, text-only (the >_ icon
              belongs to the host-terminal button); shown only when the panel
              isn't a static column (below xl / zoomed-in). -->
+        <!-- xl:!hidden: .btn (app.css, loads after tailwind.css) sets display
+             and would silently win over a plain xl:hidden at equal specificity. -->
         <button type="button" x-show="terminalEnabled" x-cloak @click="termPanelOpen = true"
                 title="Live tmux sessions — open the terminals panel"
                 aria-label="Open the terminals panel"
-                class="btn btn-secondary btn-sm xl:hidden">
+                class="btn btn-secondary btn-sm xl:!hidden">
           <span>Terminals</span>
           <span x-show="tmuxSessions.length" x-cloak
                 class="ml-1 rounded bg-accent-400/20 px-1 font-mono text-[10px] font-semibold text-accent-400"
