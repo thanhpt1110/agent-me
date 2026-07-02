@@ -53,3 +53,32 @@ script; live `:8787` — browse API walks roots → `~/st2110` → children with
 correct crumbs/parent/selectable, `/chat` HTML shows `overflow-hidden` +
 no footer. Real-browser click-through still blocked on this host (chromium
 system deps need sudo; the maas-playwright MCP has no browser installed).
+
+## Follow-up (same day): breadcrumb drill-down → lazy tree; workspace defaults; `~/agent-me` retired
+
+Operator feedback: the one-level-at-a-time drill-down was hard to use. Replaced
+the popover body with a **lazy tree** (same browse API, UI-only): ▸ expands a
+level in place (children indented — several levels visible at once), clicking a
+name selects it, "Use this folder" applies; flat-list render with depth
+padding, per-node fetch, collapse drops the deeper run.
+
+Defaults, per operator: `CHAT_ADD_DIRS` gained `/data/test-workspace` so
+`~/test-workspace` is navigable from $HOME alongside `~/agent-me.nvidia.com`;
+new env `CHAT_SPAWN_DEFAULT_CWD` (`ChatConfig.spawn_cwd`) makes **new chats
+open at the workspace umbrella** while `default_cwd` deliberately stays the
+agent's repo (branch-guard target + operating-context source). `newSession()`
+POSTs `{}` and the server picks the spawn default.
+
+Cleanup, per operator: the `~/agent-me` symlink is gone. All systemd units now
+use `%h/agent-me.nvidia.com/agent-me` (bridge, prod dashboard incl. `.prod`
+paths, dev dashboard, watch, funnel) — installed, daemon-reloaded, restarted;
+host-side script references and CLAUDE.md/host docs updated. Only home
+symlinks left: `~/agent-me.nvidia.com`, `~/test-workspace`.
+
+Verified live on :8787: folders `default` = `/data/agent-me.nvidia.com`;
+`POST {}` creates a session with that cwd (deleted after the check); browse
+roots = [thaphan, agent-me, agent-me.nvidia.com, test-workspace]; browse $HOME
+= [agent-me.nvidia.com, n, ngc-cli, test-workspace]. All three services active
+with cwd resolved through the workspace symlink (prod = `.prod`), Bolt running.
+`test_folder_scope_validation` was updated — it asserted the now-removed
+`~/agent-me` path exists.

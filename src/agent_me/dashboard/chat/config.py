@@ -29,6 +29,11 @@ def _env_flag(name: str, default: bool) -> bool:
 class ChatConfig:
     data_dir: Path
     default_cwd: str
+    # Default folder for NEW chats (blank → default_cwd). Distinct from
+    # default_cwd on purpose: default_cwd stays the agent's own repo (branch
+    # guard target, operating-context source) even when new chats should open
+    # somewhere broader, e.g. the workspace umbrella.
+    spawn_cwd: str = ""
     add_dirs: tuple[str, ...] = ()
     model: str | None = None
     claude_bin: str = "claude"
@@ -80,6 +85,7 @@ class ChatConfig:
         return cls(
             data_dir=data_dir,
             default_cwd=default_cwd,
+            spawn_cwd=(os.environ.get("CHAT_SPAWN_DEFAULT_CWD") or "").strip(),
             add_dirs=add_dirs,
             model=model,
             claude_bin=claude_bin,

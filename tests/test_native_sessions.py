@@ -349,7 +349,8 @@ def test_folder_scope_validation(tmp_path: Path) -> None:
     svc, _, _ = _service(tmp_path)             # default_cwd = CWD, home = the test user's $HOME
     home = str(Path.home())
     assert svc._allowed_cwd(home) is True
-    assert svc._allowed_cwd(CWD) is True                          # under home + a configured root
+    assert svc._folder_in_scope(CWD) is True   # a configured root is in scope (existence-free)
+    assert svc._allowed_cwd(str(tmp_path)) is False               # exists but out of scope
     assert svc._allowed_cwd(home + "/.config") is False           # dot-prefixed component
     assert svc._allowed_cwd("/tmp") is False                      # outside home / roots
     assert svc._allowed_cwd(home + "/__no_such_dir_zzz__") is False  # missing dir

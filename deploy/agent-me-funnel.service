@@ -18,7 +18,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/agent-me
+WorkingDirectory=%h/agent-me.nvidia.com/agent-me
 
 # Foreground form — `tailscale funnel` keeps running and streams logs.
 # Without `--bg`, the foreground process holds the funnel open.

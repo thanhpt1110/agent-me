@@ -111,6 +111,6 @@ The watcher polls origin/main every 60s. To change interval:
   # add:  [Service]  Environment=AGENT_ME_WATCH_INTERVAL_S=30
 
 To force an immediate pull (skip waiting for next cycle):
-  cd ~/agent-me && git pull && uv sync && systemctl --user restart agent-me-bridge
+  cd ~/agent-me.nvidia.com/agent-me && git pull && uv sync && systemctl --user restart agent-me-bridge
 ─────────────────────────────────────────────────────────────────────────
 EOF

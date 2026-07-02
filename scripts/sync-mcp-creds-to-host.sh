@@ -109,7 +109,7 @@ echo "  Codex env exports: ${codex_env_count:-0} AGENT_ME_MCP_TOKEN_*"
 
 # ── 6. Verify ──────────────────────────────────────────────────────────
 bold "Step 6 — verify with claude mcp list on host"
-mcp_out=$(ssh "$HOST" '~/.local/bin/uv run --quiet --no-sync --directory ~/agent-me python -c "import subprocess; print(subprocess.run([\"claude\",\"mcp\",\"list\"],capture_output=True,text=True).stdout)"' 2>&1 || \
+mcp_out=$(ssh "$HOST" '~/.local/bin/uv run --quiet --no-sync --directory ~/agent-me.nvidia.com/agent-me python -c "import subprocess; print(subprocess.run([\"claude\",\"mcp\",\"list\"],capture_output=True,text=True).stdout)"' 2>&1 || \
           ssh "$HOST" 'export PATH=$HOME/.local/bin:$PATH; claude mcp list' 2>&1)
 connected=$(printf '%s\n' "$mcp_out" | grep -cE "^maas-.*✓ Connected" || true)
 need_auth=$(printf '%s\n' "$mcp_out" | grep -cE "^maas-.*Needs authentication" || true)

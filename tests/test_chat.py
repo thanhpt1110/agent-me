@@ -531,6 +531,25 @@ def test_folder_options_dedup_symlink_alias_and_add_dir_children(tmp_path: Path,
     assert not svc._allowed_cwd(str(home / "escape"))
 
 
+def test_spawn_default_cwd_for_new_chats(tmp_path: Path) -> None:
+    """CHAT_SPAWN_DEFAULT_CWD opens NEW chats somewhere broader than the agent's
+    repo (e.g. the workspace umbrella) without moving default_cwd (which stays
+    the branch-guard target / operating-context source); an invalid spawn
+    default falls back to the repo."""
+    repo = tmp_path / "ws" / "repo"
+    repo.mkdir(parents=True)
+    umbrella = tmp_path / "ws"
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(repo),
+                     spawn_cwd=str(umbrella), add_dirs=(str(umbrella),))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+    assert svc.folder_options()["default"] == str(umbrella)
+    assert svc.create_session(title=None, cwd=None, model=None).cwd == str(umbrella.resolve())
+    assert svc.create_session(title=None, cwd=str(repo), model=None).cwd == str(repo.resolve())
+    bad = ChatConfig(data_dir=tmp_path / "cs2", default_cwd=str(repo), spawn_cwd="/no/such")
+    svc2 = ChatService(DiskSessionStore(bad.data_dir), FakeClaudeRunner([]), bad)
+    assert svc2.create_session(title=None, cwd=None, model=None).cwd == str(repo.resolve())
+
+
 def test_browse_folders_drilldown(tmp_path: Path, monkeypatch) -> None:
     """The picker's drill-down browser: blank path → scope roots; a folder → its
     non-hidden in-scope children + a breadcrumb back to the containing root (any

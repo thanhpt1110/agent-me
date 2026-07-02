@@ -136,7 +136,7 @@
                   class="relative flex shrink-0 items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5 font-mono text-[10px]"
                   title="Pick this chat's folder — locked once you send the first message">
               <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
-              <button type="button" @click="fpToggle()" :title="'Working directory: ' + selectedFolder"
+              <button type="button" @click="fpOpen()" :title="'Working directory: ' + selectedFolder"
                       aria-label="Working directory" aria-haspopup="true" :aria-expanded="fp.open"
                       class="flex items-center gap-1 py-0.5 pl-0.5 text-[10px] text-slate-300 hover:text-accent-400 focus:outline-none">
                 <span class="max-w-[10rem] truncate" x-text="folderName(selectedFolder)"></span>
@@ -156,37 +156,40 @@
                     title="Branch is fixed here — switching the agent's own repo or a folder another chat uses would move it underneath them"
                     x-text="branchSuffix(selectedFolder)"></span>
               <span x-show="!pickerIsGit()" class="pr-1.5"></span>
-              <!-- drill-down folder browser: ⌂ roots → breadcrumb → subfolders → "Use this folder" -->
+              <!-- folder tree: ▸ expands a level in place (lazy), clicking a name
+                   selects it, "Use this folder" applies. Multi-level stays visible. -->
               <div x-show="fp.open" x-cloak @click.outside="fp.open = false"
-                   class="absolute left-0 top-full z-30 mt-1 w-72 rounded-lg border border-ink-700 bg-ink-900 p-2 shadow-xl">
-                <div class="mb-1 flex flex-wrap items-center gap-0.5 font-mono text-[10px] text-slate-400">
-                  <button type="button" @click="fpBrowse('')" title="All roots"
-                          class="rounded px-1 py-0.5 hover:bg-ink-800 hover:text-accent-400">⌂</button>
-                  <template x-for="c in fp.crumbs" :key="c.path">
-                    <span class="flex items-center gap-0.5">
-                      <span class="text-slate-600">/</span>
-                      <button type="button" @click="fpBrowse(c.path)" x-text="c.name" :title="c.path"
-                              class="max-w-[8rem] truncate rounded px-1 py-0.5 hover:bg-ink-800 hover:text-accent-400"></button>
-                    </span>
-                  </template>
+                   class="absolute left-0 top-full z-30 mt-1 w-80 rounded-lg border border-ink-700 bg-ink-900 p-2 shadow-xl">
+                <div class="mb-1 px-1 font-mono text-[10px] text-slate-500">
+                  ▸ expands a level · click a name to select
                 </div>
-                <div class="max-h-56 overflow-y-auto">
-                  <template x-for="d in fp.dirs" :key="d.path">
-                    <button type="button" @click="fpBrowse(d.path)" :title="d.path"
-                            class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-[11px] text-slate-300 hover:bg-ink-800 hover:text-accent-400">
-                      <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
-                      <span class="truncate" x-text="d.name"></span>
-                      <span class="ml-auto text-slate-600">›</span>
-                    </button>
+                <div class="max-h-64 overflow-y-auto" role="tree">
+                  <template x-for="n in fp.nodes" :key="n.path">
+                    <div class="flex items-center gap-0.5 rounded py-0.5 pr-1 font-mono text-[11px]"
+                         :class="fp.sel === n.path ? 'bg-accent-400/15 text-accent-400' : 'text-slate-300 hover:bg-ink-800'"
+                         :style="'padding-left:' + (n.depth * 14 + 2) + 'px'" role="treeitem"
+                         :aria-expanded="n.expanded" :aria-selected="fp.sel === n.path">
+                      <button type="button" @click="fpToggle(n)" :aria-label="n.expanded ? 'Collapse' : 'Expand'"
+                              class="w-4 shrink-0 text-center text-slate-500 hover:text-accent-400">
+                        <span x-show="!n.loading" x-text="n.expanded ? '▾' : '▸'"></span>
+                        <span x-show="n.loading" x-cloak>·</span>
+                      </button>
+                      <button type="button" @click="fpSelectNode(n)" @dblclick.prevent="fpToggle(n)" :title="n.path"
+                              class="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                        <svg class="icon icon-sm shrink-0" aria-hidden="true"
+                             :class="fp.sel === n.path ? 'text-accent-400' : 'text-slate-500'"><use href="#icon-folder"/></svg>
+                        <span class="truncate" x-text="n.name"></span>
+                      </button>
+                    </div>
                   </template>
-                  <div x-show="!fp.dirs.length" x-cloak
-                       class="px-1.5 py-1 font-mono text-[11px] text-slate-500">no subfolders</div>
+                  <div x-show="!fp.nodes.length" x-cloak
+                       class="px-1.5 py-1 font-mono text-[11px] text-slate-500">…</div>
                 </div>
                 <div class="mt-1 flex items-center justify-between gap-2 border-t border-ink-800 pt-1.5">
                   <span class="min-w-0 truncate font-mono text-[10px] text-slate-500"
-                        x-text="fp.path || 'pick a folder'" :title="fp.path"></span>
-                  <button type="button" x-show="fp.selectable" x-cloak @click="fpSelect()"
-                          class="btn btn-primary btn-sm shrink-0">Use this folder</button>
+                        x-text="fp.sel || 'no folder selected'" :title="fp.sel"></span>
+                  <button type="button" @click="fpUse()" :disabled="!fp.sel"
+                          class="btn btn-primary btn-sm shrink-0 disabled:cursor-not-allowed disabled:opacity-40">Use this folder</button>
                 </div>
               </div>
             </span>
@@ -594,27 +597,47 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
       const m = this.currentMeta();
       return !!(m && (m.turns > 0 || m.claude_started || m.busy || m.live));
     },
-    // Drill-down folder browser (new-chat picker): ⌂ roots → breadcrumb → subfolders.
-    fp: { open: false, path: "", parent: null, crumbs: [], dirs: [], selectable: false },
-    fpToggle() {
+    // Folder tree (new-chat picker): lazy per-level fetch, flat render with
+    // depth padding. ▸ expands in place; clicking a name selects; "Use this
+    // folder" applies. Everything shown is in scope, so every node is pickable.
+    fp: { open: false, nodes: [], sel: "" },
+    async fpOpen() {
       this.fp.open = !this.fp.open;
-      if (this.fp.open) this.fpBrowse(this.selectedFolder || "");
+      if (!this.fp.open) return;
+      this.fp.sel = this.selectedFolder || "";
+      const d = await this._fpFetch("");
+      if (d) this.fp.nodes = (d.dirs || []).map(x => ({ ...x, depth: 0, expanded: false, loading: false }));
     },
-    async fpBrowse(path) {
+    async _fpFetch(path) {
       try {
         const r = await fetch("/api/chat/folders/browse?path=" + encodeURIComponent(path || ""));
-        if (r.status === 403) { this.relock(); return; }
-        if (!r.ok) return;
-        const d = await r.json();
-        this.fp.path = d.path || ""; this.fp.parent = d.parent;
-        this.fp.crumbs = d.crumbs || []; this.fp.dirs = d.dirs || [];
-        this.fp.selectable = !!d.selectable;
-      } catch (e) { /* leave the panel as-is */ }
+        if (r.status === 403) { this.relock(); return null; }
+        return r.ok ? await r.json() : null;
+      } catch (e) { return null; }
     },
-    fpSelect() {
-      if (!this.fp.selectable || !this.fp.path) return;
+    async fpToggle(node) {
+      const i = this.fp.nodes.indexOf(node);
+      if (i < 0 || node.loading) return;
+      if (node.expanded) {               // collapse: drop the deeper run below it
+        let j = i + 1;
+        while (j < this.fp.nodes.length && this.fp.nodes[j].depth > node.depth) j++;
+        this.fp.nodes.splice(i + 1, j - i - 1);
+        node.expanded = false;
+        return;
+      }
+      node.loading = true;
+      const d = await this._fpFetch(node.path);
+      node.loading = false;
+      if (!d || !d.selectable) return;
+      const kids = (d.dirs || []).map(x => ({ ...x, depth: node.depth + 1, expanded: false, loading: false }));
+      this.fp.nodes.splice(i + 1, 0, ...kids);
+      node.expanded = true;
+    },
+    fpSelectNode(node) { this.fp.sel = node.path; },
+    fpUse() {
+      if (!this.fp.sel) return;
       this.fp.open = false;
-      if (this.selectedFolder !== this.fp.path) { this.selectedFolder = this.fp.path; this.onFolderChange(); }
+      if (this.selectedFolder !== this.fp.sel) { this.selectedFolder = this.fp.sel; this.onFolderChange(); }
     },
     async onFolderChange() {
       const m = this.currentMeta();
@@ -735,11 +758,12 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
     absTime(ms) { return ms ? new Date(ms).toLocaleString() : ""; },
 
     async newSession() {
-      // New chats default to agent-me; the header picker re-points them until the
-      // first prompt (folder is locked once the session starts).
+      // No cwd → the server picks the spawn default (CHAT_SPAWN_DEFAULT_CWD,
+      // e.g. the workspace umbrella); the header picker re-points the chat until
+      // the first prompt (folder is locked once the session starts).
       const r = await fetch("/api/chat/sessions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: this.defaultCwd }),
+        body: JSON.stringify({}),
       });
       if (r.status === 403) { this.relock(); return; }
       const meta = await r.json();

@@ -1,17 +1,20 @@
 # agent-me — Project Instructions
 
-You are working in `~/agent-me/` — _"myself, but in agent mode."_ A public-shareable framework for a personal AI OS. Currently being built/operated by **thaphan@nvidia.com** as the first deployment.
+You are working in `/data/agent-me.nvidia.com/agent-me` — _"myself, but in agent mode."_ A public-shareable framework for a personal AI OS. Currently being built/operated by **thaphan@nvidia.com** as the first deployment.
 
-> **Host layout (since 2026-07-02):** the real path is
-> `/data/agent-me.nvidia.com/agent-me` (`~/agent-me` is a symlink to it) and it is
-> the **only** clone of this repo on the host. Two environments, one repo:
+> **Host layout (since 2026-07-02):** the only home symlink is
+> `~/agent-me.nvidia.com` → `/data/agent-me.nvidia.com` (the workspace umbrella);
+> this repo is `<umbrella>/agent-me` and is the **only** clone on the host
+> (the old `~/agent-me` symlink was removed — systemd units use
+> `%h/agent-me.nvidia.com/agent-me`). Two environments, one repo:
 > - **DEV** = this working tree, always on **`big-update`** — serves the dev
 >   dashboard :8787 (`agent-me-dashboard-dev.service`) and the Slack bridge.
 >   Bounce them freely while iterating.
 > - **PROD** = the pinned, gitignored **`.prod/` git worktree on `main`** — serves
 >   :8765 (`agent-me-dashboard.service`, Caddy → agent-me.nvidia.com). Never edit
 >   files in `.prod/`. Release = merge `big-update` → `main`, push, then
->   `git -C ~/agent-me/.prod pull --ff-only && (cd ~/agent-me/.prod && uv sync) &&
+>   `git -C ~/agent-me.nvidia.com/agent-me/.prod pull --ff-only &&
+>   (cd ~/agent-me.nvidia.com/agent-me/.prod && uv sync) &&
 >   systemctl --user restart agent-me-dashboard`. `.prod` has its own `.venv` and
 >   `configs/.env` (`AGENT_ME_REPO_DIR` points at `.prod`).
 >
@@ -103,7 +106,7 @@ After implementing or changing a feature, **test its actual behavior** before cl
 Project is **Python 3.12+** with [uv](https://docs.astral.sh/uv/) for dependency management. Setup any new clone with:
 
 ```bash
-cd ~/agent-me
+cd ~/agent-me.nvidia.com/agent-me
 ./scripts/bootstrap.sh    # idempotent: uv sync + register all 17 MaaS MCPs + reminders
 ```
 
@@ -156,7 +159,7 @@ agent-me/
 >   via `deploy/agent-me-dashboard-dev.service`; production :8765 runs `main` from
 >   the pinned `.prod` worktree (`deploy/agent-me-dashboard.service`, Caddy →
 >   agent-me.nvidia.com) — chat reaches prod only when `big-update` merges to `main`.
-> - **Slack bridge** — DMs run claude in the `~/agent-me` workspace (terminal-like),
+> - **Slack bridge** — DMs run claude in the agent-me repo workspace (terminal-like),
 >   per-thread sessions, live progress, final summary in-thread. `AGENT_BACKEND=codex`
 >   restores the legacy path.
 > - **Brief** — calendar/outlook/slack fan-out via claude + `maas-*` MCP read tools;

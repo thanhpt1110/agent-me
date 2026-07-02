@@ -2,7 +2,7 @@
 # PRODUCTION dashboard. Runs from the pinned `.prod` git worktree (branch `main`)
 # inside the single agent-me checkout, so prod is isolated from day-to-day work
 # on `big-update` (:8787 dev). Release = merge to main, push, then:
-#   git -C ~/agent-me/.prod pull --ff-only && (cd ~/agent-me/.prod && uv sync) \
+#   git -C ~/agent-me.nvidia.com/agent-me/.prod pull --ff-only && (cd ~/agent-me.nvidia.com/agent-me/.prod && uv sync) \
 #     && systemctl --user restart agent-me-dashboard
 Description=agent-me dashboard (production — :8765 main@.prod, agent-me.nvidia.com via Caddy)
 Documentation=https://github.com/thanhpt1110/agent-me/blob/main/design/dashboard-design.md
@@ -19,8 +19,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/agent-me/.prod
-EnvironmentFile=%h/agent-me/.prod/configs/.env
+WorkingDirectory=%h/agent-me.nvidia.com/agent-me/.prod
+EnvironmentFile=%h/agent-me.nvidia.com/agent-me/.prod/configs/.env
 # node bin so agent spawns (codex/claude CLI) resolve node; ~/.local/bin for uv/cim/etc.
 Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
 

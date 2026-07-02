@@ -11,11 +11,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/agent-me
-EnvironmentFile=-%h/agent-me/configs/.env
+WorkingDirectory=%h/agent-me.nvidia.com/agent-me
+EnvironmentFile=-%h/agent-me.nvidia.com/agent-me/configs/.env
 Environment=DEPLOY_ENV=dev
 Environment=DASHBOARD_TRUST_NETWORK=1
-Environment=AGENT_ME_REPO_DIR=%h/agent-me
+Environment=AGENT_ME_REPO_DIR=%h/agent-me.nvidia.com/agent-me
 # node bin is required so the chat can spawn the `claude` CLI; ~/.local/bin for uv/cim/etc.
 Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/bin/uv run agent-me-dashboard --host 0.0.0.0 --port 8787 --forwarded-allow-ips=*

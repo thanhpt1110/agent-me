@@ -14,7 +14,7 @@ separated) and emits one of these, in priority order:
 
 Two callers:
     # Direct from a fresh reauth log:
-    cd ~/agent-me && uv run python scripts/extract-reauth-urls.py | uv run python scripts/open-auth-urls.py
+    cd ~/agent-me.nvidia.com/agent-me && uv run python scripts/extract-reauth-urls.py | uv run python scripts/open-auth-urls.py
 
     # From a saved label/url file (output of extract-reauth-urls.py):
     cat /tmp/reauth-urls-final.txt | uv run python scripts/open-auth-urls.py

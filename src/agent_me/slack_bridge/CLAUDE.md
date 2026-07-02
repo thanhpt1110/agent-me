@@ -1,7 +1,7 @@
 # slack_bridge — Slack bot (entry: `uv run agent-me-bridge`)
 
 Socket Mode bot. The interactive agent runs **claude** by default in the
-`~/agent-me` workspace (terminal-like); `AGENT_BACKEND=codex` is the legacy path.
+the agent-me repo workspace (terminal-like); `AGENT_BACKEND=codex` is the legacy path.
 
 - `app.py` — Bolt handlers + routing (`handle_user_query`), `spawn_claude` /
   `spawn_agent` / `spawn_write_agent`, sessions, progress, slash/plain commands.

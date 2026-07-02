@@ -118,10 +118,16 @@ class ChatService:
         ]
         return sorted(dicts + extra, key=lambda d: d.get("last_activity", 0), reverse=True)
 
+    def _spawn_default(self) -> str:
+        """Default folder for a NEW chat: the configured ``spawn_cwd`` when it is
+        a real in-scope dir, else the agent's own repo (``default_cwd``)."""
+        s = (self._config.spawn_cwd or "").strip()
+        return s if s and self._allowed_cwd(s) else self._config.default_cwd
+
     def create_session(self, *, title: str | None, cwd: str | None, model: str | None) -> SessionMeta:
-        chosen = (cwd or "").strip() or self._config.default_cwd
-        if not self._allowed_cwd(chosen):  # missing / out-of-scope → spawn in the repo
-            chosen = self._config.default_cwd
+        chosen = (cwd or "").strip() or self._spawn_default()
+        if not self._allowed_cwd(chosen):  # missing / out-of-scope → spawn default
+            chosen = self._spawn_default()
         return self._store.create(
             title=title, cwd=self._canon(chosen), model=(model or self._config.model),
         )
@@ -256,8 +262,9 @@ class ChatService:
             pass
         for d in self._config.add_dirs:
             add_children(d)
-        if self._config.default_cwd:
-            default = str(Path(self._config.default_cwd).expanduser())
+        default = self._spawn_default()
+        if default:
+            default = str(Path(default).expanduser())
         else:
             default = str(home) if home is not None else (out[0] if out else "")
         return {"folders": out[:50], "default": default}

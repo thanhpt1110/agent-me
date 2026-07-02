@@ -16,8 +16,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/agent-me
-EnvironmentFile=%h/agent-me/configs/.env
+WorkingDirectory=%h/agent-me.nvidia.com/agent-me
+EnvironmentFile=%h/agent-me.nvidia.com/agent-me/configs/.env
 # node bin is required so agent spawns (`claude` CLI) resolve node; ~/.local/bin for uv.
 Environment=PATH=%h/.local/bin:%h/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin
 
