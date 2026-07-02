@@ -262,6 +262,49 @@ class ChatService:
             default = str(home) if home is not None else (out[0] if out else "")
         return {"folders": out[:50], "default": default}
 
+    _BROWSE_MAX_DIRS = 500
+
+    def browse_folders(self, path: str = "") -> dict:
+        """One level of the drill-down folder browser (the new-chat picker).
+
+        Blank/out-of-scope ``path`` → the scope roots (repo, add-dirs, $HOME) as
+        top-level entries. Otherwise → the folder's non-hidden, in-scope child
+        dirs plus a breadcrumb back to its containing root, so any depth under a
+        root is reachable. Everything returned passes the same scope checker
+        ``create_session`` enforces — the browser never shows a dead end."""
+        in_scope = self._scope_checker()
+        roots = self._resolved_roots()
+
+        def entry(p: Path) -> dict:
+            return {"name": p.name or str(p), "path": str(p)}
+
+        raw = (path or "").strip()
+        current: Path | None = None
+        if raw:
+            try:
+                current = Path(raw).expanduser().resolve()
+            except (OSError, RuntimeError):
+                current = None
+        if current is None or not current.is_dir() or not in_scope(current):
+            return {"path": "", "parent": None, "crumbs": [],
+                    "dirs": [entry(r) for r in roots], "selectable": False}
+
+        root = max((r for r in roots if current == r or r in current.parents),
+                   key=lambda r: len(r.parts))
+        crumbs = [entry(root)]
+        for part in current.relative_to(root).parts:
+            crumbs.append(entry(Path(crumbs[-1]["path"]) / part))
+        dirs: list[dict] = []
+        with contextlib.suppress(OSError, RuntimeError):
+            for child in sorted(current.iterdir()):
+                if child.is_dir() and not child.name.startswith(".") and in_scope(child):
+                    dirs.append(entry(child))
+                    if len(dirs) >= self._BROWSE_MAX_DIRS:
+                        break
+        parent = str(current.parent) if current != root else ""
+        return {"path": str(current), "parent": parent, "crumbs": crumbs,
+                "dirs": dirs, "selectable": True}
+
     def get_session(self, sid: str) -> dict | None:
         meta = self._store.get_meta(sid)
         if meta is not None:

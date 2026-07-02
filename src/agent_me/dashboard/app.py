@@ -1377,6 +1377,14 @@ async def api_chat_folders(request: Request):
     return JSONResponse(CHAT_SERVICE.folder_options())
 
 
+async def api_chat_folders_browse(request: Request):
+    """One level of the drill-down folder browser: blank path → scope roots,
+    otherwise the folder's in-scope child dirs + breadcrumb (folder picker)."""
+    if (blocked := _chat_guard(request)):
+        return blocked
+    return JSONResponse(CHAT_SERVICE.browse_folders(request.query_params.get("path", "")))
+
+
 async def api_chat_branches(request: Request):
     """Local git branches for a candidate folder (branch picker). Empty when the
     folder isn't a git work tree, so the UI shows just the folder name."""
@@ -1600,6 +1608,8 @@ def build_app() -> Starlette:
               methods=["GET", "DELETE", "PATCH"], name="api_chat_session"),
         Route("/api/chat/commands", api_chat_commands, name="api_chat_commands"),
         Route("/api/chat/folders", api_chat_folders, name="api_chat_folders"),
+        Route("/api/chat/folders/browse", api_chat_folders_browse,
+              name="api_chat_folders_browse"),
         Route("/api/chat/branches", api_chat_branches, name="api_chat_branches"),
         Route("/api/chat/sessions/{session_id}/history", api_chat_history,
               name="api_chat_history"),

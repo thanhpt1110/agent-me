@@ -6,8 +6,10 @@
 {% endblock %}
 
 {% block content %}
+<!-- h-full: base.html locks /chat to the viewport (flex column, no body scroll);
+     this grid fills the <main> flex-1 slot exactly — only the transcript scrolls. -->
 <div x-data='chat({{ sessions_json | tojson }}, {{ default_cwd | tojson }}, {{ chat_locked | tojson }}, {{ chat_host | tojson }}, {{ chat_terminal_enabled | tojson }}, {{ chat_context_window | tojson }})' x-init="init()"
-     class="relative grid grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]" style="height: calc(100dvh - 9rem);">
+     class="relative grid h-full grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]">
 
   <!-- ── Access gate (operator passcode) ──────────────────────────────── -->
   <div x-show="locked" x-cloak
@@ -127,19 +129,19 @@
                   class="shrink-0 whitespace-nowrap rounded border border-accent-400/40 bg-accent-400/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent-400"
                   :title="'Working directory: ' + currentCwd() + branchSuffix(currentCwd())"
                   x-text="folderName(currentCwd()) + branchSuffix(currentCwd())"></span>
-            <!-- …and a one-time folder (+ branch) picker while it's still new. Both
-                 selects size to their content; the branch one shows only for a git repo. -->
+            <!-- …and a one-time folder (+ branch) picker while it's still new. The
+                 folder opens a drill-down browser (breadcrumb + subfolders); the
+                 branch select shows only for a git repo. Locked on first message. -->
             <span x-show="currentMeta() && !folderLocked()" x-cloak
-                  class="flex shrink-0 items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5 font-mono text-[10px]"
+                  class="relative flex shrink-0 items-center gap-1 rounded border border-ink-700 bg-ink-800 pl-1.5 font-mono text-[10px]"
                   title="Pick this chat's folder — locked once you send the first message">
               <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
-              <select x-model="selectedFolder" @change="onFolderChange()" :style="selectWidth(folderName(selectedFolder))"
-                      aria-label="Working directory"
-                      class="chip-select truncate bg-transparent py-0.5 pl-0.5 pr-3.5 text-[10px] text-slate-300 focus:outline-none">
-                <template x-for="f in pickerFolders()" :key="f">
-                  <option :value="f" x-text="folderName(f)" :title="f" class="bg-ink-900 text-slate-200"></option>
-                </template>
-              </select>
+              <button type="button" @click="fpToggle()" :title="'Working directory: ' + selectedFolder"
+                      aria-label="Working directory" aria-haspopup="true" :aria-expanded="fp.open"
+                      class="flex items-center gap-1 py-0.5 pl-0.5 text-[10px] text-slate-300 hover:text-accent-400 focus:outline-none">
+                <span class="max-w-[10rem] truncate" x-text="folderName(selectedFolder)"></span>
+                <span class="text-[8px] text-slate-500">▼</span>
+              </button>
               <!-- editable branch dropdown for a dedicated folder; read-only @branch
                    label for the agent's own repo / a folder another chat is using. -->
               <span x-show="pickerIsGit() && !branchReadOnly()" class="flex items-center pr-1.5 text-accent-400">@<select
@@ -154,6 +156,39 @@
                     title="Branch is fixed here — switching the agent's own repo or a folder another chat uses would move it underneath them"
                     x-text="branchSuffix(selectedFolder)"></span>
               <span x-show="!pickerIsGit()" class="pr-1.5"></span>
+              <!-- drill-down folder browser: ⌂ roots → breadcrumb → subfolders → "Use this folder" -->
+              <div x-show="fp.open" x-cloak @click.outside="fp.open = false"
+                   class="absolute left-0 top-full z-30 mt-1 w-72 rounded-lg border border-ink-700 bg-ink-900 p-2 shadow-xl">
+                <div class="mb-1 flex flex-wrap items-center gap-0.5 font-mono text-[10px] text-slate-400">
+                  <button type="button" @click="fpBrowse('')" title="All roots"
+                          class="rounded px-1 py-0.5 hover:bg-ink-800 hover:text-accent-400">⌂</button>
+                  <template x-for="c in fp.crumbs" :key="c.path">
+                    <span class="flex items-center gap-0.5">
+                      <span class="text-slate-600">/</span>
+                      <button type="button" @click="fpBrowse(c.path)" x-text="c.name" :title="c.path"
+                              class="max-w-[8rem] truncate rounded px-1 py-0.5 hover:bg-ink-800 hover:text-accent-400"></button>
+                    </span>
+                  </template>
+                </div>
+                <div class="max-h-56 overflow-y-auto">
+                  <template x-for="d in fp.dirs" :key="d.path">
+                    <button type="button" @click="fpBrowse(d.path)" :title="d.path"
+                            class="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-mono text-[11px] text-slate-300 hover:bg-ink-800 hover:text-accent-400">
+                      <svg class="icon icon-sm shrink-0 text-slate-500" aria-hidden="true"><use href="#icon-folder"/></svg>
+                      <span class="truncate" x-text="d.name"></span>
+                      <span class="ml-auto text-slate-600">›</span>
+                    </button>
+                  </template>
+                  <div x-show="!fp.dirs.length" x-cloak
+                       class="px-1.5 py-1 font-mono text-[11px] text-slate-500">no subfolders</div>
+                </div>
+                <div class="mt-1 flex items-center justify-between gap-2 border-t border-ink-800 pt-1.5">
+                  <span class="min-w-0 truncate font-mono text-[10px] text-slate-500"
+                        x-text="fp.path || 'pick a folder'" :title="fp.path"></span>
+                  <button type="button" x-show="fp.selectable" x-cloak @click="fpSelect()"
+                          class="btn btn-primary btn-sm shrink-0">Use this folder</button>
+                </div>
+              </div>
             </span>
             <span x-show="contextPct() != null" x-cloak
                   class="shrink-0 rounded bg-ink-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
@@ -559,11 +594,27 @@ function chat(initialSessions, defaultCwd, locked, host, terminalEnabled, contex
       const m = this.currentMeta();
       return !!(m && (m.turns > 0 || m.claude_started || m.busy || m.live));
     },
-    // Always include the current selection so a locked/odd cwd still shows.
-    pickerFolders() {
-      const f = (this.folders || []).slice();
-      if (this.selectedFolder && !f.includes(this.selectedFolder)) f.unshift(this.selectedFolder);
-      return f;
+    // Drill-down folder browser (new-chat picker): ⌂ roots → breadcrumb → subfolders.
+    fp: { open: false, path: "", parent: null, crumbs: [], dirs: [], selectable: false },
+    fpToggle() {
+      this.fp.open = !this.fp.open;
+      if (this.fp.open) this.fpBrowse(this.selectedFolder || "");
+    },
+    async fpBrowse(path) {
+      try {
+        const r = await fetch("/api/chat/folders/browse?path=" + encodeURIComponent(path || ""));
+        if (r.status === 403) { this.relock(); return; }
+        if (!r.ok) return;
+        const d = await r.json();
+        this.fp.path = d.path || ""; this.fp.parent = d.parent;
+        this.fp.crumbs = d.crumbs || []; this.fp.dirs = d.dirs || [];
+        this.fp.selectable = !!d.selectable;
+      } catch (e) { /* leave the panel as-is */ }
+    },
+    fpSelect() {
+      if (!this.fp.selectable || !this.fp.path) return;
+      this.fp.open = false;
+      if (this.selectedFolder !== this.fp.path) { this.selectedFolder = this.fp.path; this.onFolderChange(); }
     },
     async onFolderChange() {
       const m = this.currentMeta();

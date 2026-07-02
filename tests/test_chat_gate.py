@@ -42,3 +42,16 @@ def test_chat_xdata_attribute_is_well_formed(monkeypatch: pytest.MonkeyPatch) ->
     html = c.get("/chat").text
     assert "x-data='chat(" in html
     assert 'x-data="chat(' not in html
+
+
+def test_chat_page_is_viewport_locked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """/chat is an app screen: the body must not scroll (only the transcript pane
+    does) and the site footer is skipped, so the composer never slides off-screen.
+    Normal pages keep the footer and a scrollable body."""
+    c = _client(monkeypatch, None)
+    chat = c.get("/chat").text
+    assert "overflow-hidden" in chat.split("<body", 1)[1].split(">", 1)[0]
+    assert "<footer" not in chat
+    home = c.get("/").text
+    assert "<footer" in home
+    assert "overflow-hidden" not in home.split("<body", 1)[1].split(">", 1)[0]

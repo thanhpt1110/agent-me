@@ -531,6 +531,42 @@ def test_folder_options_dedup_symlink_alias_and_add_dir_children(tmp_path: Path,
     assert not svc._allowed_cwd(str(home / "escape"))
 
 
+def test_browse_folders_drilldown(tmp_path: Path, monkeypatch) -> None:
+    """The picker's drill-down browser: blank path → scope roots; a folder → its
+    non-hidden in-scope children + a breadcrumb back to the containing root (any
+    depth under a root is reachable); dot-dirs and out-of-scope symlinks are
+    hidden; garbage/out-of-scope paths fall back to the roots view."""
+    home = tmp_path / "home"
+    (home / "proj" / "sub" / "deep").mkdir(parents=True)
+    (home / ".dot").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "escape").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = ChatConfig(data_dir=tmp_path / "cs", default_cwd=str(repo))
+    svc = ChatService(DiskSessionStore(cfg.data_dir), FakeClaudeRunner([]), cfg)
+
+    roots = svc.browse_folders("")
+    assert roots["selectable"] is False and roots["crumbs"] == []
+    root_paths = {d["path"] for d in roots["dirs"]}
+    assert str(home.resolve()) in root_paths and str(repo.resolve()) in root_paths
+
+    lvl = svc.browse_folders(str(home))
+    names = [d["name"] for d in lvl["dirs"]]
+    assert "proj" in names and ".dot" not in names and "escape" not in names
+    assert lvl["selectable"] is True and lvl["parent"] == ""   # $HOME is itself a root
+
+    deep = svc.browse_folders(str(home / "proj" / "sub"))
+    assert [c["name"] for c in deep["crumbs"]][-2:] == ["proj", "sub"]
+    assert [d["name"] for d in deep["dirs"]] == ["deep"]       # depth N+1 reachable
+    assert deep["parent"] == str((home / "proj").resolve())
+
+    assert svc.browse_folders("/etc")["path"] == ""            # out of scope → roots view
+    assert svc.browse_folders("/no/such/dir")["path"] == ""
+
+
 def test_folder_options_survives_unresolvable_home(tmp_path: Path, monkeypatch) -> None:
     """No $HOME + no passwd entry makes Path.home() raise; the picker must degrade to
     the configured roots, not 500 (the scope helpers already guard this)."""
