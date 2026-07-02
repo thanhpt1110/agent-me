@@ -706,15 +706,14 @@ If the tool errors (auth, approval, timeout, or otherwise), return
 SLACK_PROMPT = """Return ONLY {{"items": [...]}}. No prose, no fences.
 
 You are READ-ONLY. Do NOT call any tool that posts, sends, replies,
-deletes, or modifies messages. Use the maas-slack MCP read tools directly:
-`slack_search_messages`, `slack_get_conversation_history`, and
-`slack_get_thread_replies`.
+deletes, or modifies messages. Fetch UNREAD messages ONLY — the single
+source of truth is `slack_my_unread_messages`; call
+`slack_get_thread_replies` only to complete a truncated unread thread
+snippet. Do NOT search or scan channel history for already-read messages.
 
-User: `{user}` (NVIDIA). Find recent Slack messages in the last
-{period_days} day(s) where someone needs my attention:
-  - I'm @-mentioned (channel mentions)
-  - DMs sent directly to me where the latest message is from someone else
-  - Thread replies on threads I authored
+User: `{user}` (NVIDIA). Report every unread Slack message from the last
+{period_days} day(s): unread DMs and group DMs, unread @-mentions, and
+unread replies on my threads.
 
 Skip: bot/notification messages, channel-join/leave, my own messages.
 
@@ -723,7 +722,7 @@ Each item:
     "snippet": "<first 200 chars of message text>",
     "timestamp": "<ISO 8601 or epoch>",
     "permalink": "<slack permalink if available>",
-    "group": "<channel name>", "reason": "mentioned|dm|thread_reply"}}
+    "group": "<channel name>", "reason": "unread_dm|unread_mention|unread_thread"}}
 
 Top 25. If errors, return {{"error": "<exact tool error>", "items": []}}.
 Do not report errors as "nothing pending". JSON ONLY."""
@@ -740,21 +739,22 @@ directly:
   - `microsoft teams_search`
   - `microsoft teams_fetch` only for exact message paths returned by list/search
 
-User: `{user}` (NVIDIA). Find recent Microsoft Teams chat/channel messages in
-the last {period_days} day(s) where someone likely needs my attention:
-  - I'm @-mentioned in a chat or channel message
-  - DMs/group chats where the latest human message is from someone else
-  - Thread replies on conversations I started or participated in
+User: `{user}` (NVIDIA). Report UNREAD Microsoft Teams messages ONLY, from the
+last {period_days} day(s). Use `microsoft teams_list_chats` and include a chat
+ONLY when it has unread messages (its last message is newer than my last-read
+marker / viewpoint), then list just those unread messages. Do NOT include
+messages I have already read and do NOT trawl channel history — a channel
+message counts only when it @-mentions me AND is unread.
 
 Skip: my own messages, bot-only notifications, join/leave noise, calendar
-invite artifacts, and messages without a clear action or reason to read.
+invite artifacts.
 
 Each item:
   {{"team": "<team name or empty>", "channel": "<channel name or empty>",
     "chat": "<chat title or DM:user>", "user": "<sender display name>",
     "snippet": "<first 200 chars of message text>",
     "timestamp": "<ISO 8601 or epoch>", "url": "<Teams deeplink if available>",
-    "group": "<chat/channel/team name>", "reason": "mention|dm|thread_reply|action_required"}}
+    "group": "<chat/channel/team name>", "reason": "unread_dm|unread_mention|unread_thread"}}
 
 Top 25. If errors, return {{"error": "<exact tool error>", "items": []}}.
 Do not report errors as "nothing pending". JSON ONLY."""
