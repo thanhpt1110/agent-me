@@ -23,7 +23,10 @@ from agent_me.dashboard.chat.service import ChatService
 from agent_me.dashboard.chat.store import DiskSessionStore
 from agent_me.dashboard.chat.terminal import (
     TerminalSession,
+    create_tmux_session,
+    kill_tmux_session,
     list_tmux_sessions,
+    rename_tmux_session,
     resolve_shell,
     resolve_tmux,
     valid_tmux_name,
@@ -265,6 +268,38 @@ def test_list_tmux_sessions_lists_live_sessions() -> None:
         assert found[0]["activity"] > 0
     finally:
         subprocess.run([tmux, "kill-session", "-t", name], capture_output=True)
+
+
+@pytest.mark.skipif(resolve_tmux() is None, reason="tmux not installed")
+def test_tmux_session_lifecycle_helpers() -> None:
+    """The terminals panel's manage actions: create detached → rename (clients
+    stay attached) → list under the new name → kill; invalid names refused."""
+    tmux = resolve_tmux()
+    name = f"agme-life-{os.getpid()}"
+    renamed = f"{name}-r"
+    try:
+        ok, err = create_tmux_session(name, cwd="/tmp", shell=resolve_shell())
+        assert ok, err
+        ok, err = rename_tmux_session(name, renamed)
+        assert ok, err
+        names = [s["name"] for s in list_tmux_sessions()]
+        assert renamed in names and name not in names
+        ok, err = kill_tmux_session(renamed)
+        assert ok, err
+        assert renamed not in [s["name"] for s in list_tmux_sessions()]
+        assert not kill_tmux_session("no/such;name")[0]
+        assert not rename_tmux_session(renamed, "x y")[0]
+    finally:
+        subprocess.run([tmux, "kill-session", "-t", f"={renamed}"], capture_output=True)
+        subprocess.run([tmux, "kill-session", "-t", f"={name}"], capture_output=True)
+
+
+def test_api_chat_tmux_action_persist_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Manage actions are refused outright when persistence is off."""
+    from agent_me.dashboard import app as dash
+    client = TestClient(dash.app)
+    assert client.post("/api/chat/tmux/kill", json={"name": "agme-x"}).status_code == 400
+    assert client.post("/api/chat/tmux/new", json={"name": "agme-x"}).status_code == 400
 
 
 def test_api_chat_tmux_persist_off_reports_empty(monkeypatch: pytest.MonkeyPatch) -> None:

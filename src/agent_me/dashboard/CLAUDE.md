@@ -11,5 +11,5 @@ Reads the bridge's SQLite read-only; never writes bridge state.
   `"`; a double-quoted attribute truncates and Alpine never initialises (dead UI).
   Guarded by `tests/test_chat_gate.py::test_chat_xdata_attribute_is_well_formed`.
 
-Test UI behavior in a real browser (`scripts/verify_chat_ui.py`), not just curl.
+Test UI behavior in a real browser (`scripts/dev/verify_chat_ui.py`), not just curl.
 See repo-root `CLAUDE.md` for conventions.

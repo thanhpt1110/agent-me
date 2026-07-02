@@ -15,7 +15,10 @@ from .service import ChatService
 from .store import DiskSessionStore
 from .terminal import (
     TerminalSession,
+    create_tmux_session,
+    kill_tmux_session,
     list_tmux_sessions,
+    rename_tmux_session,
     resolve_shell,
     resolve_tmux,
     stream_output,
@@ -30,7 +33,10 @@ __all__ = [
     "WebSessionMirror",
     "build_chat_service",
     "build_session_mirror",
+    "create_tmux_session",
+    "kill_tmux_session",
     "list_tmux_sessions",
+    "rename_tmux_session",
     "resolve_shell",
     "resolve_tmux",
     "stream_output",

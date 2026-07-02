@@ -18,7 +18,7 @@ transcripts. tmux's only job is keeping processes alive.
 |---|---|---|
 | Web chat (`/chat`) | already immortal — turns run in detached worker processes (own process group, `KillMode=process`); the dashboard tails the transcript on reconnect | native (SSE) |
 | Web terminal (`>_` / Ctrl+~) | **new:** the PTY child is a tmux *client* (`tmux new-session -A -s agme-web`); closing the browser kills only the client, the session survives; reconnect reattaches the same screen | terminal reattach; any claude run inside also appears in the chat list via native sync |
-| SSH terminal | **new:** `scripts/claude-persistent.sh [name] [claude args…]` wraps claude in `tmux new-session -A -s agme-<name>` | native-session live tail (read-only while live; adoptable after) |
+| SSH terminal | **new:** `scripts/ops/claude-persistent.sh [name] [claude args…]` wraps claude in `tmux new-session -A -s agme-<name>` | native-session live tail (read-only while live; adoptable after) |
 | Slack bridge / brief / Auto SFA | already headless under systemd | n/a |
 
 Notes:
@@ -53,14 +53,21 @@ Notes:
   `--dangerously-skip-permissions`) so claude never blocks on an approval
   prompt overnight; `/loop` gives self-scheduled recurring work.
 
-## Live terminals sidebar (web → any tmux session)
+## Terminals panel (web → any tmux session)
 
-The chat sidebar lists **live tmux sessions** (`GET /api/chat/tmux` →
-name/created/attached/windows/activity, newest activity first). Clicking one
-opens the terminal drawer attached to THAT session
-(`/ws/chat/terminal?session=<name>`, name validated `^[A-Za-z0-9_.-]{1,64}$`);
-the drawer header shows `tmux:<name>`. This is the way back in after a closed
-tab — and the way to watch/drive an agent someone started over SSH.
+`/chat` is three columns on xl screens: chats (left) · transcript (center) ·
+**Terminals (right)** — a dedicated, scrollable panel listing live tmux
+sessions (`GET /api/chat/tmux` → name/created/attached/windows/activity,
+newest activity first). Row click attaches the drawer to that session
+(`/ws/chat/terminal?session=<name>`, names validated `^[A-Za-z0-9_.-]{1,64}$`
+and matched exactly with tmux's `=name`); the drawer header shows
+`tmux:<name>`. The panel also **manages** sessions: **+ New** (create detached
++ attach), **rename** (inline ✎ — tmux keeps clients attached, only the label
+moves), **kill** (✕ with an inline confirm) via
+`POST /api/chat/tmux/{new|rename|kill}`. The drawer itself is
+**height-resizable** (drag the top edge; persisted in localStorage). This is
+the way back in after a closed tab — and the way to watch/drive an agent
+someone started over SSH.
 
 Research-informed choices (ttyd/GoTTY/xterm.js findings, 2026-07-02):
 `new-session -A` as the idempotent attach-or-create (ttyd's documented tmux
@@ -79,7 +86,7 @@ ends**, so an agent that wants to poll-for-hours or self-schedule wake-ups
 never woke up". The supported pattern now:
 
 1. Start an **interactive** claude in tmux — web terminal (`>_`, session
-   `agme-web-<env>`) or SSH (`scripts/claude-persistent.sh <name>`).
+   `agme-web-<env>`) or SSH (`scripts/ops/claude-persistent.sh <name>`).
 2. Give it the long task, e.g. `/loop 10m check the deploy; investigate if red`
    — interactive claude self-schedules wake-ups; tmux keeps it alive with no
    client attached.

@@ -126,7 +126,10 @@ AUTO_SFA_RUNNER = AutoSFARunner()
 from agent_me.dashboard.chat import (  # noqa: E402
     TerminalSession,
     build_chat_service,
+    create_tmux_session,
+    kill_tmux_session,
     list_tmux_sessions,
+    rename_tmux_session,
     resolve_shell,
     resolve_tmux,
     stream_output,
@@ -1397,8 +1400,8 @@ async def api_chat_branches(request: Request):
 
 
 async def api_chat_tmux(request: Request):
-    """Live tmux sessions for the sidebar — the way back into a persistent
-    terminal after a closed tab (click → the drawer attaches to it)."""
+    """Live tmux sessions for the terminals panel — the way back into a
+    persistent terminal after a closed tab (click → the drawer attaches)."""
     if (blocked := _chat_guard(request)):
         return blocked
     cfg = CHAT_SERVICE.config
@@ -1408,6 +1411,40 @@ async def api_chat_tmux(request: Request):
         "default": cfg.terminal_tmux_session if persist else "",
         "persist": persist,
     })
+
+
+async def api_chat_tmux_action(request: Request):
+    """Manage tmux sessions from the terminals panel: new / rename / kill."""
+    if (blocked := _chat_guard(request)):
+        return blocked
+    cfg = CHAT_SERVICE.config
+    if not (cfg.terminal_persist and resolve_tmux()):
+        return JSONResponse({"error": "tmux persistence is off"}, status_code=400)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        body = {}
+    name = str(body.get("name") or "").strip()
+    if not valid_tmux_name(name):
+        return JSONResponse({"error": "invalid session name"}, status_code=400)
+    action = request.path_params["action"]
+    if action == "new":
+        ok, err = create_tmux_session(
+            name, cwd=(cfg.terminal_cwd or cfg.default_cwd),
+            shell=resolve_shell(cfg.terminal_shell or None),
+        )
+    elif action == "rename":
+        to = str(body.get("to") or "").strip()
+        if not valid_tmux_name(to):
+            return JSONResponse({"error": "invalid new name"}, status_code=400)
+        ok, err = rename_tmux_session(name, to)
+    elif action == "kill":
+        ok, err = kill_tmux_session(name)
+    else:
+        return JSONResponse({"error": "unknown action"}, status_code=404)
+    if not ok:
+        return JSONResponse({"error": err or "tmux command failed"}, status_code=409)
+    return JSONResponse({"ok": True})
 
 
 async def api_chat_history(request: Request):
@@ -1638,6 +1675,8 @@ def build_app() -> Starlette:
               name="api_chat_folders_browse"),
         Route("/api/chat/branches", api_chat_branches, name="api_chat_branches"),
         Route("/api/chat/tmux", api_chat_tmux, name="api_chat_tmux"),
+        Route("/api/chat/tmux/{action}", api_chat_tmux_action, methods=["POST"],
+              name="api_chat_tmux_action"),
         Route("/api/chat/sessions/{session_id}/history", api_chat_history,
               name="api_chat_history"),
         Route("/api/chat/sessions/{session_id}/message", api_chat_message,

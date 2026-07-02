@@ -82,6 +82,37 @@ def list_tmux_sessions(tmux_bin: str | None = None) -> list[dict]:
     return sorted(sessions, key=lambda s: -s["activity"])
 
 
+def _tmux_cmd(args: list[str], tmux_bin: str | None = None) -> tuple[bool, str]:
+    tmux = tmux_bin or resolve_tmux()
+    if not tmux:
+        return False, "tmux not installed"
+    try:
+        proc = subprocess.run([tmux, *args], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)[:200]
+    return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:200]
+
+
+def create_tmux_session(name: str, *, cwd: str, shell: str,
+                        tmux_bin: str | None = None) -> tuple[bool, str]:
+    """Create a detached session (idempotent-ish: existing name → error from tmux)."""
+    if not valid_tmux_name(name):
+        return False, "invalid session name"
+    return _tmux_cmd(["new-session", "-d", "-s", name, "-c", cwd, shell], tmux_bin)
+
+
+def rename_tmux_session(name: str, to: str, tmux_bin: str | None = None) -> tuple[bool, str]:
+    if not (valid_tmux_name(name) and valid_tmux_name(to)):
+        return False, "invalid session name"
+    return _tmux_cmd(["rename-session", "-t", f"={name}", to], tmux_bin)
+
+
+def kill_tmux_session(name: str, tmux_bin: str | None = None) -> tuple[bool, str]:
+    if not valid_tmux_name(name):
+        return False, "invalid session name"
+    return _tmux_cmd(["kill-session", "-t", f"={name}"], tmux_bin)
+
+
 class TerminalSession:
     """One interactive shell behind a pseudo-terminal.
 
